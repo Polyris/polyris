@@ -1,29 +1,29 @@
 # How to configure task retries
 
-You have a task that fails intermittently and you want polyris to retry it before pausing for a human. This guide covers what the five retry parameters actually do, which combinations to use when, and what happens after retries are exhausted.
+You have a task that fails now and then, and you want polyris to retry it before it waits for a person. This guide covers what the five retry parameters do, which combination fits which failure, and what happens after the last retry.
 
-For the parameter reference (types + defaults) see [DSL.md#common-parameters](../features/DSL.md#common-parameters-apply-to-every-task-type). This doc is the *task-oriented* companion — pick the pattern that matches your failure mode.
+Parameter reference (types and defaults): [DSL.md#common-parameters](../features/DSL.md#common-parameters-apply-to-every-task-type).
 
 ## What polyris retries mean
 
-A task that fails *fully* (task code returned an error, or the AWS service reported failure after all its own internal retries) enters polyris's retry loop. Each retry attempt reuses the same task record — the task re-executes, and its `run_task` execution waits according to your policy between attempts. Three counters: `retry_attempt` counts the automatic retries of the current `run_task` execution, `attempt` the task's runs, and `restarts` the operator's Restarts, which the console shows as ↻.
+A task that fails retries in place: polyris waits by your policy and runs the work again.
 
-Two layers of retry that are easy to confuse — polyris takes care of both, and only the first one is your knob:
+Two kinds of retry are easy to confuse; polyris handles both, and only the first is yours to set:
 
 | Layer | What it retries | Configurable? |
 |-------|-----------------|----------------|
-| **Polyris user retries** (this doc) | The whole task, after it *fully* failed | Yes — `retries` / `retry_delay` / `retry_exponential_backoff` / `retry_jitter` / `max_retry_delay` |
-| **Service retries in `run_task`** | A Lambda invocation that the Lambda service refused or throttled (twice, from 3 s), and a nested state machine's start over its account's limit of executions (twice, from 5 s). Any other error of the work is a failed attempt | No — fixed in `run_task` |
+| **Your retries** (this doc) | The whole task, after its work failed | Yes — `retries` / `retry_delay` / `retry_exponential_backoff` / `retry_jitter` / `max_retry_delay` |
+| **Service retries** | Throttling and service-limit errors when starting the work; polyris retries them a few times on its own | No |
 
-When AWS says "the task itself failed" (Lambda returned a handler exception, Glue job exited non-zero, Athena query got `FAILED`) — that's a full task failure and polyris user retries kick in. Only the service errors of the table's second row are retried before your `retries` count is consulted.
+When AWS reports that the work itself failed (the Lambda handler raised, the Glue job exited non-zero, the Athena query ended `FAILED`), your retries apply. Only the service errors of the second row are retried before your `retries` count.
 
 ## Retries pause the task, they don't erase the failure
 
-After the last retry fails, polyris does **not** propagate failure automatically (ADR #114). The task lands in `waiting_decision` and waits for a human choice in the Console; if nobody decides within the decision timeout, 5 hours by default, the task fails:
+After the last retry fails, polyris does **not** fail the task's dependants at once. The task waits for your decision in the console (`waiting_decision`); if nobody decides within 5 hours, the task fails:
 
 - **Restart** — try the whole retry sequence again: the retries count from the first again, and the task's ↻ goes up by one
 - **Skip** — mark the task `skipped`; downstream rules honor it
-- **Mark Successful** — mark the task `success` with a synthetic marker; downstream continues
+- **Mark Successful** — mark the task `success`; downstream continues
 - **Fail** — mark the task `failed`; downstream `all_success` chains propagate `upstream_failed`
 
 This matters when you pick a retry count: **retries buy the task a chance to self-heal before waking someone up.** Higher retries reduce night-time pages but delay the human decision when the failure is genuinely stuck.
@@ -135,14 +135,14 @@ with DAG(
 - **A code bug that always throws.** Ten attempts of the same broken handler = ten identical failures + a delayed page. Set `retries=0` for code you know is deterministic, or ship a fix instead of adding retries.
 - **A schema mismatch on a Glue Data Catalog table.** Athena won't recover from `Column 'foo' cannot be resolved` no matter how many times you re-issue the query. Fix the table.
 - **A `SIGKILL` from OOM.** ECS/Batch task killed by the kernel gets a fresh container on retry — same allocation, same OOM. Bump memory instead.
-- **Any failure whose cause is upstream.** If `extract` fails, retrying `transform` (which reads `extract`'s output) succeeds only if `extract` was also configured to retry. Retries don't cross task boundaries.
+- **Any failure whose cause is upstream.** If `extract` fails, `transform` does not run at all; give `extract` the retries.
 
 ## Debugging retry behavior
 
 - Console → Task Detail → **History** tab shows every dispatch: one **Started** event for the first dispatch, then one **Auto-retry** event per automatic retry. If you configured `retries=3` and see only two **Auto-retry** events, either the task succeeded on that retry, or a human acted on the pause before the third retry.
 - Console → Task Detail → **Details** tab → **Attempt** stat tile shows two chips when retries have occurred:
   - ↻ N — number of manual Restarts (bumps only when an operator clicks Restart)
-  - ⭮ N/M — current in-SFN retry index / max retries configured
+  - ⭮ N/M — the current automatic retry / the retries configured
   - Neither chip appears when the task was never restarted and has had no auto-retry.
 - Console → **Tasks** view → **Status** column shows the same chips inline for at-a-glance visibility across all tasks.
 - The task's node in the pipeline graph shows a countdown while `run_task` waits between retries — the same countdown as for `wait_before` delays.
@@ -151,7 +151,4 @@ with DAG(
 ## Related
 
 - [DSL.md#common-parameters](../features/DSL.md#common-parameters-apply-to-every-task-type) — parameter reference (types, defaults)
-- ADR #107 — the retry loop's design (why in-place, why the wait formula), which `run_task` keeps
-- ADR #114 — intervention-first failure model (why retries exhaust into a human decision, not automatic propagation)
-- ADR #125 — retry visibility contract (`retry_attempt` field, `TASK_RETRY_STARTED` event, two-chip UI)
-- [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md) — `run(dag, mock=True)` for testing retry logic locally
+- [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md) — mock runs check structure and trigger rules; retries are not simulated

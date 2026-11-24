@@ -16,7 +16,15 @@ curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.s
 polyris-up
 ```
 
-It asks for a **namespace** (a prefix unique to you, e.g. your org), a **stage** (default `dev`) and an **admin email**, then installs everything (10–15 minutes) and prints the console URL. Cognito emails the admin a temporary password.
+It asks for a **namespace** (a prefix unique to you, e.g. your org), a **stage** (default `dev`) and an **admin email**, then installs everything (10–15 minutes). It ends like this:
+
+```
+✅ Polyris v1.3.0 is up: acme-dev
+   Console:  https://d1234abcd.cloudfront.net
+   Login:    you@acme.com — Cognito has emailed a temporary password.
+```
+
+To find the console URL again, run `polyris-up` once more (it changes nothing and prints it), or open the stack `<namespace>-<stage>` in the CloudFormation console and read the output `ConsoleUiUrl`.
 
 ## 3. Deploy a first pipeline
 
@@ -28,7 +36,7 @@ polyris-deploy
 
 ## 4. Run it
 
-Open the console URL from step 2, sign in with the emailed password, find `hello-world`, and press **Run**. The task turns green in a few seconds.
+Open the console URL from step 2 and sign in with your email and the emailed temporary password; the console then asks you to choose your own. Find `hello-world` and press **Run**. The task turns green within seconds.
 
 ## Next steps
 

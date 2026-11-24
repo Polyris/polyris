@@ -217,12 +217,14 @@ class TestInitPipelineGuard:
         assert e.value.code == 1
         assert "already exists" in capsys.readouterr().out
 
-    def test_local_scaffold_points_at_the_deployable_variant(self, tmp_path, capsys):
+    def test_local_scaffold_says_how_to_deploy_it(self, tmp_path, capsys):
         init_pipeline("demo", base_dir=str(tmp_path), deploy_method="local")
         out = capsys.readouterr().out
-        # Regression: this section header used to print with nothing under it.
+        # Regression: this section header used to print with nothing under it. It then said
+        # to scaffold again without --local, a second file of the same pipeline.
         assert "Ready to deploy?" in out
-        assert "polyris-init demo" in out
+        assert "example ARNs" in out and "polyris-deploy --stage dev" in out
+        assert "Re-run without --local" not in out
 
 
 # ── main() dispatch ──────────────────────────────────────────────────────────
@@ -250,6 +252,18 @@ class TestMainDispatch:
         _inputs(mocker, "acme")
         _run(monkeypatch, "--project", "--dir", str(tmp_path))
         assert (tmp_path / "pipelines" / "config.py").exists()
+
+    def test_project_next_steps_keep_the_pipeline_next_to_its_config(self, tmp_path, monkeypatch, mocker, capsys):
+        """It said "polyris-init my-pipeline" from the project's root, and a pipeline made
+        there never finds pipelines/config.py: --stage prod went unread (the docs audit
+        after 1.3). It names the platform the config points at too."""
+        _inputs(mocker, "acme")
+        _run(monkeypatch, "--project", "--dir", str(tmp_path))
+        out = capsys.readouterr().out
+        assert "cd pipelines && polyris-init my-pipeline" in out
+        assert "polyris-up --namespace acme --stage dev" in out
+        config = (tmp_path / "pipelines" / "config.py").read_text()
+        assert "samconfig" not in config and "deploy.sh" not in config
 
     def test_missing_name_is_an_argparse_error(self, tmp_path, monkeypatch):
         with pytest.raises(SystemExit) as e:
@@ -289,7 +303,7 @@ class TestRolesReExport:
         assert roles == config.roles
 
     def test_roles_is_reachable_from_the_documented_import_path(self):
-        # docs/reference/CONFIGURATION.md documents `from polyris.roles import roles`.
+        # The roles of config.py are reachable as `from polyris.roles import roles`.
         import importlib
         mod = importlib.import_module("polyris.roles")
         assert hasattr(mod, "roles")

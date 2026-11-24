@@ -76,7 +76,7 @@ COUNTS: List[Tuple[str, str, Tuple[int, ...]]] = [
     ("docs/architecture/BACKEND.md", r"#step-functions-state-machines-(\d+)\)", (STATE_MACHINES,)),
     ("docs/architecture/BACKEND.md", r"\*\*Lambda functions\*\* \((\d+)\)", (FUNCTIONS,)),
     ("docs/architecture/BACKEND.md", r"\*\*DynamoDB tables\*\* \((\d+)\)", (TABLES,)),
-    ("README.md", r"(\d+) SFN definitions \((\d+) orchestration \+ (\d+) test\)",
+    ("CONTRIBUTING.md", r"(\d+) SFN definitions \((\d+) orchestration \+ (\d+) test\)",
      (STATE_MACHINES, ORCHESTRATION, TEST_STATE_MACHINES)),
     ("CLAUDE.md", r"### (\d+) State Machines \((\d+) orchestration \+ (\d+) test\)",
      (STATE_MACHINES, ORCHESTRATION, TEST_STATE_MACHINES)),

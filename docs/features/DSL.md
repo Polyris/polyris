@@ -1,62 +1,39 @@
-# polyris Python DSL Reference
+# Python DSL reference
+
+You describe a pipeline in a `dag.py` file: a `DAG(...)`, its tasks as `@task.<service>` functions, and the dependencies between them with `>>`. `polyris-deploy` turns the file into a Step Functions state machine and a schedule in your AWS account. Terms such as *run*, *run's date*, *fact* and *decision* are defined in [GLOSSARY.md](../../GLOSSARY.md).
+
+> Passing data between tasks is a separate topic: see [DATA_PASSING.md](DATA_PASSING.md) for `xcom`, and how each task type reads its upstream's output.
 
 ## Contents
 
-- [Overview](#overview)
-- [How polyris relates to AWS](#how-polyris-relates-to-aws) — decorators orchestrate existing resources
-- [DAG Definition](#dag-definition)
-- [Schedule Options](#schedule-options)
-- [Task Types](#task-types) — `sfn`, `lambda_function`, `glue_job`, `ecs_task`, `athena_query`, `emr_step`, `batch_job`
-- [Common parameters](#common-parameters-apply-to-every-task-type) — retry, timeout, trigger rule, role, assets
-- [Task-type-specific parameters](#task-type-specific-parameters)
-- [Trigger Rules](#trigger-rules)
-- [Dependencies](#dependencies)
+- [How polyris relates to AWS](#how-polyris-relates-to-aws): decorators orchestrate existing resources
+- [DAG definition](#dag-definition)
+- [Schedule options](#schedule-options)
+- [Task types](#task-types): `sfn`, `lambda_function`, `glue_job`, `ecs_task`, `athena_query`, `emr_step`, `batch_job`
+- [Common parameters](#common-parameters-apply-to-every-task-type): retry, timeout, trigger rule, role, assets
+- [Trigger rules](#trigger-rules)
+- [Dependencies](#dependencies): `>>`, `chain()`, `cross_downstream()`, task groups
+- [Direct steps](#direct-steps): service calls without a task
 - [Assets](#assets)
 - [Variables](#variables)
-- [Complete Example](#complete-example)
-- [CLI Usage](#cli-usage)
-
-## Overview
-
-polyris provides a Python DSL for defining data pipelines that compile to AWS
-Step Functions. Use `@task` decorators, the `>>` dependency operator, and a
-`DAG()` context manager to describe pipelines — they execute as Step Functions
-state machines, with no scheduler or worker pool to operate.
-
-> Passing data between tasks is a separate topic — see
-> [DATA_PASSING.md](DATA_PASSING.md) for `xcom.pull`, upstream auto-injection,
-> and how each task type reads its predecessor's output.
+- [Complete example](#complete-example)
 
 ## How polyris relates to AWS
 
-**Every `@task.<service>` decorator orchestrates an AWS resource that already
-exists.** polyris does not provision the state machine, function, job, cluster,
-or database on your behalf — it only wires the deploy / trigger / retry /
-monitor logic. Before you write
-`@task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:my-workflow")`, that
-state machine must already exist, created by your own provisioning tool (SAM,
-CDK, Terraform, hand-created). Same for Lambda / Glue / ECS / Athena / EMR /
-Batch — polyris expects them there and calls them by AWS identifier.
+**Every `@task.<service>` decorator orchestrates an AWS resource that already exists.** polyris does not create the state machine, function, job, cluster or database: it starts it, retries it and records its outcome. Before you write `@task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:my-workflow")`, that state machine must exist, created by your own tool (SAM, CDK, Terraform, or by hand). The same holds for Lambda, Glue, ECS, Athena, EMR and Batch: polyris calls them by their AWS identifier.
 
-The one thing polyris deploys is your pipeline itself — a state machine that runs your existing resources as a DAG. For the split between the platform and your workloads, see [INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-the-platform-vs-your-workloads).
+The one thing polyris deploys is your pipeline itself: a state machine that runs your existing resources as a DAG. For the split between the platform and your workloads, see [INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-the-platform-vs-your-workloads).
 
-### `namespace` is a resource-naming prefix, not a DSL concept
+### Namespace
 
-`namespace` is set once per deployment in `pipelines/config.py` (or via the SAM
-`Namespace` parameter). It prefixes every AWS resource polyris creates (S3
-bucket, DDB tables, IAM roles) so multiple polyris installs in the same account
-don't collide. It **does not have to match** `Stage`, `dag_id`, or anything
-inside your DSL. See `docs/reference/CONFIGURATION.md` for the full lifecycle.
-
-Your `@task.sfn(arn=...)` values point at whatever ARNs you actually have in
-AWS — they're never derived from `namespace`.
+`namespace` is the prefix you gave `polyris-up`. It names every resource of the platform and your pipelines' stacks, so two installs in one account don't collide. It has nothing to do with `dag_id` or your ARNs: your `@task.sfn(arn=...)` values point at whatever ARNs you have. A `config.py` can set another namespace for your pipelines ([CONFIGURATION.md](../reference/CONFIGURATION.md)).
 
 ---
 
-## DAG Definition
+## DAG definition
 
 ```python
-from polyris import DAG, task, Asset
+from polyris import DAG
 
 with DAG(
     dag_id="my-pipeline",
@@ -64,31 +41,32 @@ with DAG(
     description="My data pipeline",
     group="orders",
     tags=["production", "etl"],
-    variables={
-        "custom_var": "value"
-    }
+    variables={"batch_size": "500"},
 ) as dag:
     ...
 ```
 
-### DAG Parameters
+### DAG parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `dag_id` | str | Yes | Unique pipeline identifier |
-| `schedule` | str/Asset/list | No | Schedule: cron, preset, or assets |
+| `schedule` | str/Asset/list | No | Schedule: cron, preset, or assets ([Schedule options](#schedule-options)) |
 | `description` | str | No | Human-readable description |
 | `tags` | list | No | Tags for organization |
 | `group` | str | No | Group the console's sidebar lists the pipeline under, e.g. `"orders"`; compared without case. Without it, the pipeline is listed under *Ungrouped*, or in a flat list when no pipeline sets a group. A change shows after the next deploy or run |
-| `variables` | dict | No | Pipeline variables |
-| `default_args` | dict | No | Default params for all tasks (see below) |
+| `variables` | dict | No | Values passed to the tasks ([Variables](#variables)) |
+| `default_args` | dict | No | Default common parameters for all tasks (see below) |
+| `is_paused_upon_creation` | bool | No | `True` deploys the schedule disabled, and every later `polyris-deploy` disables it again. Unset or `False`, every deploy enables it |
 
-### Default Args
+### Default args
 
 Apply shared parameters to all tasks in a DAG:
 
 ```python
 from datetime import timedelta
+
+from polyris import DAG, task
 
 with DAG(
     "my-pipeline",
@@ -98,39 +76,40 @@ with DAG(
         "retry_delay": timedelta(minutes=10),
         "execution_timeout": timedelta(hours=4),       # One attempt of the work: 4h at most
         "orchestration_timeout": timedelta(hours=12),  # All waiting: 12h at most
-    }
+    },
 ) as dag:
-    # All tasks inherit these defaults unless overridden
-    @task.sfn(arn=..., retries=3)  # Override: retry this task up to 3 times
-    def retried_task(): pass
+    # Every task inherits these defaults unless it overrides them
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:my-sfn", retries=3)
+    def retried_task():
+        pass
 ```
 
-## Schedule Options
+## Schedule options
 
-### Time-Based (EventBridge)
+### Time-based
 
 ```python
-# Presets
+# Presets: each fires at the start of its period, in UTC
 DAG(schedule="@hourly")     # cron(0 * * * ? *)    every hour, on the hour
-DAG(schedule="@daily")      # cron(0 0 * * ? *)    00:00 UTC
-DAG(schedule="@weekly")     # cron(0 0 ? * MON *)  Monday 00:00 UTC
-DAG(schedule="@monthly")    # cron(0 0 1 * ? *)    the 1st, 00:00 UTC
+DAG(schedule="@daily")      # cron(0 0 * * ? *)    00:00
+DAG(schedule="@weekly")     # cron(0 0 ? * MON *)  Monday 00:00
+DAG(schedule="@monthly")    # cron(0 0 1 * ? *)    the 1st, 00:00
+DAG(schedule="@yearly")     # cron(0 0 1 1 ? *)    1 January, 00:00
 
-# Custom cron
-DAG(schedule="cron(0 8 * * ? *)")   # 8:00 UTC daily
+# Custom cron: EventBridge's six fields (minutes hours day-of-month month day-of-week year)
+DAG(schedule="cron(0 8 * * ? *)")         # 08:00 UTC daily
+DAG(schedule="cron(0 9 ? * MON-FRI *)")   # 09:00 UTC on weekdays
 
 # Rate expressions
 DAG(schedule="rate(6 hours)")
-DAG(schedule="rate(1 day)")
 ```
 
-Each preset fires at the start of its period in UTC, the period whose partition its run takes. A `rate(...)` schedule fires at intervals counted from when `polyris-deploy` created the schedule; to run at a fixed time, use `cron(...)` or a preset.
+A run that the schedule starts is dated by the UTC day the schedule fired it for, whatever the preset: every `@hourly` run of 25 July is dated `2025-07-25`. A `rate(...)` schedule fires at intervals counted from when `polyris-deploy` created the schedule; to run at a fixed time, use `cron(...)` or a preset. A bare five-field cron such as `"0 9 * * MON-FRI"` is refused: write `cron(0 9 ? * MON-FRI *)`.
 
-### Asset-Based (Cross-Pipeline Triggers)
+### Asset-based (cross-pipeline triggers)
 
 ```python
-from polyris import Asset
-from polyris.assets import AssetAny
+from polyris import DAG, Asset, AssetAny
 
 asset_a = Asset("processed/acme")
 asset_b = Asset("processed/ulta")
@@ -152,33 +131,30 @@ DAG(schedule=[asset_a | asset_b])
 DAG(schedule=AssetAny([asset_a]))
 ```
 
-### Manual Only
+### Manual only
 
 ```python
-DAG(schedule=None)  # No automatic trigger
+DAG(schedule=None)  # No automatic trigger: start runs with Run in the console
 ```
 
 ---
 
-## Task Types
+## Task types
 
-Seven decorators are shipped. Each one orchestrates a specific AWS service. All
-of them accept the shared **common parameters** (retry / timeout / trigger rule
-/ role / assets — see [Common parameters](#common-parameters-apply-to-every-task-type)
-below) on top of their type-specific arguments.
+Seven decorators are shipped. Each one orchestrates a specific AWS service. All of them accept the shared [common parameters](#common-parameters-apply-to-every-task-type) (retry, timeout, trigger rule, role, assets) on top of their type-specific arguments.
 
-### `@task.sfn` — AWS Step Functions
+### `@task.sfn`: AWS Step Functions
 
 Executes a nested Step Function state machine.
 
 **Required:**
-- `arn` (str) — Full ARN of the state machine to invoke.
+- `arn` (str): full ARN of the state machine to invoke.
 
 **Type-specific (optional):** none.
 
 ```python
 @task.sfn(
-    arn="arn:aws:states:us-east-1:123456789:stateMachine:my-sfn",
+    arn="arn:aws:states:us-east-1:123456789012:stateMachine:my-sfn",
     # Any common parameter is welcome here too:
     retries=2,
     trigger_rule="all_success",
@@ -187,16 +163,16 @@ def my_task():
     pass
 ```
 
-### `@task.lambda_function` — AWS Lambda
+### `@task.lambda_function`: AWS Lambda
 
 Invokes an existing Lambda function directly (not via a nested Step Function).
 
 **Required (one of):**
-- `function_name` (str) — Function name in the current region.
-- `arn` (str) — Full function ARN (use this for cross-region / cross-account).
+- `function_name` (str): function name in the current region.
+- `arn` (str): full function ARN (use this for cross-region / cross-account).
 
 **Type-specific (optional):**
-- `payload` (dict) — JSON input passed to the Lambda `event`.
+- `payload` (dict): JSON input passed to the Lambda `event`.
 
 ```python
 @task.lambda_function(
@@ -207,19 +183,19 @@ def process_data():
     pass
 ```
 
-### `@task.glue_job` — AWS Glue
+### `@task.glue_job`: AWS Glue
 
 Starts an existing Glue job run.
 
 **Required:**
-- `job_name` (str) — Glue job name.
+- `job_name` (str): Glue job name.
 
 **Type-specific (optional):**
-- `glue_arguments` (dict[str, str]) — `--key value` overrides for the job.
-- `worker_type` + `number_of_workers` — must be set together (`G.1X` / `G.2X` / etc). For PySpark (glueetl) jobs.
-- `max_capacity` (float) — DPU allocation for Python Shell jobs. Supports fractional values (e.g. `0.0625` for 1/16 DPU). Mutually exclusive with `worker_type`/`number_of_workers`.
-- `allocated_capacity` (int) — Integer DPU model (deprecated by AWS). Use `max_capacity` instead — it supports the same whole-DPU values and additionally allows fractional values.
-- `command_name` (str) — `"pythonshell"` or `"glueetl"`. Enables cross-type validation (e.g. rejects `worker_type` on a Python Shell job).
+- `glue_arguments` (dict[str, str]): `--key value` overrides for the job.
+- `worker_type` + `number_of_workers`: must be set together (`G.1X` / `G.2X` / etc). For PySpark (glueetl) jobs.
+- `max_capacity` (float): DPU allocation for Python Shell jobs. Supports fractional values (e.g. `0.0625` for 1/16 DPU). Mutually exclusive with `worker_type`/`number_of_workers`.
+- `allocated_capacity` (int): integer DPU model (deprecated by AWS). Use `max_capacity` instead: it supports the same whole-DPU values and also fractional values.
+- `command_name` (str): `"pythonshell"` or `"glueetl"`. Enables cross-type validation (e.g. rejects `worker_type` on a Python Shell job).
 
 ```python
 # PySpark job
@@ -228,7 +204,7 @@ Starts an existing Glue job run.
     glue_arguments={"--date": "2024-01-01"},
     worker_type="G.1X",
     number_of_workers=2,
-    command_name="glueetl",  # optional — enables cross-type validation
+    command_name="glueetl",  # optional: enables cross-type validation
 )
 def etl_job():
     pass
@@ -239,29 +215,28 @@ def light_job():
     pass
 ```
 
-### `@task.ecs_task` — Amazon ECS (Fargate or EC2)
+### `@task.ecs_task`: Amazon ECS (Fargate or EC2)
 
 Runs an existing ECS task definition.
 
 **Required:**
-- `cluster` (str) — ECS cluster name.
-- `task_definition` (str) — Task definition family name, without a `:N` revision: each run uses the latest active revision.
+- `cluster` (str): ECS cluster name.
+- `task_definition` (str): task definition family name, without a `:N` revision: each run uses the latest active revision.
 
 **Type-specific (optional):**
-- `launch_type` (str, default `"FARGATE"`) — `FARGATE` or `EC2`.
-- `subnets` (list[str]) — **Required if `launch_type="FARGATE"`** (Fargate runs
-  in an ENI).
+- `launch_type` (str, default `"FARGATE"`): `FARGATE` or `EC2`.
+- `subnets` (list[str]): **required if `launch_type="FARGATE"`** (Fargate runs in an ENI).
 - `security_groups` (list[str]).
-- `assign_public_ip` (str, default `"DISABLED"`) — `"ENABLED"` or `"DISABLED"`.
-- `container_overrides` (dict) — Passed through to `RunTask`.
+- `assign_public_ip` (str, default `"DISABLED"`): `"ENABLED"` or `"DISABLED"`.
+- `container_overrides` (dict): passed through to `RunTask`.
 
 ```python
 @task.ecs_task(
     cluster="my-cluster",
     task_definition="my-task",
     launch_type="FARGATE",
-    subnets=["subnet-xxx"],
-    security_groups=["sg-xxx"],
+    subnets=["subnet-0a1b2c3d"],
+    security_groups=["sg-0a1b2c3d"],
     container_overrides={
         "containerOverrides": [{
             "name": "main",
@@ -273,20 +248,18 @@ def container_job():
     pass
 ```
 
-`NetworkConfiguration` is sent only when `subnets` are provided; EC2 launch type
-with `bridge` / `host` networking can omit them.
+`NetworkConfiguration` is sent only when `subnets` are provided; EC2 launch type with `bridge` / `host` networking can omit them.
 
-### `@task.athena_query` — Amazon Athena
+### `@task.athena_query`: Amazon Athena
 
 Runs a SQL query against an existing Athena database.
 
 **Required:**
-- `query_string` (str) — SQL to execute.
-- `database` (str) — Athena database.
+- `query_string` (str): SQL to execute.
+- `database` (str): Athena database.
 
 **Type-specific (optional):**
-- `output_location` (str) — S3 URL for results. Omit to use the workgroup's
-  enforced output location.
+- `output_location` (str): S3 URL for results. Omitting it leaves the query's output location to the workgroup.
 - `workgroup` (str, default `"primary"`).
 
 ```python
@@ -300,17 +273,13 @@ def run_query():
     pass
 ```
 
-Omitting `output_location` makes `run_task` skip `ResultConfiguration` entirely
-rather than sending an empty `OutputLocation` (which `StartQueryExecution`
-rejects).
-
-### `@task.emr_step` — Amazon EMR
+### `@task.emr_step`: Amazon EMR
 
 Adds a single step to an existing EMR cluster (`elasticmapreduce:addStep`).
 
 **Required:**
-- `emr_cluster_id` (str) — Existing EMR cluster ID (`j-XXXX...`).
-- `emr_step` (dict) — AWS `StepConfig` dict. Must contain `HadoopJarStep.Jar`.
+- `emr_cluster_id` (str): existing EMR cluster ID (`j-XXXX...`).
+- `emr_step` (dict): AWS `StepConfig` dict. Must contain `HadoopJarStep.Jar`.
 
 **Type-specific (optional):** none.
 
@@ -330,17 +299,16 @@ def spark_job():
     pass
 ```
 
-### `@task.batch_job` — AWS Batch
+### `@task.batch_job`: AWS Batch
 
 Submits an existing Batch job definition to a job queue.
 
 **Required:**
-- `job_definition` (str) — Batch job definition name, without a `:N` revision: each run uses the latest active revision.
-- `job_queue` (str) — Batch job queue (`name` or `arn`).
+- `job_definition` (str): Batch job definition name, without a `:N` revision: each run uses the latest active revision.
+- `job_queue` (str): Batch job queue (`name` or `arn`).
 
 **Type-specific (optional):**
-- `batch_parameters` (dict[str, str]) — Substitution parameters passed to
-  `SubmitJob`.
+- `batch_parameters` (dict[str, str]): substitution parameters passed to `SubmitJob`.
 
 ```python
 @task.batch_job(
@@ -356,14 +324,12 @@ def batch_job():
 
 ## Common parameters (apply to every task type)
 
-Every `@task.<service>` accepts these — they control retry / timeout / trigger
-policy and are the same across `sfn`, `lambda_function`, `glue_job`,
-`ecs_task`, `athena_query`, `emr_step`, and `batch_job`.
+Every `@task.<service>` accepts these. They control retry, timeout and trigger policy, and are the same for every task type.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`, cut to 63 characters, followed by a 16-character hash; a Restart gets a new name |
-| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work; a Lambda invocation runs on until its own timeout. Unset, the work has no limit |
+| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the [decision](../../GLOSSARY.md#decision) on a failed task. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work; a Lambda invocation runs on until its own timeout. Unset, the work has no limit |
 | `orchestration_timeout` | timedelta | none | A cap on all of the task's waiting, until it is ready. It never falls back to `execution_timeout`. Unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
@@ -371,24 +337,28 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `max_retry_delay` | timedelta | none (3600s cap) | Ceiling for exponential backoff |
 | `retry_jitter` | bool | False | Randomise each wait into `[base/2, base)` (avoids retry stampede) |
 | `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting). The wait ends at the platform's next check after it, up to 5 minutes later |
-| `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
+| `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps: see [Trigger rules](#trigger-rules) below |
 | `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
 | `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 97, each once (the decorator refuses an asset named twice) |
-| `inlets` | list[Asset] | `[]` | Assets consumed by this task |
-| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]`. The wait lasts 7 days from when the task's own dependencies are met; then the task fails. `polyris-deploy` warns when `orchestration_timeout` is shorter |
+| `inlets` | list[Asset] | `[]` | Assets consumed by this task (documentation only) |
+| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the [run's date](../../GLOSSARY.md#a-runs-date) ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]`. The wait lasts 7 days from when the task's own dependencies are met; then the task fails. `polyris-deploy` warns when `orchestration_timeout` is shorter |
 
 ```python
 from datetime import timedelta
 
+from polyris import Asset, task
+
+orders = Asset("clean/orders")
+
 @task.sfn(
-    arn="arn:aws:states:us-east-1:123456789:stateMachine:my-sfn",
+    arn="arn:aws:states:us-east-1:123456789012:stateMachine:my-sfn",
     execution_timeout=timedelta(hours=2),     # One attempt of the work: 2h at most
     orchestration_timeout=timedelta(days=8),  # All waiting: 8 days at most
     retries=2,
     retry_delay=timedelta(minutes=10),
     wait_before=60,
     trigger_rule="all_success",
-    outlets=[my_asset],
+    outlets=[orders],
 )
 def my_task():
     pass
@@ -413,25 +383,13 @@ def my_task():
 
 `polyris-output --json` shows each task's spec and the definition.
 
-## Task-type-specific parameters
-
-Each task type ADDITIONALLY takes its own required / optional args on top of
-the common ones — see the [Task Types](#task-types) section above (each
-subsection lists them explicitly with "Required" / "Type-specific optional"
-labels).
-
 ---
 
-## Trigger Rules
+## Trigger rules
 
 A trigger rule decides when a task runs, from the outcomes of its **declared direct** upstreams. `all_success` is the default.
 
-> **Scope of "upstream" here — the *declared direct* deps.** A trigger rule
-> looks at the tasks you connected to this task with `>>` or a function call,
-> **not** transitively through the whole DAG. For `extract >> transform >>
-> load`, `load`'s `trigger_rule` evaluates `transform` only — `extract` is
-> reflected indirectly (if `extract` failed, `transform` never succeeded), but
-> the rule never asks about `extract` directly.
+> **Scope of "upstream" here: the *declared direct* deps.** A trigger rule looks at the tasks you connected to this task with `>>` or a function call, **not** transitively through the whole DAG. For `extract >> transform >> load`, `load`'s `trigger_rule` evaluates `transform` only: `extract` is reflected indirectly (if `extract` failed, `transform` never succeeded), but the rule never asks about `extract` directly.
 
 | Rule | Runs its task when | Example |
 |------|--------------------|---------|
@@ -447,11 +405,11 @@ A trigger rule decides when a task runs, from the outcomes of its **declared dir
 
 ### What a rule reads
 
-- **Final outcomes.** An upstream is final once it succeeded, was skipped, ended `upstream_failed`, failed finally or was stopped. A task that exhausts its retries waits for a human decision first (ADR #114): retry, mark successful, skip or fail. Until that decision, or the decision timeout (5 hours by default), it is pending for every rule, so `one_failed` runs after the decision, not at the first error. The console bell shows the failure at once.
+- **Final outcomes.** An upstream is final once it succeeded, was skipped, ended `upstream_failed`, failed finally or was stopped. A task that exhausts its retries waits for a human [decision](../../GLOSSARY.md#decision) first: retry, mark successful, skip or fail. Until that decision, or until it fails after 5 hours without one, it is pending for every rule, so `one_failed` runs after the decision, not at the first error. The console bell shows the failure at once.
 - **Final failures** are `failed`, `upstream_failed` and `stopped`. A Stop is final: the stopped task's dependants are decided as after a Fail. Until a dependant is decided, a Restart or Mark Successful of the stopped task still counts for it.
 - **When a rule decides.** A rule runs its task as soon as its condition holds: `one_success` at the first success, `one_failed` at the first final failure, every other rule once all its upstreams are final. It skips the task, or ends it `upstream_failed`, only once every upstream is final.
 - **What the task then reads.** A rule reads statuses; the task it runs reads outputs. It gets an upstream's output only when that upstream succeeded or an operator or the run skipped it, and otherwise its status alone, so it never reads an older run's output of the same date. Through `xcom`, the output of an upstream that failed finally raises `XComUpstreamFailedError`, and of one that has not succeeded yet in this run (beside a `one_success` task) `XComMissingError` ([DATA_PASSING.md](DATA_PASSING.md#reading-upstream-xcomget)).
-- **`skipped` or `upstream_failed`.** A rule that needs success or no failure (`all_success`, `one_success`, `none_failed`, `none_failed_min_one_success`) ends its task `upstream_failed` when a final failure blocks it. Any other rule that can no longer be met ends its task `skipped`: the condition never occurred, which is not an error (ADR #115).
+- **`skipped` or `upstream_failed`.** A rule that needs success or no failure (`all_success`, `one_success`, `none_failed`, `none_failed_min_one_success`) ends its task `upstream_failed` when a final failure blocks it. Any other rule that can no longer be met ends its task `skipped`: the condition never occurred, which is not an error.
 
 ### Skips and who made them
 
@@ -461,7 +419,7 @@ Every skip records who made it, in `skip_origin`:
 |--------|-----------|---------------------|
 | `manual` | An operator, from the console | Passes, as if the task had succeeded |
 | `run` | The run, for a task named in its `skip_tasks` | Passes, as if the task had succeeded |
-| `rule` | The engine, because the task's own rule can no longer be met | Cascades: the dependant is skipped too |
+| `rule` | polyris, because the task's own rule can no longer be met | Cascades: the dependant is skipped too |
 
 Only `all_success` reads the origin. Every other rule reads a skip the same: `one_success` and `none_failed_min_one_success` never count it as a success, `none_skipped` skips its task, and `all_skipped` counts it.
 
@@ -520,7 +478,7 @@ with DAG("orders", schedule="@daily") as dag:
 
 ## Dependencies
 
-### Bitshift Operators
+### Bitshift operators
 
 ```python
 # Sequential
@@ -536,7 +494,7 @@ task_a >> [task_b, task_c, task_d]
 task_a >> [task_b, task_c] >> task_d
 ```
 
-### Function Call Style
+### Function call style
 
 ```python
 @task.sfn(arn=...)
@@ -554,124 +512,180 @@ transformed = transform(data)
 load(transformed)
 ```
 
-Passing a task's result to another task only makes it a dependency: no data moves through
-the argument, and the function body does not run in AWS. A task's output reaches the next
-task through xcom ([DATA_PASSING.md](DATA_PASSING.md)). Prefer `>>`: it says what it does.
+A task that depends on several takes them all, or a list: `aggregate(a, b, c)`, `aggregate([a, b, c])` and `[a, b, c] >> aggregate()` do the same.
 
-### List of Dependencies
+Passing a task's result to another task only makes it a dependency: no data moves through the argument, and the function body does not run in AWS. A task's output reaches the next task through xcom ([DATA_PASSING.md](DATA_PASSING.md)). Prefer `>>`: it says what it does.
 
-When a task depends on multiple upstream tasks:
+### `chain()` and `cross_downstream()`
+
+`chain(a, b, c)` is `a >> b >> c`. A list in the chain fans out and back in; two lists next to each other connect pairwise and must have the same length. `cross_downstream(ups, downs)` makes every task of `downs` depend on every task of `ups`.
 
 ```python
-@task.sfn(arn=...)
-def build_a(): pass
+from polyris import DAG, task, chain, cross_downstream
 
-@task.sfn(arn=...)
-def build_b(): pass
+ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:"
 
-@task.sfn(arn=...)
-def build_c(): pass
+with DAG("reports", schedule="@daily") as dag:
 
-@task.sfn(arn=...)
-def aggregate(): pass
+    @task.sfn(arn=ARN + "extract")
+    def extract(): pass
 
-# All three syntaxes work:
-a, b, c = build_a(), build_b(), build_c()
+    @task.sfn(arn=ARN + "clean-orders")
+    def clean_orders(): pass
 
-# Option 1: List argument
-aggregate([a, b, c])
+    @task.sfn(arn=ARN + "clean-refunds")
+    def clean_refunds(): pass
 
-# Option 2: Multiple arguments
-aggregate(a, b, c)
+    @task.sfn(arn=ARN + "feed-shop")
+    def feed_shop(): pass
 
-# Option 3: Bitshift operator
-[a, b, c] >> aggregate()
+    @task.sfn(arn=ARN + "feed-partner")
+    def feed_partner(): pass
+
+    cleaned = [clean_orders(), clean_refunds()]
+    chain(extract(), cleaned)                              # extract >> both clean tasks
+    cross_downstream(cleaned, [feed_shop(), feed_partner()])  # each feed waits for both
 ```
+
+### Task groups
+
+A task group puts a prefix on the ids of the tasks defined in it (`extract.orders`) and lets you connect the group as one. `group >> task` makes the task depend on the group's last tasks; `task >> group` makes the group's first tasks depend on it.
+
+```python
+from polyris import DAG, TaskGroup, task
+
+ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:"
+
+with DAG("orders", schedule="@daily") as dag:
+
+    with TaskGroup("extract") as extract:
+
+        @task.sfn(arn=ARN + "extract-orders")
+        def orders(): pass                  # task id: extract.orders
+
+        @task.sfn(arn=ARN + "extract-customers")
+        def customers(): pass               # task id: extract.customers
+
+    @task.sfn(arn=ARN + "load-orders")
+    def load(): pass
+
+    extract >> load()
+```
+
+`@task_group()` on a function does the same, with the function's name as the group id: `extract() >> load()`. `TaskGroup("extract", prefix_group_id=False)` keeps the tasks' own ids.
+
+---
+
+## Direct steps
+
+A direct step is a single AWS service call that runs inside the pipeline's own state machine, without a task: publish to SNS, send to SQS, write to S3. Every direct step starts with the run, beside its tasks, and has no dependencies: a task cannot depend on a step, and a step cannot depend on a task. A step that fails fails the run, once its other steps and tasks have ended, and the bell shows why. The console does not show steps in the graph.
+
+```python
+from polyris import DAG, SNSTask, S3Task, task
+
+with DAG("orders-daily", schedule="@daily") as dag:
+
+    @task.lambda_function(function_name="load-orders")
+    def load():
+        pass
+
+    SNSTask(
+        step_id="announce_start",
+        topic_arn="arn:aws:sns:us-east-1:123456789012:pipeline-events",
+        message="{% 'orders-daily started for ' & $states.input.current_date %}",
+    )
+
+    S3Task(
+        step_id="write_marker",
+        operation="put_object",
+        bucket="acme-reports",
+        key="{% 'markers/' & $states.input.current_date & '/started' %}",
+        body="{% $string({'date': $states.input.current_date}) %}",
+    )
+
+    load()
+```
+
+A string value is either text or, whole, a JSONata expression in `{% ... %}`. An expression reads the run's date as `$states.input.current_date` and a DAG variable as `$states.input.variables.<name>`.
+
+| Class | Calls | Required arguments |
+|-------|-------|--------------------|
+| `SNSTask` | `sns:Publish` | `topic_arn`, `message` (optional `subject`, `message_attributes`) |
+| `SQSTask` | `sqs:SendMessage` | `queue_url` (optional `message_body`, `delay_seconds`, `message_group_id`) |
+| `S3Task` | `get_object`, `put_object`, `copy_object`, `delete_object` | `bucket`, `key`; `body` for `put_object`, `copy_source` for `copy_object` |
+| `DynamoDBTask` | `get_item`, `put_item`, `update_item`, `delete_item`, `query`, `scan` | `table_name`, `operation`, and `key`, `item`, `update_expression` or `key_condition` as the operation needs |
+| `EventBridgeTask` | `events:PutEvents` | `source`, `detail_type` (optional `event_bus`, `detail`) |
+| `HttpTask` | an HTTPS endpoint | `url`, and `connection_arn`: the EventBridge connection that holds the endpoint's credentials, which Step Functions requires (optional `method`, `headers`, `body`) |
+| `BedrockTask` | `bedrock:InvokeModel` | `model_id`, `body` |
+
+Give each step a `step_id` unique in the pipeline. `Wait`, `Pass` and `Succeed` exist too, but since nothing follows a step, they change nothing in a run: for a delay before a task, use `wait_before`. `LambdaTask`, `GlueTask`, `AthenaTask` and `ECSTask` run as tasks, not steps; use the `@task` decorators of the same services instead.
+
+> **Note:** The pipeline's state machine runs as the platform's role `<namespace>-<stage>-polyris-orchestration-role`. That role may call EventBridge and HTTP endpoints, but not your SNS topics, SQS queues, S3 buckets, DynamoDB tables or Bedrock models. Attach a policy that grants the call (for example `sns:Publish` on the topic) to that role, or the step fails with `AccessDenied`.
 
 ---
 
 ## Assets
 
-### Definition
+A task declares the data it produces with `outlets`; another pipeline starts on it with `schedule=`, or one of its tasks waits for it with `wait_for`:
 
 ```python
-from polyris import Asset
+from polyris import DAG, Asset, task
 
-# Simple asset
-processed = Asset(name="processed/acme")
+orders = Asset("clean/orders")
 
-# Asset with URI
-processed = Asset(
-    name="processed/acme",
-    uri="s3://bucket/processed/acme/"
-)
+with DAG("orders-etl", schedule="@daily") as producer:
 
-# Asset with a group
-processed = Asset(
-    name="processed/acme",
-    group="acme"
-)
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:clean-orders", outlets=[orders])
+    def clean():
+        pass
 
-# Asset with a weekly partition (default: daily)
-prices = Asset(name="pricing/prices", granularity="weekly")
+with DAG("orders-report", schedule=orders) as consumer:
+
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:build-report")
+    def build_report():
+        pass
 ```
 
-### Producer Task (outlets)
-
-```python
-@task.sfn(arn=..., outlets=[processed])
-def process_data():
-    """Emits asset event when task completes."""
-    pass
-```
-
-### Consumer DAG (schedule)
-
-```python
-with DAG(
-    "feeds",
-    schedule=[processed],  # Triggered when processed is ready
-) as dag:
-    ...
-```
+Granularity, AND/OR schedules, `wait_for` freshness and schemas: [ASSETS.md](ASSETS.md).
 
 ---
 
 ## Variables
 
-### `default_args` vs `variables` — how to pick
+### `default_args` or `variables`
 
-Both are DAG-level dicts, and at first glance they look the same. They aren't.
+Both are DAG-level dicts. They are not the same:
 
 | Question | `default_args` | `variables` |
 |----------|----------------|-------------|
-| What is it FOR? | Task **execution policy** — retry, timeout, role | Runtime **data** the task code / templates can read |
+| What is it for? | Task **execution policy**: retry, timeout, role | Runtime **data** the task code can read |
 | Fixed at DAG-definition time? | Yes | Yes (though values can be JSONata expressions computed at run start) |
-| Read by polyris internals? | Yes — merged into every task's common-parameter defaults | No — passed through to tasks as-is |
+| Read by polyris? | Yes: merged into every task's common-parameter defaults | No: passed through to tasks as-is |
 | Read by your task code? | No | Yes: a Lambda or `@task.sfn` task gets each variable as a key of its input (`event["batch_size"]`) |
 | Example | `{"retries": 3, "execution_timeout": timedelta(hours=4)}` | `{"batch_size": 500, "environment": "prod"}` |
 
-**Rule of thumb.** If it configures HOW a task runs, use `default_args`. If it's
-DATA the task processes, use `variables`.
+**Rule of thumb.** If it configures how a task runs, use `default_args`. If it is data the task processes, use `variables`.
 
-### Pipeline Variables
+### Pipeline variables
 
 ```python
+from polyris import DAG
+
 with DAG(
     "my-pipeline",
     variables={
         "run_id": "{% $states.context.Execution.Name %}",
         "environment": "prod",
-    }
+    },
 ) as dag:
     ...
 ```
 
-`variables` values may be static strings/numbers, or JSONata expressions (the `{% ... %}` form) evaluated when the pipeline execution starts. Each Lambda and `@task.sfn` task of the run gets the resolved values as keys of its input.
+`variables` values may be static strings or numbers, or JSONata expressions (the `{% ... %}` form) evaluated when the run starts. Each Lambda and `@task.sfn` task of the run gets the resolved values as keys of its input.
 
 ### Date variables
 
-A run has one date, the same for every task (ADR #133). It is the date the run was started for: the one you pick in the console, or, for a run an asset started, the date of that asset's fact. A run its schedule started gets the UTC day the schedule fired it for, even if it started after midnight; a run started any other way gets the UTC day it started.
+A run has one date, the same for every task. It is the date the run was started for: the one you pick in the console, or, for a run an asset started, the date of that asset's fact. A run its schedule started gets the UTC day the schedule fired it for, even if it started after midnight; a run started any other way gets the UTC day it started.
 
 The input of a Lambda or `@task.sfn` task also carries the run's date in several forms; a variable of yours with the same name wins. A Glue job, an ECS task or a Batch job gets the run's date as the environment variable `POLYRIS_RUN_DATE` (a Glue job: the argument `--POLYRIS_RUN_DATE`). For a run dated 2025-07-25:
 
@@ -688,21 +702,20 @@ The input of a Lambda or `@task.sfn` task also carries the run's date in several
 | `minus_7_days_compact`, `minus_30_days_compact` | `"20250718"`, `"20250625"` |
 | `partition_key` | `"2025-07-25"`: the same as `current_date` |
 | `PARTITION_ARG` | the run's own `PARTITION_ARG`, or `current_date` |
-| `backfill_id`, `is_backfill` | the backfill the run belongs to and `true`, or `""` and `false` |
 
 A run of an hourly, weekly or monthly partition has that partition's key as `current_date` (`"2025-07-25T06"`, `"2025-W30"`, `"2025-07"`). Every other form is that of the partition's first day: the day of the hour, the Monday of the week, the 1st of the month.
 
 ---
 
-## Complete Example
+## Complete example
 
 ```python
-from polyris import DAG, task, Asset
 import os
 
-STAGE = os.environ.get("POLYRIS_STAGE", "dev")
+from polyris import DAG, Asset, task
 
-# Assets
+STAGE = os.environ.get("POLYRIS_STAGE", "dev")   # polyris-deploy --stage sets it
+
 raw_data = Asset("raw/acme", group="acme")
 processed = Asset("processed/acme", group="acme")
 
@@ -710,109 +723,32 @@ with DAG(
     dag_id="acme-etl",
     schedule="@daily",
     description="Acme ETL pipeline",
-    tags=["production", "acme"]
+    tags=["production", "acme"],
 ) as dag:
-    
-    @task.sfn(
-        arn=f"arn:aws:states:us-east-1:123456789:stateMachine:scrape-{STAGE}",
-    )
+
+    @task.sfn(arn=f"arn:aws:states:us-east-1:123456789012:stateMachine:scrape-{STAGE}")
     def scrape():
         """Scrape product data."""
-        pass
-    
+
     @task.sfn(
-        arn=f"arn:aws:states:us-east-1:123456789:stateMachine:process-{STAGE}",
+        arn=f"arn:aws:states:us-east-1:123456789012:stateMachine:process-{STAGE}",
         outlets=[raw_data],
-        retries=2
+        retries=2,
     )
     def process():
         """Process raw data."""
-        pass
-    
-    @task.glue_job(
-        job_name=f"transform-{STAGE}",
-        outlets=[processed],
-        trigger_rule="all_success"
-    )
+
+    @task.glue_job(job_name=f"transform-{STAGE}", outlets=[processed])
     def transform():
         """Transform to final format."""
-        pass
-    
+
     @task.lambda_function(function_name=f"notify-{STAGE}", trigger_rule="all_done")
     def notify():
-        """Send completion notification."""
-        pass
-    
-    # Dependencies
-    s = scrape()
-    p = process(s)
-    t = transform(p)
-    notify(t)
+        """Send a completion message, whatever the outcome."""
 
-# Deploy
-# Deploy: polyris-deploy --stage $STAGE
+    scrape() >> process() >> transform() >> notify()
+
+# Deploy: polyris-deploy --stage dev
 ```
 
----
-
-## JSONata expressions (reference)
-
-The generated ASL uses **JSONata** as its query language. When writing
-custom `@task.sfn` bodies, `variables=` values, or reading intermediate
-state, these five patterns cover most cases:
-
-**Get today's date (UTC):**
-```
-{% $substringBefore($now(), 'T') %}
-```
-
-**Conditional / default:**
-```
-{% $exists($states.input.foo) ? $states.input.foo : 'default' %}
-```
-
-**String concatenation:**
-```
-{% 'prefix-' & $states.input.name & '-suffix' %}
-```
-
-**Filter an array:**
-```
-{% $filter($states.input.items, function($v) { $v.status = 'active' }) %}
-```
-
-**Merge two objects:**
-```
-{% $merge([$states.input, {'new_field': 'value'}]) %}
-```
-
-Full JSONata reference: [jsonata.org/docs](https://docs.jsonata.org/).
-
----
-
-## CLI Usage
-
-Run these from the pipeline directory:
-
-```bash
-# Validate pipeline
-polyris-validate
-
-# Validate with details
-polyris-validate -v
-
-# The Step Functions definition and its task specs
-polyris-output --json
-
-# Generate Mermaid diagram
-polyris-output --mermaid
-
-# Show DAG as ASCII graph
-polyris-output --graph
-
-# Generate asset registry JSON
-polyris-output --assets
-
-# Deploy
-polyris-deploy --stage dev
-```
+Commands to validate, preview and deploy a pipeline: [CLI.md](../reference/CLI.md).

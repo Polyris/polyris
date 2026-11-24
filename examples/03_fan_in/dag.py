@@ -47,7 +47,7 @@ with DAG(
         A fan-in task reads *every* upstream's output from ``upstream`` (keyed by
         task name), so must tolerate an upstream without output, a skipped or
         failed one. A failed upstream waits for a decision first, so `merge`
-        runs after it (ADR #114)::
+        runs after it::
 
             orders    = $states.input.upstream.extract_orders.output
             returns   = $states.input.upstream.extract_returns.output

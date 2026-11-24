@@ -51,7 +51,7 @@ the reasoning reads the code the way a reviewer would.
 
 For a fuzzy idea, before any code. Asks **one question at a time**, each with a
 recommended answer rather than a menu, and never asks what it could read from the
-repo. Settles the free/paid boundary, the contracts, and the vocabulary. Writes
+repo. Settles the scope, the tier (`CLAUDE.md`, *Repository context*), the contracts, and the vocabulary. Writes
 `docs/work/<slug>/DECISIONS.md` as terms resolve. Drafts an ADR only for a
 genuinely one-way decision — most sessions should add none.
 
@@ -59,7 +59,7 @@ Ends by telling you to open a new session. It does not implement.
 
 ### `/implement`
 
-One change, start to finish. Reads before writing, across both repos. For a bug
+One change, start to finish. Reads before writing. For a bug
 fix: failing test first, then the fix, then mutation-test it — re-introduce the
 bug and confirm the test catches it. Runs the gates. Sweeps the blast radius
 (CLAUDE.md #23). Reports what it found separately from what it fixed.
@@ -77,9 +77,7 @@ been lying. Five claims in the document were false. Three assertions in
 `ui/src/components/HelpModal.test.tsx` were pinning a bug in place while the same
 file documented the opposite behaviour.
 
-The skills live in `~/.claude/skills/` rather than here: they describe how one
-person works, not what Polyris is, and they follow you into other repos. Copies
-are in `.claude/skills/` for reference.
+The skills are in `.claude/skills/`. Copy them to `~/.claude/skills/` to use them in other repositories too ([Setup](#setup)).
 
 ---
 

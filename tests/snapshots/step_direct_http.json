@@ -358,6 +358,9 @@
                 },
                 "RequestBody": {
                   "event": "pipeline_done"
+                },
+                "Authentication": {
+                  "ConnectionArn": "arn:aws:events:us-east-1:123456789012:connection/webhook/0a1b"
                 }
               },
               "End": true,

@@ -1,75 +1,74 @@
 # polyris Documentation
 
-## Getting Started
+Start with the [README](../README.md): what polyris is, how to install it, and [Try it locally](../README.md#try-it-locally-no-aws) without AWS. Then follow the [Quickstart](getting-started/QUICKSTART.md). Terms such as run, asset or stage: [GLOSSARY.md](../GLOSSARY.md).
 
-| Document | Purpose | Reader |
-|----------|---------|--------|
-| [QUICKSTART.md](getting-started/QUICKSTART.md) | **How-to** — install polyris and run a first pipeline in ~15 min | I know what polyris does; show me how to install it |
-| [PROJECT_STRUCTURE.md](getting-started/PROJECT_STRUCTURE.md) | **Reference** — monorepo vs split-repo layouts, CI/CD patterns | I'm setting up a real project; show me the shape |
+## Getting started
 
-To explore the DSL locally without AWS, follow the "Try It Now" section in
-the [root README](../README.md#try-it-locally-no-aws) — install, `polyris-init`,
-inspect the ASL / graph / Mermaid output.
+| Document | What you get |
+|----------|---------|
+| [QUICKSTART.md](getting-started/QUICKSTART.md) | Install the platform and run a first pipeline in about 15 minutes |
+| [PROJECT_STRUCTURE.md](getting-started/PROJECT_STRUCTURE.md) | How to lay out your pipelines in a repository, and CI/CD patterns |
 
-## How-to Guides
-
-Task-oriented recipes for specific problems. Each answers one question.
+## How-to guides
 
 | Document | Question it answers |
 |----------|---------------------|
-| [configure-retries.md](how-to/configure-retries.md) | How do I set retries + backoff + jitter for a task, and when do I use each? |
-| [schedule-and-redeploy.md](how-to/schedule-and-redeploy.md) | When does the first run fire? How do I pause a schedule? What happens to in-flight runs when I redeploy? |
-| [manage-the-platform.md](how-to/manage-the-platform.md) | How do I upgrade polyris, change a setting, add users or a stage, switch a `sam deploy` stack, or remove it? |
-| [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | How do I test a pipeline without deploying to AWS? |
-| [REGISTRATION.md](features/REGISTRATION.md) | How do I manually register a pipeline (or diagnose why it's missing from the Console)? |
+| [configure-retries.md](how-to/configure-retries.md) | How do I set retries, backoff and jitter for a task? |
+| [schedule-and-redeploy.md](how-to/schedule-and-redeploy.md) | When does the first run fire? How do I pause a schedule? What happens to running runs when I redeploy? |
+| [manage-the-platform.md](how-to/manage-the-platform.md) | How do I upgrade polyris, change a setting, add users or a stage, or remove it? |
+| [upgrade-1.2-to-1.3.md](how-to/upgrade-1.2-to-1.3.md) | How do I upgrade a platform that runs 1.2? |
+| [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | How do I test a pipeline without AWS? |
+| [REGISTRATION.md](features/REGISTRATION.md) | How do I register a pipeline by hand, or find why it is missing from the console? |
 
 ## Features
 
 | Document | Description |
 |----------|-------------|
-| [DSL.md](features/DSL.md) | Python DSL reference |
-| [ASSETS.md](features/ASSETS.md) | Asset-based orchestration (including `wait_for` pull-based dependencies) |
-| [authentication.md](features/authentication.md) | Cognito authentication setup |
-
-## Tools
-
-| Document | Description |
-|----------|-------------|
-| [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | validate, dry_run, mock execution |
-| [DEVELOPMENT.md](tools/DEVELOPMENT.md) | Dev scripts, testing, code quality |
-
-## Deployment
-
-| Document | Description |
-|----------|-------------|
-| [DEPLOY.md](deployment/DEPLOY.md) | Pipeline deployment (polyris-deploy) |
-| [FROM_SOURCE.md](deployment/FROM_SOURCE.md) | Deploy polyris from a checkout (contributors), test the release archive |
-| [INFRASTRUCTURE.md](deployment/INFRASTRUCTURE.md) | What the polyris SAM stack deploys (resource inventory, stack outputs, SFN template sources) |
-| [IAM_PERMISSIONS.md](deployment/IAM_PERMISSIONS.md) | Minimum permissions for install / deploy / operate / remove |
-| [RELEASE.md](deployment/RELEASE.md) | Release process and the platform archive `polyris-up` installs |
-| [CROSS_ACCOUNT_ROLES.md](deployment/CROSS_ACCOUNT_ROLES.md) | Multi-account IAM setup |
+| [DSL.md](features/DSL.md) | The Python DSL: `DAG`, task types, trigger rules |
+| [DATA_PASSING.md](features/DATA_PASSING.md) | Passing data between tasks |
+| [ASSETS.md](features/ASSETS.md) | Assets: schedule a pipeline on data, and `wait_for` |
+| [notifications.md](features/notifications.md) | The console's bell: failures, decisions, warnings |
+| [authentication.md](features/authentication.md) | Console sign-in and users |
 
 ## Operations
 
 | Document | Description |
 |----------|-------------|
+| [UI.md](operations/UI.md) | The web console |
 | [API.md](operations/API.md) | REST API reference |
-| [UI.md](operations/UI.md) | Web Console guide |
-| [TROUBLESHOOTING.md](operations/TROUBLESHOOTING.md) | Common issues and solutions |
-
-## Architecture
-
-| Document | Description |
-|----------|-------------|
-| [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | System architecture |
-| [BACKEND.md](architecture/BACKEND.md) | Backend implementation |
+| [TROUBLESHOOTING.md](operations/TROUBLESHOOTING.md) | Symptoms, checks and fixes |
 
 ## Reference
 
 | Document | Description |
 |----------|-------------|
-| [CLI.md](reference/CLI.md) | Complete CLI reference — all commands and options |
-| [CONFIGURATION.md](reference/CONFIGURATION.md) | config.py settings, environments, cross-account roles |
-| [DESIGN_DECISIONS.md](reference/DESIGN_DECISIONS.md) | Key design decisions |
-| [STATE.md](reference/STATE.md) | Current state — in-flight, decided-but-not-done |
+| [CLI.md](reference/CLI.md) | Every command and its options |
+| [CONFIGURATION.md](reference/CONFIGURATION.md) | `config.py`: stages, namespaces, roles |
+| [GLOSSARY.md](../GLOSSARY.md) | The terms these docs use |
+
+## Deployment
+
+| Document | Description |
+|----------|-------------|
+| [INFRASTRUCTURE.md](deployment/INFRASTRUCTURE.md) | What the platform stack deploys: resources, outputs |
+| [IAM_PERMISSIONS.md](deployment/IAM_PERMISSIONS.md) | Minimum permissions to install, deploy, operate and remove |
+| [CROSS_ACCOUNT_ROLES.md](deployment/CROSS_ACCOUNT_ROLES.md) | Run tasks in other AWS accounts |
+| [FROM_SOURCE.md](deployment/FROM_SOURCE.md) | Deploy polyris from a checkout (contributors) |
+| [RELEASE.md](deployment/RELEASE.md) | Release process and the platform archive `polyris-up` installs |
+
+## Architecture
+
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | How polyris works |
+| [BACKEND.md](architecture/BACKEND.md) | The console API and its tables |
+| [DESIGN_DECISIONS.md](reference/DESIGN_DECISIONS.md), [adr-index.md](reference/adr-index.md) | Design decisions (ADRs) |
+
+## Contributing
+
+| Document | Description |
+|----------|-------------|
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | Set up a checkout and send a change |
+| [DEVELOPMENT.md](tools/DEVELOPMENT.md) | Tests, checks, CI, and how the console is built |
+| [AGENTIC_WORKFLOW.md](tools/AGENTIC_WORKFLOW.md) | The coding-agent workflow and its guards |
 | [TRADEMARK.md](reference/TRADEMARK.md) | Trademark and branding policy |

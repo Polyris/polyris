@@ -186,8 +186,8 @@ ACCESS_DENIED_CODES: frozenset[str] = frozenset({
 BACKFILLING_INDEX_MESSAGE = "Cannot read from backfilling global secondary index"
 
 
-# Schedule presets. Each fires at the start of its period in UTC, as the partition of its
-# run does: the hour, the day, the ISO week (Monday), the month, the year. A rate(...) fires
+# Schedule presets. Each fires at the start of its period in UTC: the hour, the day, the
+# ISO week (Monday), the month, the year. A rate(...) fires
 # at intervals counted from when the schedule was created, so @daily ran at the time of day
 # of the deploy until 1.3.1 (the docs audit after 1.3).
 SCHEDULE_PRESETS = {

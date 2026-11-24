@@ -1,433 +1,198 @@
 # Troubleshooting Guide
 
-Common issues and solutions for polyris operations.
+Symptoms you may meet when you deploy and run pipelines, what to check and how to fix each. Start from the console: the task modal, the bell and the **System** status name most causes.
 
-> **API auth (`AUTH_ENABLED=true`):** every API call below except `/api/health*`
-> and `/api/metrics` needs `-H "Authorization: Bearer $TOKEN"` where `$TOKEN`
-> is a Cognito ID token. Grab one from the Console (browser devtools → Network
-> → any authenticated request → copy `Authorization` header). A **401
-> Unauthorized** means a missing/expired token — sign out and sign in again.
-> See [authentication.md](../features/authentication.md).
+> **Note:** the checks below use the AWS CLI with credentials for the platform's account. Set these once:
+> ```bash
+> export NAMESPACE=mycompany   # the namespace you gave polyris-up
+> export STAGE=dev             # the stage you gave polyris-up
+> export API_URL=$(aws cloudformation describe-stacks --stack-name "${NAMESPACE}-${STAGE}" --query "Stacks[0].Outputs[?OutputKey=='ConsoleApiUrl'].OutputValue" --output text)   # ends with /dev
+> ```
+> API calls need `-H "Authorization: Bearer $TOKEN"`; how to get a token: [API.md → Authentication](API.md#authentication). A 401 means a missing or expired token.
 
 ---
 
-## Pipeline Issues
+## Pipeline issues
 
-> **Note:** Shell variables used in this guide — set once before running any commands:
-> ```bash
-> export API_URL=<your-console-api-url>  # e.g. https://abc123.execute-api.us-east-1.amazonaws.com
-> export NAMESPACE=<your-namespace>  # e.g. mycompany
-> export STAGE=<your-stage>  # e.g. dev
-> ```
-> Table names follow the pattern `${NAMESPACE}-${STAGE}-polyris-{table}`.
+### Runs fail at once: "Redeploy needed"
 
+**Symptoms:** the pipeline shows **redeploy** in the sidebar and **Redeploy needed** on its page, and each of its runs fails at once without starting a task. The run's Step Functions execution names the cause, for example `this platform runs pipelines of format …, and this pipeline was deployed with format …: redeploy it with polyris-deploy`.
+
+**Cause:** the pipeline was deployed by an older polyris than the platform runs, typically after a `polyris-up` upgrade.
+
+**Fix:** deploy the pipeline again with the polyris that matches the platform:
+```bash
+cd pipelines/my-pipeline && polyris-deploy --stage dev
+```
+Then start a run from the console. After an upgrade, redeploy every pipeline.
+
+---
+
+### Pipeline not in the console after deploy
+
+**Symptoms:** `polyris-deploy` finished, but the pipeline does not appear in the sidebar.
+
+**Check:**
+1. The output ends with `✅ my-pipeline deployed successfully!`. If it printed `❌ Could not record deploy time`, the pipeline was deployed but not recorded: run `polyris-deploy` again.
+2. The pipeline is in the registry:
+   ```bash
+   aws dynamodb get-item --table-name "${NAMESPACE}-${STAGE}-polyris-pipeline-registry" --key '{"pipeline_name": {"S": "my-pipeline"}}'
+   ```
+
+**Fix:** run `polyris-deploy` again, or `polyris-register --name my-pipeline` ([REGISTRATION.md](../features/REGISTRATION.md#manual-registration-cli)). Each run also registers its pipeline as its first step, so a run started in the AWS console brings it back too.
+
+---
 
 ### Pipeline doesn't start on schedule
 
-**Symptoms:** Pipeline should run daily but doesn't trigger.
+**Symptoms:** the pipeline has a schedule but no run starts.
 
-**Check:**
-1. EventBridge Scheduler schedule exists and is enabled:
-   ```bash
-   # Schedule name pattern: {namespace}-{stage}-polyris-{dag_id}-schedule
-   aws scheduler list-schedules --name-prefix "${NAMESPACE}-${STAGE}-polyris-"
-   aws scheduler get-schedule --name "${NAMESPACE}-${STAGE}-polyris-your-pipeline-schedule"
-   ```
+**Check:** the schedule exists and is enabled:
+```bash
+aws scheduler get-schedule --name "${NAMESPACE}-${STAGE}-polyris-my-pipeline-schedule"
+```
+`State` should be `ENABLED`. `DISABLED` means it was paused, by the AWS console or by `is_paused_upon_creation=True` on the DAG.
 
-   The `State` field should be `ENABLED`. If it's `DISABLED`, the schedule was
-   paused: **Enable** it in the AWS console, or remove
-   `is_paused_upon_creation=True` from the DAG and redeploy. See
-   [how-to/schedule-and-redeploy.md](../how-to/schedule-and-redeploy.md#pause-and-resume-a-schedule).
-
-2. Pipeline is registered:
-   ```bash
-   aws dynamodb get-item \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-pipeline-registry \
-     --key '{"pipeline_name": {"S": "your-pipeline"}}'
-   ```
-
-**Fix:** Re-deploy pipeline with `polyris-deploy`, or enable the schedule in the
-AWS console. `polyris-deploy` re-applies the DAG's declared schedule state on every
-deploy, so a pause made in the AWS console reverts the next time you deploy — set
-`is_paused_upon_creation=True` on the DAG if you want the pause to stick.
-
-polyris uses `AWS::Scheduler::Schedule` (EventBridge Scheduler), not the legacy
-`AWS::Events::Rule`. If your account was set up before v0.90-ish and you see
-`aws events list-rules` returning polyris rules, they're leftovers — safe to
-delete via console; polyris-deploy creates only Scheduler resources now.
+**Fix:** enable it in the AWS console, or remove `is_paused_upon_creation=True` and redeploy. Every `polyris-deploy` sets the schedule's state from the DAG again, so a pause made in the AWS console ends at the next deploy. See [schedule-and-redeploy.md](../how-to/schedule-and-redeploy.md#pause-and-resume-a-schedule).
 
 ---
 
-### Pipeline stuck in "running" state
+### Run stuck in "running"
 
-**Symptoms:** Pipeline shows running but no tasks are active.
+**Symptoms:** a run shows running, but none of its tasks is active.
 
 **Check:**
-1. **The bell:** a `coordination` warning that says "the run's token could not be answered" names the cause. The run answers again at each of its checks, every few minutes, until the answer goes through. If the cause stays, stop the run from the console.
-2. Step Functions execution status:
-   ```bash
-   aws stepfunctions list-executions \
-     --state-machine-arn "arn:aws:states:..." \
-     --status-filter RUNNING
-   ```
+1. **The bell:** a `coordination` warning about the run names what keeps it from ending. polyris tries again every few minutes.
+2. **Paused or waiting tasks:** a task in `waiting_paused` or `waiting_decision` keeps the run open until you resume the run or decide the task.
 
-3. Check for orphaned executions in DynamoDB.
-
-**Fix:** Stop the stuck execution via Console UI or API:
+**Fix:** if the cause stays, stop the run from the console, or:
 ```bash
-curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
-  -H "Authorization: Bearer $TOKEN"
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution=my-pipeline-run-2026-01-15-ab12cd34" -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-## Task Issues
+## Task issues
 
 ### Task stuck in "waiting"
 
-**Symptoms:** a task shows "waiting" although you expect its dependencies or assets to be in place.
+**Symptoms:** a task shows "waiting" although you expect its upstream tasks or assets to be in place.
 
 **Check:**
-1. **Why it waits.** Each check of the task logs one line with its `verdict` and `reasons`, such as `waiting for 1 dependencies` or the asset dates still missing:
-   ```bash
-   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-reconcile --since 2h \
-     --filter-pattern '"<execution_name>"'
-   ```
-   The execution name is in the task modal: `{task}-{date}-{run suffix}`.
-2. **Why it waits** in the task modal's Details tab: what its trigger rule makes of its upstreams, and the status of each.
-3. **Assets:** a `wait_for` asset needs a fact that serves the run's date (see [ASSETS.md § Granularity](../features/ASSETS.md#granularity)). A fact for another date, today's for instance, does not count.
-4. **Engine health:** an amber **System** pill in the console's header, or `checks.coordination.status` = `unhealthy` in `GET /api/health`, means waiting tasks may not be re-checked; see [The System pill says "needs attention"](#the-system-pill-says-needs-attention).
-5. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
+1. **Why it waits**, in the task modal's Details tab: the reasons polyris recorded (the upstream tasks or the asset data it waits for), what its trigger rule makes of its upstream tasks, and its deadline.
+2. **Assets:** a `wait_for` asset needs new data for the run's date ([ASSETS.md → Granularity](../features/ASSETS.md#granularity)). Data for another date, today's for instance, does not count.
+3. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
+4. **System status:** an amber **System** pill in the header means waiting tasks may not be re-checked; see [The System pill says "needs attention"](#the-system-pill-says-needs-attention).
 
 **Fix:**
-- A dependency or asset is missing: run its producer for that date, or mark the upstream task successful in the console; its facts are dated by its own run.
-- Everything is in place: the sweeper re-checks a waiting task 10, 20, then every 30 minutes and starts it at the next check. A `sweeper` warning in the bell says the regular wake-up was lost on the way.
+- An upstream task or asset is missing: run its producer for that date, or mark the upstream task successful in the console.
+- Everything is in place: polyris re-checks a waiting task after 10 and 20 minutes, then every 30 minutes, and starts it at the next check. A `sweeper` warning in the bell means the instant wake-up was lost.
 - The task should not wait at all: skip it or mark it successful from the task modal.
 
 ---
 
 ### Task fails immediately
 
-**Symptoms:** Task goes to "failed" within seconds.
+**Symptoms:** a task goes to "failed" within seconds. The task modal's Details tab shows the error.
 
 **Check:**
-1. **Task ARN** is correct:
+1. **The task's ARN** exists:
    ```bash
-   aws stepfunctions describe-state-machine --state-machine-arn "your-task-arn"
+   aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job"
    ```
-
-2. **IAM permissions** — the orchestration role, which runs `run_task`, can start the task:
+2. **IAM permissions:** the orchestration role, which starts the task's work, may start it:
    ```bash
-   aws iam simulate-principal-policy \
-     --policy-source-arn "arn:aws:iam::<account>:role/<Namespace>-<Stage>-polyris-orchestration-role" \
-     --action-names "states:StartExecution" \
-     --resource-arns "task-arn"
+   aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::123456789012:role/${NAMESPACE}-${STAGE}-polyris-orchestration-role" --action-names "states:StartExecution" --resource-arns "arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job"
    ```
+3. **The work's own logs** in CloudWatch, for an error inside the job.
 
-3. **Task logs** — check CloudWatch for the actual error.
-
-**Fix:** Fix IAM permissions or task ARN, then restart.
+**Fix:** correct the ARN or the permissions, then restart the task.
 
 ---
 
 ### Task shows "upstream_failed"
 
-**Symptoms:** Task blocked due to upstream failure.
+**Symptoms:** a task did not run because an upstream task failed.
 
-**This is expected behavior** when `trigger_rule="all_success"` (default) and an upstream failed.
-
-**Options:**
-1. Fix the cause, then restart the failed upstream and tick *Also rerun the dependants its failure or stop decided*: the task waits for the upstream's new outcome.
-2. Skip the failed upstream, then restart this task: it decides again from its upstreams.
+This is expected when `trigger_rule="all_success"` (the default). Choose one:
+1. Fix the cause, then restart the failed upstream task and tick *Also rerun the dependants its failure or stop decided*: the task waits for the upstream task's new outcome.
+2. Skip the failed upstream task, then restart this task: it decides again from its upstream tasks.
 3. Change `trigger_rule` to `all_done` and redeploy, for later runs.
 
 ---
 
-### Task shows "skipped" with no failure anywhere in the pipeline
+### Task shows "skipped" with no failure anywhere
 
-**Symptoms:** A task using a conditional `trigger_rule` (e.g. `all_skipped`,
-`none_skipped`) resolves `skipped`, and the run still shows `success`, even though
-nothing upstream failed.
+**Symptoms:** a task with a conditional `trigger_rule` (such as `all_skipped` or `none_skipped`) ends `skipped`, and the run still shows `success`.
 
-**This is expected behavior (ADR #115).** The task's trigger condition never occurred — e.g. an `all_skipped` task with no skipped upstreams has nothing to react to. No action needed — this is not an error.
+This is expected: the task's condition never occurred. An `all_skipped` task with no skipped upstream task has nothing to react to.
 
 ---
 
-### An `all_success` task shows "skipped" even though its upstream ran fine
+### An `all_success` task shows "skipped" because its upstream was skipped
 
-**Symptoms:** An `all_success` task (the default) resolves `skipped` instead of
-running, and its upstream dependency is itself `skipped` — not failed.
+**Symptoms:** an `all_success` task (the default) ends `skipped` instead of running, and its upstream task is `skipped`, not failed.
 
-**This is expected behavior (ADR #115).** A skip by a trigger rule cascades through `all_success`.
-Check *why* the upstream was skipped:
-1. If an operator skipped it (task action), or the run did (`skip_tasks`), the skip
-   does **not** cascade. So if you're seeing this, the skip likely came from a
-   trigger_rule resolving `skipped` further upstream in the same chain: a skip with
-   `skip_origin = rule` does cascade.
-2. If you want this task to proceed regardless of an upstream skip, change its
-   `trigger_rule` to `all_done`.
+A skip by a trigger rule passes on through `all_success`; a skip by an operator, or by the run's `skip_tasks`, does not. So the skip came from a trigger rule further upstream in the same chain. To run the task whatever its upstream task did, set its `trigger_rule` to `all_done`.
 
 ---
 
-## Asset Issues
-
-### Pipeline not in UI after deploy
-
-**Symptoms:** Deployed with `polyris-deploy` but pipeline doesn't appear in sidebar.
-
-**Check:**
-1. `polyris-deploy` output ends with `✅ Pipeline deployed successfully!` and shows a registration step. If the deploy printed `❌ Could not record deploy time`, the pipeline was deployed but `registered_at` was not stamped — re-run `polyris-deploy`.
-
-2. Pipeline exists in registry:
-   ```bash
-   aws dynamodb get-item \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-pipeline-registry \
-     --key '{"pipeline_name": {"S": "my-pipeline"}}'
-   ```
-
-**Fix:**
-- If the DDB row is missing: `polyris-deploy` again (retry) or `polyris-register --name my-pipeline`. See [REGISTRATION.md](../features/REGISTRATION.md#manual-registration-cli).
-- Every pipeline run also self-heals registration as its first state, so if you can trigger a run manually the pipeline reappears in the sidebar automatically.
-
----
+## Asset issues
 
 ### Asset-triggered pipeline doesn't run
 
-**Symptoms:** Asset updated but consumer pipeline didn't start.
+**Symptoms:** an asset got new data, but the pipeline scheduled on it did not start.
 
 **Check:**
-1. **Asset subscription exists**:
+1. **The pipeline is subscribed** to the asset:
    ```bash
-   aws dynamodb query \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-asset-subscriptions \
-     --key-condition-expression "asset_name = :asset" \
-     --expression-attribute-values '{":asset": {"S": "your-asset"}}'
+   aws dynamodb query --table-name "${NAMESPACE}-${STAGE}-polyris-asset-subscriptions" --key-condition-expression "asset_name = :asset" --expression-attribute-values '{":asset": {"S": "raw/orders"}}'
    ```
-
-2. **Asset event was emitted**:
+2. **The asset's new data was recorded:**
    ```bash
-   aws dynamodb query \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-asset-events \
-     --key-condition-expression "asset_name = :asset" \
-     --expression-attribute-values '{":asset": {"S": "your-asset"}}' \
-     --scan-index-forward false \
-     --limit 5
+   aws dynamodb query --table-name "${NAMESPACE}-${STAGE}-polyris-asset-events" --key-condition-expression "asset_name = :asset" --expression-attribute-values '{":asset": {"S": "raw/orders"}}' --no-scan-index-forward --limit 5
    ```
-
-3. **The fan-out handled the event** — asset-fanout logs every fact it reads and every pipeline it starts:
-   ```bash
-   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-asset-fanout --since 1h \
-     --filter-pattern '"your-asset"'
-   ```
+3. **The bell** has a `push` warning when polyris could not start the pipeline; it tries again.
 
 **Fix:**
-- If subscription missing: re-deploy consumer pipeline
-- If event missing: re-run the producer. A producer whose success could not be recorded waits for a decision (`waiting_decision`) with the cause; fix it, then restart the task
-- If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
+- No subscription: redeploy the consumer pipeline.
+- No recorded data: run the producer again. A producer whose success could not be recorded waits for a decision (`waiting_decision`) with the cause; fix it, then restart the task.
+- The schedule names several assets: the pipeline starts once every asset has data for the same date (for a weekly or monthly asset, that week or month, or the one before). Produce the missing asset; the run starts once its data is recorded.
 
 ---
 
-## Coordination Issues
+## The System pill says "needs attention"
 
-### The System pill says "needs attention"
+The **System** pill in the console's header turns amber when task coordination or the console's own checks need attention, and a toast names each new problem once. Click the pill: the **System status** panel lists each problem with the resource it concerns, what still works, the fix and a command you can copy. After a fix, the next check clears it within 5 minutes. `GET /api/health` with a token returns the same list in `findings` ([API.md → Health](API.md#health)).
 
-The **System** pill in the console's header turns amber when task coordination or the console's own checks need attention, and a toast names each new problem once. Click the pill: the **System status** panel lists every problem with the resource it concerns, its impact, its fix and a command you can copy. After a fix, the sweeper's next check clears it within 5 minutes; reopen the panel to see it at once. With a valid token, or with auth off, `GET /api/health` returns the same list in `findings`, commands included, for an operator without the console.
+Each problem in the panel says what still works and what to do. Until it clears, tasks may start up to 30–40 minutes late. "No check has run yet" is normal for the first 5 minutes after an install or upgrade.
 
-While a problem shows, tasks may start late. The panel tells you what to do; the table says what still works.
-
-| Problem | What still works, and what else to know |
-|---------|-----------------------------------------|
-| No check has run yet | Normal for the first 5 minutes after an install or upgrade. Tasks still start from their signals |
-| The periodic re-check is not running | Tasks still start from the streams. A task whose wake-up was lost waits, and no limit, countdown or decision timeout ends, until the check runs again. A sweeper that fails on every run shows its error in its logs |
-| Asset event delivery is off, or is not set up | The sweeper still starts waiting tasks at their checks, up to 40 minutes late, and its hourly catch-up starts asset-scheduled pipelines. A mapping that a deploy is creating or updating counts only once it stays so for 15 minutes. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
-| Asset event delivery is failing | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Records wait in the stream for 24 hours, and the sweeper still wakes waiting tasks at their checks |
-| Asset events are not recorded for delivery | The stream of the asset-events table was turned off outside polyris. Turning it on again makes a new stream, so asset-fanout needs a new trigger on it, and the old trigger goes |
-| Asset event delivery, or asset event recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
-| Waiting tasks are behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
-| Task delivery is off, is not set up, or is failing | Finished tasks start their dependants, and runs end, only at their run's periodic check, up to 30 minutes late. A record that keeps failing holds back the runs of its shard until it leaves the stream after 24 hours; the dispatcher's logs (the `reconcile` function) name its cause. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
-| Task changes are not recorded for delivery | The stream of the tasks table was turned off outside polyris. The periodic check still decides every task, up to 30 minutes late. Turning the stream on again makes a new stream, so the dispatcher needs a new trigger on it, and the old trigger goes |
-| Task delivery, or task change recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
-| Runs missed their wake-ups | The last check found runs whose tasks waited for it although they could have gone on earlier. The bell names each run once. Many runs at every check point to a stream record that keeps failing: read the dispatcher's logs |
-| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step. For checking the runs that are due, it means that most passes over runs failed: the bell names each run, and the sweeper's logs the cause |
-| The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
-| The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
-
-A grey **System · status unknown** means the console could not read `/api/health`, or could not read its answer. An amber **System · no connection** means the console cannot reach its API at all: check your connection and the API URL in `config.js`. An amber **System · API error** means the API answers the pipeline list with an error, such as an expired sign-in or a 500: the panel says which. The console retries on its own; **Retry now** in the panel retries at once.
+A grey **System · status unknown** means the console could not read `/api/health`. An amber **System · no connection** means the console cannot reach its API: check your connection, and see [Console shows "Loading..." forever](#console-shows-loading-forever). An amber **System · API error** means the API answers with an error, such as an expired sign-in or a 500: the panel says which. The console retries on its own; **Retry now** retries at once.
 
 ---
 
-## Deployment Issues
+## Deployment issues
 
-### "SAM stack '…' is missing required outputs" error
+### "Stack … is in ROLLBACK_COMPLETE" from polyris-deploy
 
-**Symptoms:** `polyris-deploy` fails with the SAM stack missing outputs (`StartRunFunctionArn`, `OrchestrationRoleArn`, …). It reads them from the platform stack's CloudFormation outputs.
+**Symptoms:** `polyris-deploy` stops with `Stack mycompany-dev-polyris-my-pipeline is in ROLLBACK_COMPLETE (its first create failed) and can't be updated. Delete it, then deploy again.`
 
-**Check:**
-1. Shared infrastructure is deployed and the outputs are present:
-   ```bash
-   aws cloudformation describe-stacks \
-     --stack-name "$STACK_NAME" \
-     --region "$AWS_REGION" \
-     --query "Stacks[0].Outputs[*].OutputKey" \
-     --output table
-   ```
-   You should see `StartRunFunctionArn`, `OrchestrationRoleArn`,
-   `PipelineRegistryTable`, `PipelineTokensTable`, `PipelineSpecsTable`,
-   `AssetSubscriptionsTable`, `ResultsBucket`. A platform older than your
-   polyris lacks some of them: upgrade it with `polyris-up`.
-
-2. The stack you're pointing at is the SAM stack, not a pipeline stack.
-   `config.py`'s `stack_name` must match `sam/samconfig.toml`'s
-   `stack_name`.
+The pipeline stack's first create failed, and CloudFormation cannot update such a stack. Find the cause in the stack's events in the CloudFormation console, remove the stack with `polyris-destroy`, fix the cause, and run `polyris-deploy` again.
 
 ---
 
-### "Stack already exists" from polyris-deploy
+### "Platform stack '…' is missing required outputs"
 
-**Symptoms:** `polyris-deploy` fails with `AlreadyExistsException — stack {name} already exists`.
+**Symptoms:** `polyris-deploy` stops with this message and names the missing outputs (`OrchestrationRoleArn`, `PipelineSpecsTable`, `StartRunFunctionArn`).
 
-This means a pipeline stack of the same name was created by an earlier
-`polyris-deploy` (or by hand via CloudFormation console) and CloudFormation
-refuses to create it again.
+**Cause:** the platform is older than your polyris. **Fix:** upgrade it with `polyris-up`.
 
-**Check:**
+Also check that `--stack`, or `stack_name` in `config.py`, names the platform stack (`<namespace>-<stage>`, the one `polyris-up` installed), not a pipeline stack:
 ```bash
-# List polyris pipeline stacks
-aws cloudformation list-stacks \
-  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE \
-  --query 'StackSummaries[?contains(StackName, `polyris-`)].[StackName,StackStatus]' \
-  --output table
-```
-
-**Fix — pick one:**
-
-- **If the stack is yours and you want to update it.** `polyris-deploy` already
-  performs an UpdateStack when the stack exists; if you're seeing this error it
-  usually means a prior create failed halfway and the stack is in `ROLLBACK_COMPLETE`.
-  Delete it, then re-deploy:
-  ```bash
-  aws cloudformation delete-stack --stack-name {namespace}-{stage}-polyris-{dag_id}
-  aws cloudformation wait stack-delete-complete --stack-name {namespace}-{stage}-polyris-{dag_id}
-  polyris-deploy
-  ```
-
-- **If the stack is someone else's** (namespace collision), change your
-  `namespace` in `pipelines/config.py` and redeploy — every polyris pipeline
-  stack is named `{namespace}-{stage}-polyris-{dag_id}`, so distinct namespaces
-  don't collide.
-
----
-
-## Console UI Issues
-
-### UI shows "Loading..." forever
-
-**Check:**
-1. API URL is correct in `public/config.js` or `.env.local`
-2. CORS is configured on API Gateway
-3. Browser console for errors (F12 → Console)
-
-**Fix:** Run `polyris-up` again, which rewrites `config.js` from the stack's outputs; on a stack deployed from a checkout, run `ui/deploy.sh`. For local dev, check `ui/public/config.js` or `ui/.env.local`.
-
----
-
-### UI not updating automatically
-
-**Symptoms:** Need to manually refresh to see changes.
-
-**Check:** The **Auto** toggle in the header is on: it polls every 30 seconds, and every 15 seconds while a task counts down its `wait_before`.
-
-**Fix:** Check browser console for polling errors. May indicate API issues.
-
----
-
-## Lambda Issues
-
-### console_api 502 errors
-
-**Symptoms:** API returns 502 Bad Gateway.
-
-**Check:**
-1. Lambda execution logs in CloudWatch
-2. Lambda memory/timeout settings
-3. API Gateway integration timeout (29s max)
-
-**Fix:** Increase Lambda memory (faster cold starts) or optimize slow routes.
-
----
-
-## Emergency Procedures
-
-### Stop runaway execution
-
-```bash
-# Via Console UI: Stop button
-
-# Via API:
-curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Via AWS CLI (the engine stops the run's tasks at its next check of the run, up to 30 minutes later):
-aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
+aws cloudformation describe-stacks --stack-name "${NAMESPACE}-${STAGE}" --query "Stacks[0].Outputs[*].OutputKey" --output table
 ```
 
 ---
-
-### Manually complete stuck task
-
-**Use when:** Task is stuck but you verified work is done (checked logs, S3, etc.)
-
-```bash
-# Via Console UI: Task modal → "Mark Successful" button
-
-# Via API:
-curl -X POST ${API_URL}/api/task-success?name={execution_name} \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"reason": "Manually verified completion"}'
-```
-
----
-
-### Force restart pipeline for date
-
-```bash
-# Via Console UI: Pipeline → Run button → set "current_date" in the parameters
-
-# Via API:
-curl -X POST ${API_URL}/api/pipeline-run?name={name} \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"current_date": "2026-01-15"}}'
-```
-
----
-
-## Common Setup Errors
-
-### `ModuleNotFoundError: No module named 'polyris'`
-
-**Symptoms:** `polyris-deploy` or `polyris-validate` fails with
-`ModuleNotFoundError: No module named 'polyris'`, or `python -c "from polyris import DAG"` fails.
-
-**Fix:** Install the SDK into the Python environment your shell is using.
-Pick a git tag from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
-(e.g. `v1.3.0`, the version of your platform) and substitute it for `<VERSION>` below.
-
-```bash
-# Option A — from a git tag (recommended for pipeline repos)
-pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
-
-# Option B — from a local checkout (for development)
-cd /path/to/polyris && pip install -e .
-
-# Verify
-python -c "from polyris import DAG, task; print('✓ polyris installed')"
-```
-
-If you're using a virtualenv, activate it first (`source .venv/bin/activate`),
-then run the install command. `which python && which polyris-deploy` should
-point into the same `bin/` directory as the venv.
 
 ### `Unknown stage 'dev'`
 
@@ -443,3 +208,64 @@ ENVIRONMENTS = {
 }
 ```
 
+See [CONFIGURATION.md](../reference/CONFIGURATION.md).
+
+---
+
+### `polyris-deploy: command not found` or `No module named 'polyris'`
+
+**Fix:** the `polyris-*` commands come from install.sh, which installs polyris in an environment of its own ([README → Install](../../README.md#install)). Run it again, and add `~/.local/bin` to `PATH` if it says so.
+
+To import polyris in your own Python (tests, CI):
+```bash
+pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
+```
+Use the tag of your platform's version.
+
+---
+
+## Console issues
+
+### Console shows "Loading..." forever
+
+**Check:**
+1. Open `<console URL>/config.js`: its `API_URL` should be the `ConsoleApiUrl` stack output followed by `/api`.
+2. The browser's console (F12 → Console) for errors.
+
+**Fix:** run `polyris-up` again; it rewrites `config.js` from the stack's outputs.
+
+---
+
+### Console doesn't update on its own
+
+**Check:** the **Auto** toggle in the header is on. It refreshes every 30 seconds, and every 15 seconds while a task counts down its `wait_before`. If it is on, the browser's console shows the failing requests.
+
+---
+
+## Emergency procedures
+
+### Stop a runaway run
+
+In the console, press **Stop** on the run. Or:
+
+```bash
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution=my-pipeline-run-2026-01-15-ab12cd34" -H "Authorization: Bearer $TOKEN"
+```
+
+A run stopped with `aws stepfunctions stop-execution` instead has its tasks stopped at polyris's next check of the run, up to 30 minutes later.
+
+### Mark a stuck task successful
+
+Use when the work is done (you checked its logs or its output) but the task did not record it. In the task modal, press **Mark Successful**. Or:
+
+```bash
+curl -X POST "${API_URL}/api/task-success?name=load-2026-01-15--2026-01-15-ab12cd34" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"reason": "Manually verified completion"}'
+```
+
+### Run a pipeline for a past date
+
+In the console, press **Run** and set `current_date` in the parameters. Or:
+
+```bash
+curl -X POST "${API_URL}/api/pipeline-run?name=my-pipeline" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"input": {"current_date": "2026-01-15"}}'
+```

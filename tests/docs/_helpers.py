@@ -25,8 +25,8 @@ DOCS_DIR = REPO_ROOT / "docs"
 DEFAULT_SKIP_GLOBS = (
     "docs/reference/DESIGN_DECISIONS.md",
     "docs/reference/adr-[0-9]*.md",
-    "docs/reference/SPIKE_*.md",
-    "docs/reference/COMPLETENESS_REPORT_*.md",
+    "docs/design/SPIKE_*.md",
+    "docs/design/COMPLETENESS_REPORT_*.md",
     "docs/CLAUDE.md",
     "CHANGELOG.md",
 )

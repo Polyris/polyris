@@ -1,7 +1,6 @@
 # STATE.md — where things stand
 
-Twenty lines, not a changelog. What a session needs to know before touching
-anything. `CHANGELOG.md` is the history; this is the present.
+A short page, not a changelog: what a session needs to know before touching anything. `CHANGELOG.md` is the history; this is the present.
 
 Update it when something moves. Paths here are checked by
 `tests/sdk/test_context_terms.py`.
@@ -16,10 +15,7 @@ Update it when something moves. Paths here are checked by
 
 ## Decided, not done
 
-- **`useBackfillsListQuery` belongs in EE.** Its last free caller became the paid
-  `BackfillNavTab`, so by ADR #99's own rule it should live under
-  `ui/src/ee/team/hooks/queries/`. Left in the free tree as dead code pointing at
-  a route that 404s there. Moving it is a cross-repo contract change (#6).
+- **Two query hooks have no caller in this repository.** `useBackfillsListQuery` (`ui/src/hooks/queries/useBackfillQueries.ts`) and `useCalendarExecutionsQuery` (`ui/src/hooks/queries/usePipelineQueries.ts`) are exported but used by no component here, and the first calls a route this console does not serve. Moving them out changes a contract (#6), so it waits for the maintainer.
 - **The init wizard ignores an explicit "none"** for dependencies.
   `_build_custom_pipeline` cannot tell "never asked" from "declined", so the
   sequential-chain fallback overrides the answer and a fan-out of independent

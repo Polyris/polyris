@@ -11,7 +11,13 @@
 - The console's help lists the task statuses of 1.3: Needs decision is there, Waiting Delay, Pending and Aborted are gone, and a paused task waits for its run's Resume. In the task detail, `H` opens the History tab (it was `T`) and `O` opens Input / Output.
 - After an update, `polyris-up` no longer suggests "a first pipeline" to a platform that runs pipelines.
 - `polyris-register --name` without `--region` says it searches the region of your AWS profile, and its help no longer promises `us-east-1`.
+- `polyris-init --local` writes example ARNs (account 123456789012) that `polyris-validate` and `polyris-local` accept: the path without AWS runs from its first command. It wrote `REGION` and `ACCOUNT_ID` placeholders, and the first validation failed.
+- `polyris-init --project` ends with the steps that keep a pipeline next to its `config.py` (`cd pipelines && polyris-init my-pipeline`) and with the `polyris-up` command for the config's namespace. A pipeline made where it said found no config, and `--stage` went unread. The config it writes names the platform stack `polyris-up` creates.
+- A schedule that is neither a preset nor an EventBridge expression is refused when the DAG is made, with the form to write: `"0 9 * * MON-FRI"` becomes `cron(0 9 ? * MON-FRI *)`. It passed `polyris-validate` and failed the deploy.
+- `HttpTask` requires `connection_arn`: Step Functions calls an HTTP endpoint through an EventBridge connection, and the pipeline passed validation and failed at its run.
+- `polyris-destroy --help` describes the destroy, `polyris-init --help` prints its examples on their own lines, `polyris-deploy` names the platform stack in its summary and errors (never a SAM stack or `samconfig.toml`), and `polyris-validate -v` prints the schedule and the task count.
 - The docs match what 1.3 ships: the console as this repository builds it, the engine of 1.3 instead of 1.2's wrappers and task tokens, the routes and their fields, the CLI's commands and flags, and an authentication guide whose steps run. The README describes how a run works and compares polyris with Amazon MWAA Serverless.
+- The docs are written for a reader who installed with `polyris-up`: no `sam deploy`, `samconfig.toml` or `ui/deploy.sh` outside the from-source guide, no engine words or ADR numbers in user docs. New: `GLOSSARY.md`, `docs/how-to/upgrade-1.2-to-1.3.md`, the direct steps, `chain()`, `cross_downstream()`, `TaskGroup` and `is_paused_upon_creation` in `DSL.md`. Moved: `docs/features/alerts.md` to `notifications.md`, the deploy guide into `docs/reference/CLI.md`, the console's contributor notes into `docs/tools/DEVELOPMENT.md`, and the historical spikes and reports into `docs/design/`.
 
 ## v1.3.0 - 2026-11-24
 

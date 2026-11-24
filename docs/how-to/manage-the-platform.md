@@ -11,35 +11,13 @@ curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.s
 polyris-up
 ```
 
-It updates the stack in place and keeps its settings. With nothing new it reports "already up to date". An older polyris won't roll back a newer platform unless you pass `--allow-downgrade`, and nothing rolls a 1.3 platform back below 1.3: a failed update rolls itself back.
+It updates the stack in place and keeps its settings. With nothing new it reports "already up to date". A failed update rolls itself back. An older polyris won't roll back a newer platform unless you pass `--allow-downgrade`.
 
 When the release notes ask for it, add `--disable-rollback`. A failed update then keeps what it already changed instead of rolling back; fix the cause its events name and run the same command again.
 
 If a change would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user, `polyris-up` lists it and asks before continuing. Without a terminal (CI) it stops unless you pass `--accept-data-loss`; `--yes` never covers data loss.
 
-## Upgrade from 1.2 to 1.3
-
-1.3 adopts no run that 1.2 started, so this upgrade has steps of its own. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until its adoption of older rows has been finished for 48 hours.
-
-1. Install polyris 1.3 and run `polyris-validate --all` in the folder that holds your pipelines' folders. Fix what it reports: a pipeline it refuses cannot be redeployed in step 5. Rebuild every bundle of the SDK with 1.3 too: a Lambda's package, a Glue job's wheel, an ECS or Batch image.
-2. Grant the roles their new permissions: [IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#upgrade-from-12-to-13).
-3. Disable the pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`), so that no new run starts. Deal with failed runs: a run started on 1.2 takes no action after the upgrade. Then let the runs in flight finish, or stop them.
-4. Run `polyris-up`. A failed update rolls back to 1.2: enable the schedules again, and the platform runs as before.
-5. Redeploy every pipeline with `polyris-deploy`. The redeploy turns the pipeline's schedule back on; `is_paused_upon_creation=True` keeps it off. Then start again the runs whose schedule fired during the window and the push runs whose facts came during it: such a run failed at once, and nothing starts it again.
-
-Before it changes anything, `polyris-up` checks the platform and refuses when:
-
-- the platform is older than 1.2.0;
-- 1.2 has not finished adopting the rows and facts of older versions, or finished less than 48 hours ago: until then they need code that 1.3 removes;
-- a run is in flight.
-
-Each refusal says what to do. To upgrade although a run may be in flight or 1.2's adoption has not settled, pass `--accept-stopped-runs`. No flag upgrades a platform older than 1.2.0.
-
-No run of 1.2 goes on after the upgrade. Once the update has succeeded, `polyris-up` stops what 1.2 left running and prints the runs it stopped: start those again after step 5. A run of a pipeline that you have redeployed since is kept.
-
-After the update, `polyris-up` waits until DynamoDB has built the index that the console's run lists read (`run-start-index`): about 8 minutes on a table of 100,000 rows. You can interrupt that wait; the console says that the index is being built until it is. At the end it lists the pipelines that still need a redeploy, with the command for each. A later `polyris-up` lists them again, until none is left.
-
-If the upgrade is interrupted, or `polyris-up` reports that it could not stop an execution, fix the cause and run `polyris-up` again. It stops what is left and goes on, also while CloudFormation still cleans up after the update.
+From 1.2: follow [upgrade-1.2-to-1.3.md](upgrade-1.2-to-1.3.md) — it has steps of its own.
 
 ## Change a setting
 
@@ -74,7 +52,7 @@ Run `polyris-up` once per stage:
 polyris-up --namespace acme --stage prod --admin-email you@acme.com
 ```
 
-With several platforms in one region, name the one you mean: `polyris-up --stack acme-prod`. For pipelines, create `pipelines/config.py` with `polyris-init --project` and set `stack_name` per stage ([CONFIGURATION.md](../reference/CONFIGURATION.md)); then `polyris-deploy --stage prod`.
+With several platforms in one region, name the one you mean: `polyris-up --stack acme-prod`. For pipelines, add the stage to `pipelines/config.py` ([PROJECT_STRUCTURE.md](../getting-started/PROJECT_STRUCTURE.md#stages)); then `polyris-deploy --stage prod`.
 
 ## Track costs
 

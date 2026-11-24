@@ -196,7 +196,8 @@ def _build_step_direct_http():
             url="https://api.example.com/webhook",
             method="POST",
             headers={"Content-Type": "application/json"},
-            body={"event": "pipeline_done"}
+            body={"event": "pipeline_done"},
+            connection_arn="arn:aws:events:us-east-1:123456789012:connection/webhook/0a1b",
         )
 
         process()

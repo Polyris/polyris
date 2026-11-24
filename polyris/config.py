@@ -13,7 +13,7 @@ Example config.py in your pipelines repo:
     # config for that stage.
     ENVIRONMENTS = {
         "dev": {
-            "stack_name": "polyris-dev",   # SAM stack name (matches samconfig.toml)
+            "stack_name": "polyris-dev",   # the platform stack polyris-up created: <namespace>-<stage>
             "namespace": "acme",
             "region": "us-east-1",
             "profile": "my-dev-profile",   # optional

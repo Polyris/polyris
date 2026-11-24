@@ -1,28 +1,25 @@
-# Asset-Based Orchestration
+# Asset-based orchestration
 
-> **⚠️ Experimental (v0.93.0).** Assets are an experimental feature: the API (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may change. See [Known limitations](#known-experimental-limitations) below. Not recommended for production pipelines. Silence the runtime warning with `warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)`.
+> **Experimental.** Assets are an experimental feature: the API (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may change. See [Known experimental limitations](#known-experimental-limitations). Not recommended for production pipelines. Silence the runtime warning with `warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)`.
 > <!-- EXPERIMENTAL-ASSETS: remove this banner when assets graduate to stable. -->
 
+## Overview
+
+Assets link pipelines through the data they produce, without references from one pipeline to another. When a producer task succeeds, polyris records a [fact](../../GLOSSARY.md#fact) of each asset it produces, dated by its run's date; consumers start or continue on that fact.
+
+**Key concepts:**
+- **Asset**: a named piece of data (file, table, dataset)
+- **Producer**: a task that creates an asset (`outlets=[...]`)
+- **Consumer**: a pipeline that starts when an asset is ready (`schedule=[...]`), or a task that waits for it (`wait_for=[...]`)
+
+`polyris-output --assets` lists the assets that the pipeline file in the current folder declares, with their producers and consumers within that file.
 
 ## Known experimental limitations
 
 | Area | Current behavior |
 |------|------------------|
-| Partitions below a day | A run's partition is its date. Runs more often than daily share their day's partition, and an hourly asset's facts count for the whole day. |
-| Wake-up after a lost hint | A task normally starts within seconds of its last condition. If its wake-up hint is lost, the sweeper starts it at its next check, at most about 40 minutes later, and the bell shows a `sweeper` warning. |
-
-
-## Overview
-
-polyris supports asset-based orchestration — cross-pipeline dependencies
-without hardcoded references between pipelines.
-
-**Key concepts:**
-- **Asset** — a data artifact (file, table, dataset)
-- **Producer** — task that creates an asset (via `outlets=[...]`)
-- **Consumer** — DAG that triggers when asset is ready (via `schedule=[...]`)
-
-`polyris-output --assets` prints every asset with the tasks that produce and consume it.
+| Partitions below a day | A scheduled run is dated by its day, so runs more often than daily share their day's partition, and an hourly asset's facts count for the whole day. |
+| A late start | A waiting task normally starts within seconds of its last condition. If that signal is lost, polyris starts the task at its next check, at most about 40 minutes later, and the bell shows a `sweeper` warning. |
 
 ## Contents
 
@@ -83,13 +80,13 @@ Each successful producer run records a fact of the asset, dated by the run's dat
 | `weekly` | D from F to the end of the week after F's week |
 | `monthly` | D from F to the end of the month after F's month |
 
-A daily consumer of a weekly asset therefore uses the latest version from this week or the last one, and a run for a past date waits for a fact of its own date, never today's (ADR #130).
+A daily consumer of a weekly asset therefore uses the latest version from this week or the last one, and a run for a past date waits for a fact of its own date, never today's.
 
 A run's date is a day, such as `2026-01-12`, or the key of an hourly, weekly or monthly partition (`2026-01-12T06`, `2026-W03`, `2026-01`), which counts as its first day. A `wait_for` task in a run dated otherwise, for example `20260112`, fails with the cause.
 
 ### Schema Declaration
 
-Declare a column schema directly in the asset definition. The schema is stored with the asset in the pipeline's task specs.
+Declare a column schema directly in the asset definition. The schema is stored with the asset in the pipeline's task specs. A schema, like the Glue table and the owner below, describes the asset: nothing reads it while a pipeline runs, and `polyris-validate --all` compares the schemas that different pipelines declare.
 
 **Recommended form: `Column` + `types`.**
 
@@ -242,7 +239,7 @@ orders = Asset(
 
 When the schema already lives in another system (a Parquet file, a
 pydantic model, a Glue Catalog table) you can skip the manual `Column`
-list and use a `from_*` constructor. ADR #44 describes the design.
+list and use a `from_*` constructor.
 
 **From a pyarrow.Schema (Iceberg, Parquet, BigQuery, Polars, Pandas, DuckDB):**
 
@@ -259,7 +256,7 @@ orders = Asset.from_pyarrow(
 ```
 
 Requires the `pyarrow` extra:
-`pip install "polyris[pyarrow] @ git+https://github.com/Polyris/polyris@<VERSION>"`.
+`pip install "polyris[pyarrow] @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"`.
 The bridge to all six formats above goes through pyarrow as a hub — one
 optional dependency, many integrations.
 
@@ -301,7 +298,7 @@ orders = Asset.from_pydantic(Order, name="retail/orders")
 ```
 
 Requires the `pydantic` extra:
-`pip install "polyris[pydantic] @ git+https://github.com/Polyris/polyris@<VERSION>"`.
+`pip install "polyris[pydantic] @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"`.
 Pydantic field descriptions, defaults, and `Optional[...]` markers all
 carry over.
 
@@ -339,10 +336,7 @@ with DAG("etl", schedule="@daily") as dag:
         pass
 ```
 
-**What happens:**
-1. Task completes successfully
-2. `run_task` records a fact for each outlet, for the run's partition, in the same write as the task's success
-3. The `asset-events` stream hands the fact to `AssetFanout`, which wakes the tasks waiting on the asset and starts the pipelines scheduled on it
+**What happens:** when the task succeeds, polyris records a fact of each outlet, dated by the run's date, in the same write as the success. Within seconds, the tasks that wait for the asset are checked again, and the pipelines scheduled on it start if their schedule is met.
 
 ---
 
@@ -366,10 +360,7 @@ with DAG(
         pass
 ```
 
-**What happens:**
-1. A task with `outlets` completes and records its fact for its run's partition
-2. `AssetFanout` evaluates the consumer's whole `schedule` for that partition, with the same rule as `wait_for` (`.within(...)` is judged as of the fact's time)
-3. If it is satisfied, `AssetFanout` starts the consumer for that date
+**What happens:** a producer task succeeds and records its fact for its run's date. polyris evaluates the consumer's whole `schedule` for that date, with the same rule as `wait_for` (`.within(...)` is judged as of the fact's time), and if it is met, starts the consumer for that date.
 
 A run's name is derived from the consumer, the date and the kind of trigger, so a repeated event never starts a second run. A failure to start one consumer never affects the producer or other consumers: a transient one is retried, anything else shows up as a warning.
 
@@ -548,47 +539,7 @@ The badge shows the window declared in `.within(...)`: in days when it is a whol
 
 ### How it works
 
-Consumer side (the task with `wait_for`):
-
-```
-Run starts (Start_Run)
-        ├── Write the task row, waiting
-        └── Write one pointer per asset: "asset:<name>" → this run's task
-                │
-                ▼
-Dispatcher (woken when the task's upstreams finish, or by a fact)
-        ├── Read asset-events for this run's partition, consistently
-        │   (and `.within(...)` freshness, `.consecutive(...)` days)
-        ├── If ready → deps_ready → start the task's run_task
-        └── If not   → the row waits; the pointer brings the next fact
-```
-
-Producer side (a task with `outlets=[...]`):
-
-```
-Producer task completes with outlets
-        │
-        ▼
-run_task ── records one fact per outlet in asset-events, in the
-        │     transaction of the task's success (partition = the run's date)
-        ▼
-asset-events stream ──► AssetFanout Lambda
-                            ├── Find the runs with a task waiting on the asset ("asset:<name>")
-                            └── One narrow pass of the dispatcher over each run, which
-                                decides from the facts of the run's partition
-```
-
-A task is woken only by a fact for its own run's partition: a run for an old date never starts on today's fact. Weekly and monthly facts also serve the rest of their period and the next one.
-
-The DynamoDB tables involved:
-
-| Table | Purpose |
-|-------|---------|
-| `asset-events` | Every fact (PK: `asset_name`, SK: `event_time`), with the partition it belongs to; the `asset-partition-index` finds facts by partition date |
-| `dep-subscriptions` | Per-run pointers: `asset:<name>` → each waiting task of a run whose `wait_for` names the asset |
-| `asset-subscriptions` | Pipelines scheduled on an asset (PK: `asset_name`, SK: `pipeline_name`) |
-
-Everything is created by `polyris-up` (or a from-source `sam deploy`) — no manual steps.
+How polyris wakes a waiting task and starts a consumer: [ARCHITECTURE.md § Flow 4](../architecture/ARCHITECTURE.md#flow-4-asset-based-cross-pipeline-triggers).
 
 ---
 
@@ -613,7 +564,7 @@ A fact that no reader can place on a partition (for example, one recorded by an 
 
 ## Asset lineage
 
-`polyris-output --assets` prints every asset with its producers and consumers, and the asset schedule of each pipeline:
+`polyris-output --assets` prints, as JSON, the assets that the pipeline file in the current folder declares, with their producers and consumers within that file. A producer or consumer in another pipeline's file does not show:
 
 ```bash
 cd pipelines/acme && polyris-output --assets

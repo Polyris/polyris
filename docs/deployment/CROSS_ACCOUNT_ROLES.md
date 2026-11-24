@@ -1,6 +1,6 @@
-# Cross-Account Roles
+# Cross-account roles
 
-Polyris supports executing tasks in different AWS accounts via cross-account IAM roles.
+How to run a task's work in another AWS account than the platform's: `run_task` assumes a role in that account and starts the work with its credentials.
 
 ---
 
@@ -30,21 +30,19 @@ ENVIRONMENTS = {
     arn="arn:aws:states:us-east-1:111111111111:stateMachine:etl-pipeline",
     role="etl",  # key from config.py roles
 )
+def run_etl():
+    pass
 ```
 
-`role=` works for **every** task type that `run_task` runs, not only `sfn` — the
-cross-account credentials are applied by `run_task` for each service
-(ADR #106). For example:
+`role=` works for every task type, not only `sfn`:
 
 ```python
 @task.glue_job(job_name="cross-acct-etl", role="etl")
-@task.lambda_function(function_name="cross-acct-fn", role="etl")
-@task.batch_job(job_definition="jd", job_queue="jq", role="etl")
+def run_glue():
+    pass
 ```
 
-A value that is already a full `arn:aws:iam::...:role/...` is used directly;
-otherwise it is looked up as a key in `config.py` roles. `role="same"` (the
-default) runs in the orchestration account.
+A value that is already a full `arn:aws:iam::...:role/...` is used as it is; otherwise it is a key of `roles` in `config.py`. `role="same"` (the default) runs in the platform's account.
 
 ### 3. IAM trust policy in target account
 
@@ -75,12 +73,6 @@ Priority: env var > `config.py`.
 
 ---
 
-## Verify Configuration
+## Verify the configuration
 
-```bash
-python3 -c "
-from polyris.config import config
-c = config.for_stage('prod')
-print(c.roles['etl'])
-"
-```
+`polyris-validate`, in the pipeline's folder, refuses a `role=` key that `config.py` does not define.

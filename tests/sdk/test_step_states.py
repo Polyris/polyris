@@ -233,6 +233,12 @@ class TestServiceTaskConstructionValidation:
         with pytest.raises(ValueError, match="requires 'url'"):
             HttpTask()
 
+    def test_http_task_requires_connection_arn(self):
+        """Step Functions refuses an HTTP Task without an EventBridge connection; the
+        pipeline passed validation and failed at its run (the docs audit after 1.3)."""
+        with pytest.raises(ValueError, match="requires 'connection_arn'"):
+            HttpTask(url="https://api.example.com/webhook")
+
     def test_dynamodb_requires_table_name(self):
         with pytest.raises(ValueError, match="requires 'table_name'"):
             DynamoDBTask(operation="get_item", key={"pk": {"S": "x"}})

@@ -118,8 +118,18 @@ class DAG:
             # Time-based schedule
             if self.schedule in SCHEDULE_PRESETS:
                 self._eventbridge_schedule = SCHEDULE_PRESETS[self.schedule]
-            else:
+            elif self.schedule.strip().startswith(("cron(", "rate(", "at(")):
                 self._eventbridge_schedule = self.schedule
+            else:
+                # EventBridge Scheduler takes cron(...), rate(...) or at(...) only: a bare cron
+                # such as "0 9 * * MON-FRI" passed validation and failed the deploy.
+                presets = ", ".join(p for p in SCHEDULE_PRESETS if p != "@once")
+                raise ValueError(
+                    f"DAG '{self.dag_id}': schedule {self.schedule!r} is neither a preset ({presets}) "
+                    f"nor an EventBridge expression. Write a cron as cron(minutes hours day-of-month "
+                    f"month day-of-week year), e.g. schedule=\"cron(0 9 ? * MON-FRI *)\" for weekdays "
+                    f"at 09:00 UTC, or use rate(...)."
+                )
         elif self.schedule is not None:
             raise TypeError(
                 f"Unrecognised schedule type: {type(self.schedule)!r}. "

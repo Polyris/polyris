@@ -604,7 +604,6 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
         if verbose:
             print(f"  Schedule: {_c(str(dag.schedule), CYAN) if dag.schedule else 'manual'}")
             print(f"  Tasks: {len(dag.tasks)}")
-            print(f"  States: {len(asl.get('States', {}))}")
             if errors:
                 print(_c(f"  ❌ Errors ({len(errors)}):", RED))
                 for e in errors:
@@ -716,7 +715,7 @@ def main():
     parser.add_argument(
         '--verbose', '-v',
         action='store_true',
-        help='Show detailed output (schedule, task count, state count)'
+        help='Show detailed output (schedule and task count)'
     )
     parser.add_argument(
         '--file', '-f',

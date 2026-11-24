@@ -24,18 +24,18 @@ with DAG("orders-etl", schedule="@daily") as dag:
     extract() >> transform() >> load()
 ```
 
-`polyris-deploy` writes each task's spec to DynamoDB and deploys the pipeline's state machine and schedule with CloudFormation. A run writes its tasks as rows in DynamoDB. The polyris dispatcher, a Lambda function woken by changes to those rows, starts each task once its upstream tasks and the data it waits for allow it. Step Functions runs the task's work, with its retries and timeout. The scheduling is polyris code in this repository, explained in [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md). Pay per run — see [Cost](#cost) for the breakdown.
+`polyris-deploy` turns the file into a Step Functions state machine in your account, with an EventBridge schedule if the pipeline has one. In each run, the polyris dispatcher, a Lambda function, starts each task as soon as its upstream tasks and the data it waits for allow it; Step Functions runs the task's work, with its retries and timeout. How it works: [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md). The words polyris uses: [GLOSSARY.md](GLOSSARY.md). Pay per run — see [Cost](#cost).
 
 ## Why polyris
 
-Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres metadata DB running 24/7. polyris has no server: its dispatcher is a Lambda function that wakes when a task's row changes, and Step Functions runs every task's work. Here is how the operations differ:
+Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres metadata DB running 24/7. polyris has no server: a Lambda function decides when each task starts, and Step Functions runs every task's work. Here is how the operations differ:
 
 | | polyris | Airflow / Dagster / Prefect |
 |---|---|---|
 | **When a task fails** | The run waits for your decision — retry, mark success, skip, fail — then continues in the same execution. Upstream tasks that already succeeded don't re-run. | Retry policy; then you clear the task and re-run it from the UI or CLI. |
 | **Debugging a run** | The polyris console shows each task's status, why it waits and its timeline; each task's work is a Step Functions execution with its history in the AWS Console. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
 | **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
-| **Assets** | `outlets=`, `wait_for=` and asset-triggered schedules, experimental; `polyris-output --assets` lists each asset's producers and consumers. | Native in Dagster; Airflow 3 has assets too. |
+| **Assets** | `outlets=`, `wait_for=` and asset-triggered schedules, experimental; `polyris-output --assets` lists the assets a pipeline file declares, with their producers and consumers in that file. | Native in Dagster; Airflow 3 has assets too. |
 
 Full DSL reference — `retries`, `trigger_rule`, seven task types (`sfn`, `lambda`, `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules, `wait_for` freshness checks, `xcom` data passing — in [DSL.md](docs/features/DSL.md).
 
@@ -60,24 +60,23 @@ Requires **Python 3.11+** and AWS credentials — no git, Node.js, SAM CLI or AW
 
 ```bash
 curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
-polyris-up                          # asks for a namespace + admin email, prints the console URL
-polyris-init hello-world --hello    # a first pipeline that runs right away
-cd hello-world && polyris-deploy
+polyris-up                          # asks for a namespace, a stage and an admin email; prints the console URL
+polyris-init hello-world --hello    # a first pipeline that deploys and runs without edits
+cd hello-world && polyris-deploy    # then press Run on hello-world in the console
 ```
 
 `polyris-up` deploys the prebuilt release of your polyris version. Step by step: [QUICKSTART.md](docs/getting-started/QUICKSTART.md); upgrading, stages, users and removal: [manage-the-platform.md](docs/how-to/manage-the-platform.md).
 
 ## Try it locally (no AWS)
 
-Validate DAGs, generate Step Functions JSON, mock-execute — all offline:
+With the CLI from [Install](#install), you can validate a pipeline, generate its Step Functions JSON and mock-run it without an AWS account:
 
 ```bash
-curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
 polyris-init my-pipeline --local
 cd my-pipeline
 
 polyris-validate              # Validate structure
-polyris-validate -v           # Verbose: tasks, deps, ASL preview
+polyris-validate -v           # Verbose: schedule and task count
 polyris-output --json         # The definition and its task specs
 polyris-output --mermaid      # Mermaid diagram source
 polyris-output --graph        # ASCII graph
@@ -91,11 +90,17 @@ polyris-local --validate  # exit 0/1, suitable for CI
 polyris-local --mock      # simulate execution with mock results
 ```
 
-Python API for automated tests:
+Python API for automated tests. Install polyris into your test environment, at the version of your CLI (`v1.3.0` here):
+
+```bash
+pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
+```
+
+Then, from the pipeline's folder:
 
 ```python
 from polyris.local import validate, dry_run, run
-from my_pipeline import dag                # your DAG object
+from dag import dag                        # dag.py in this folder
 
 validate(dag)                              # DAG structure
 dry_run(dag)                               # Execution plan
@@ -103,8 +108,7 @@ result = run(dag, mock=True)               # Mock execution
 print(result.summary())                    # ✅ 3 succeeded, ❌ 0 failed, ⏭️ 0 skipped
 ```
 
-Or browse [examples/](examples/) — 17 self-contained pipelines from
-hello-world through assets.
+Or browse [examples/](examples/) — 17 self-contained pipelines from hello-world through assets.
 
 ## Documentation
 
@@ -120,6 +124,8 @@ hello-world through assets.
 | Set up asset-based orchestration + `wait_for` | [ASSETS.md](docs/features/ASSETS.md) |
 | Use the Web Console — DAG view, Runs, task actions | [UI.md](docs/operations/UI.md) |
 | Set up Cognito authentication | [authentication.md](docs/features/authentication.md) |
+| Lay out a repository of pipelines, with CI | [PROJECT_STRUCTURE.md](docs/getting-started/PROJECT_STRUCTURE.md) |
+| Look up a term (run, task, asset, stage…) | [GLOSSARY.md](GLOSSARY.md) |
 | Talk to polyris over REST | [API.md](docs/operations/API.md) |
 | Approve an install (IAM / resource inventory) | [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) |
 | Fix a specific problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
@@ -127,35 +133,11 @@ hello-world through assets.
 | Read design decisions / ADRs | [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) |
 | Develop polyris itself | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-## Project structure
-
-```
-├── pipelines/                    # Your pipeline definitions (gitignored)
-│   ├── config.py                 # Shared: ENVIRONMENTS, DEFAULT_STAGE
-│   └── my-pipeline/
-│       └── dag.py                # Pipeline definition
-│
-├── sam/                          # Shared AWS infrastructure
-│   ├── template.yaml             # SAM template — all AWS resources, 5 SFN definitions (2 orchestration + 3 test)
-│   ├── lambdas/                  # 8 Lambda functions
-│   └── sfn_templates/            # The 2 orchestration definitions: run_task, bulk_backfill
-│
-├── polyris/                      # Python DSL library
-│   ├── dag.py                    # DAG class
-│   ├── task.py                   # Task decorators
-│   ├── assets.py                 # Asset definitions
-│   └── generators.py             # ASL JSON generation
-│
-├── ui/                           # Web Console
-└── tests/                        # SDK + backend + docs tests
-```
-
 ---
 
 ## Cost
 
-polyris runs on Step Functions + Lambda + DynamoDB — all pay-per-request,
-no fleet to keep alive:
+polyris runs on Step Functions + Lambda + DynamoDB — all pay-per-request, no fleet to keep alive:
 
 | Component | AWS billing model | Approx. per-run share |
 |---|---|---|
@@ -164,24 +146,19 @@ no fleet to keep alive:
 | DynamoDB | Per read/write unit | ~$0.001 per run |
 | CloudWatch Logs | GB ingested | $0.50 – $2 / month total |
 
-**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$2–4/month
-for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS
-containers, Athena queries) bill separately against your existing AWS
-spend; polyris does not add a percentage on top.
+**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$2–4/month for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS containers, Athena queries) bill separately against your existing AWS spend; polyris does not add a percentage on top.
 
 Every resource in a polyris stack carries `polyris:` tags, so Cost Explorer can show what polyris costs per installation and stage: see [Track costs](docs/how-to/manage-the-platform.md#track-costs).
 
 **Amazon MWAA** with an environment costs $0.29 an hour for its smallest class, `mw1.micro`: about $210 a month whether or not a pipeline runs, 50 to 100 times the small deployment above. **MWAA Serverless** bills each task for its duration, $0.08 an hour with a one-minute minimum: about $4 a month for the small deployment if every task finishes within a minute, and more for tasks that run longer. What polyris costs grows with the steps of a run, not with how long they take: a task that waits an hour for its Glue job costs about what a one-minute task does.
 
-*Numbers are estimates at AWS list prices in us-east-1 as of November 2026 — check AWS
-pricing pages for current figures.*
+*Numbers are estimates at AWS list prices in us-east-1 as of November 2026 — check AWS pricing pages for current figures.*
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR
-guidelines. Inside a polyris checkout:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the repository's layout, testing, and PR guidelines. Inside a polyris checkout:
 
 ```bash
 pip install -e ".[dev]"   # adds pytest, ruff, mypy

@@ -63,7 +63,7 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 
 ### Upgrade from 1.2 to 1.3
 
-Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it, and as the update's cleanup begins it stops what 1.2 left running ([manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13)). A later `polyris-up` does so again only while a state machine of 1.2 is left; on a platform that finished its upgrade, the role needs none of this. `PowerUserAccess` covers what it takes; a least-privilege installer role needs these actions beside the ones above for the upgrade:
+Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it. As the update's cleanup begins, it stops what 1.2 left running ([upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md)). A later `polyris-up` does so again only while a state machine of 1.2 is left; on a platform that finished its upgrade, the role needs none of this. `PowerUserAccess` covers what it takes; a least-privilege installer role needs these actions beside the ones above for the upgrade:
 
 | AWS service | Actions | Resource | Why |
 |-------------|---------|----------|-----|
@@ -231,7 +231,7 @@ Onboard a Console user:
 ```bash
 aws cognito-idp admin-create-user \
   --user-pool-id "$(aws cloudformation describe-stacks \
-    --stack-name polyris-dev \
+    --stack-name acme-dev \
     --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' \
     --output text)" \
   --username alice@example.com \
@@ -266,7 +266,7 @@ Engineers investigating a failing pipeline need read access to CloudWatch logs, 
     "Resource": "*",
     "Condition": {
       "StringLike": {
-        "aws:ResourceTag/polyris:namespace": "polyris"
+        "aws:ResourceTag/polyris:namespace": "acme"
       }
     }
   }]
@@ -300,21 +300,37 @@ Eleven IAM roles the stack creates during Install. Every role's `RoleName` start
 
 | Role | Trust principal | Purpose |
 |------|-----------------|---------|
-| `polyris-orchestration-role` | Step Functions | Runs `run_task`, `bulk_backfill` and the pipelines' state machines. Reads/writes to pipeline-tokens DDB, invokes task Lambdas, starts `run_task` and the tasks' state machines, writes CloudWatch logs. Highest-privilege role in the stack — it's the "conductor" |
-| `polyris-default-task-role` | Cross-account trust (from orchestration-role) | The runtime task role. Assumed by `run_task` to start a task in the platform's account. Covers Athena + Glue + S3 + task-service `StartJobRun` / `RunTask` |
-| `polyris-console-api-role` | Lambda | Serves the REST API behind the Console UI. Reads DDB tables, starts a pipeline's run, writes operator actions and stops a stopped task's `run_task`; it asks Step Functions nothing about a run, whose status the run row holds (ADR #137 §5) |
-| `polyris-reconcile-role` | Lambda | The dispatcher (ADR #137): passes over a run's rows when the tasks table's stream wakes it, decides each row and starts its `run_task`. Its own grant reads that stream; the rest is the `polyris-reconcile` policy below |
-| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions. Makes one narrow pass of the dispatcher over each run with a waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset, reading each one's registry entry (`GetItem`). It deletes a push subscription whose pipeline is no longer scheduled on the asset |
-| `polyris-sweeper-role` | Lambda | Every 5 minutes, makes one full pass of the dispatcher over each run that is due (ADR #137 §7), with the `polyris-reconcile` policy. It reads the attention index and keeps its lease and health rows. Its passes alone judge executions with `states:DescribeExecution` on the executions of polyris state machines (`*-polyris-*`): a task's `run_task` and the run's execution, whose pipeline may have a namespace and stage of its own. It retries or catches up push starts: reads `asset-subscriptions` and each consumer's registry entry (`GetItem`), starts the pipelines scheduled on an asset and deletes the subscriptions their pipelines no longer have. It checks both streams and their mappings (`dynamodb:DescribeTable` on `asset-events` and `pipeline-tokens`, `lambda:ListEventSourceMappings`) |
+| `polyris-orchestration-role` | Step Functions | Runs `run_task`, `bulk_backfill` and the pipelines' state machines; the stack's highest-privilege role |
+| `polyris-default-task-role` | Step Functions and the orchestration role | Starts a task's work in the platform's account (`role="same"`) |
+| `polyris-console-api-role` | Lambda | The REST API behind the console |
+| `polyris-reconcile-role` | Lambda | The dispatcher, which decides each task of a run and starts it |
+| `polyris-asset-fanout-role` | Lambda | Wakes the tasks waiting on new asset data and starts the pipelines scheduled on it |
+| `polyris-sweeper-role` | Lambda | Re-checks every due run every 5 minutes |
 | `polyris-sweeper-schedule-role` | EventBridge Scheduler | Invokes the sweeper function, and nothing else |
-| `polyris-start-run-role` | Lambda | Starts a run (ADR #137 §1). It reads the run's task specs from `pipeline-specs` (`Query`, `BatchGetItem`). It writes the run row, the run's input and one row per task to `pipeline-tokens` with conditional `PutItem` and `UpdateItem`, and reads a refused write back with `GetItem`. It writes the `asset:{name}` pointers of tasks with `wait_for` to `dep-subscriptions` |
-| `polyris-notify-role` | Lambda | Publishes alerts through the configured notification channels |
-| `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |
-| `polyris-bucket-cleanup-role` | Lambda | One-off role for the CustomResource that empties S3 buckets on Remove |
+| `polyris-start-run-role` | Lambda | Writes a run's rows when the run starts |
+| `polyris-notify-role` | Lambda | The role of the `notify` function, reserved for alert delivery; no route of this console configures it |
+| `polyris-ui-bootstrap-role` | Lambda | Copies the console UI into its bucket at install (stacks installed by `polyris-up`) |
+| `polyris-bucket-cleanup-role` | Lambda | Empties the S3 buckets on Remove |
+
+What each role may do:
+
+- **orchestration** reads and writes `pipeline-tokens`, invokes task Lambdas, starts `run_task` and the tasks' state machines, and writes CloudWatch logs.
+- **default-task** covers Athena, the Glue Data Catalog, S3 and each task service's start call (`StartJobRun`, `RunTask`, `SubmitJob` and the like). For a task in another account, see [CROSS_ACCOUNT_ROLES.md](CROSS_ACCOUNT_ROLES.md).
+- **console-api** reads the DynamoDB tables, starts a pipeline's run, writes operator actions and stops a stopped task's `run_task`. It asks Step Functions nothing about a run: the run's status is in DynamoDB.
+- **reconcile** reads the tasks table's stream; the rest is the `polyris-reconcile` policy below.
+- **asset-fanout** reads the `asset-events` stream, the `asset:{name}` pointers and the push subscriptions, and each scheduled pipeline's registry entry (`GetItem`). With the `polyris-reconcile` policy it makes one pass of the dispatcher over each run with a waiting task. It deletes a push subscription whose pipeline is no longer scheduled on the asset.
+- **sweeper** makes one pass of the dispatcher over each due run, with the `polyris-reconcile` policy. It reads the attention index and keeps its lease and health rows. It checks executions with `states:DescribeExecution` on the executions of polyris state machines (`*-polyris-*`): a task's `run_task` and the run's own, whose pipeline may have a namespace and stage of its own. It retries and catches up push starts: it reads `asset-subscriptions` and each consumer's registry entry (`GetItem`), starts the pipelines scheduled on an asset, and deletes the subscriptions their pipelines no longer have. It checks both streams and their mappings (`dynamodb:DescribeTable` on `asset-events` and `pipeline-tokens`, `lambda:ListEventSourceMappings`).
+- **start-run** reads the run's task specs from `pipeline-specs` (`Query`, `BatchGetItem`). It writes the run row, the run's input and one row per task to `pipeline-tokens` with conditional `PutItem` and `UpdateItem`, and reads a refused write back with `GetItem`. It writes the `asset:{name}` pointers of tasks with `wait_for` to `dep-subscriptions`.
 
 Three AWS::IAM::ManagedPolicy resources the stack also creates. One is the dispatcher's own:
 
-- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs: run rows, task rows and the run's input, asset facts, warnings, and in `pipeline-specs` a run's task names (`Query`) and one task's spec at its start (`GetItem`). It queries `pipeline-execution-index` only for a run whose run row is missing, to stop that run's rows, and puts each decision's event in the task's timeline (`task-events`). A decision is one transaction, so `dynamodb:ConditionCheckItem` too. In the `asset:` pointers table it deletes a row's pointers once the row has left its wait, and writes them again for a row that waits again after a Restart (`DeleteItem`, `PutItem`). `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run. `states:StopExecution` of the executions of polyris state machines (`*-polyris-*`), for a Stop of a run: a stopped row's `run_task` and the run's own execution, whose pipeline may have a namespace and stage of its own. Every pipeline `polyris-deploy` deploys is named `{namespace}-{stage}-polyris-{dag_id}`, so the pattern covers it; IAM no longer keeps two platforms of one account apart, and the engine acts only on the executions its own rows record. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
+- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`:
+  - in `pipeline-tokens`: run rows, task rows and the run's input, asset facts and warnings; a decision is one transaction, so `dynamodb:ConditionCheckItem` too. It queries `pipeline-execution-index` only for a run whose run row is missing, to stop that run's rows;
+  - in `pipeline-specs`: a run's task names (`Query`) and one task's spec at its start (`GetItem`);
+  - in `task-events`: each decision's event in the task's timeline;
+  - in `dep-subscriptions`: it deletes a task's `asset:` pointers once the task has left its wait, and writes them again for a task that waits again after a Restart (`DeleteItem`, `PutItem`);
+  - `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run;
+  - `states:StopExecution` on the executions of polyris state machines (`*-polyris-*`), for a Stop of a run: a stopped task's `run_task` and the run's own execution. Every pipeline `polyris-deploy` deploys is named `{namespace}-{stage}-polyris-{dag_id}`, so the pattern covers pipelines of any namespace. IAM does not keep two platforms of one account apart: the engine acts only on the executions its own rows record.
 
 Two are published for user pipeline tasks that need them:
 

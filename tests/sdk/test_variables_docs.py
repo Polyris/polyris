@@ -18,9 +18,14 @@ def _section(text: str, start: str, end: str) -> str:
     return text[text.index(start):text.index(end, text.index(start))]
 
 
+#: Variables that only a run of a backfill sets. This build has no way to start a backfill, so
+#: its docs describe neither (Principle #24); run_task still gives them, false and empty.
+BACKFILL_ONLY = {"is_backfill", "backfill_id"}
+
+
 def test_dsl_md_lists_every_variable_run_task_gives():
-    dsl = _section((REPO_ROOT / "docs/features/DSL.md").read_text(), "### Date variables", "## Complete Example")
-    missing = [name for name in VARIABLES if f"`{name}`" not in dsl]
+    dsl = _section((REPO_ROOT / "docs/features/DSL.md").read_text(), "### Date variables", "## Complete example")
+    missing = [name for name in VARIABLES if name not in BACKFILL_ONLY and f"`{name}`" not in dsl]
     assert missing == [], f"DSL.md's Date variables do not list {missing}"
 
 

@@ -1,12 +1,8 @@
 # polyris examples
 
-Self-contained pipelines that build up the DSL. Every one runs **locally with no
-AWS account** — explore the DSL, see the generated Step Functions definition, and
-iterate before you deploy anything.
+Self-contained pipelines that build up the DSL. Every one runs **locally with no AWS account**: explore the DSL, see the generated Step Functions definition, and iterate before you deploy anything.
 
-The first few are minimal intros; the rest each exercise a slice of the full
-feature surface (task types, branching, direct steps, DAG/task settings, and a
-composite end-to-end run).
+The first few are minimal intros; each of the rest covers one part of the DSL (task types, branching, direct steps, DAG and task settings, assets, data passing), and one combines several services end to end.
 
 | Example | Concept |
 |---|---|
@@ -16,9 +12,9 @@ composite end-to-end run).
 | [`04_task_types`](04_task_types/dag.py) | Six AWS task types: `sfn`, `lambda`, `glue`, `athena`, `ecs`, `batch` + `default_args` (`emr` is supported too but omitted here — it needs a live cluster) |
 | [`05_chain_cross_downstream`](05_chain_cross_downstream/dag.py) | Fan-out / fan-in, trigger rules, `chain()` / `cross_downstream()` |
 | [`06_direct_steps`](06_direct_steps/dag.py) | Direct service steps (`Wait`, `Pass`, `SNS`, `SQS`, `S3`), `wait_before`, `rate(...)`, `variables` |
-| [`07_dag_and_task_settings`](07_dag_and_task_settings/dag.py) | Retries + backoff, timeouts, `skip_on_backfill`, an active window |
+| [`07_dag_and_task_settings`](07_dag_and_task_settings/dag.py) | Retries + backoff, timeouts |
 | [`08_composite_example`](08_composite_example/dag.py) | A plausible daily analytics pipeline combining several services end to end — not a single feature, the full picture |
-| [`09_trigger_rules`](09_trigger_rules/dag.py) | All nine `trigger_rule` conditions side by side (ADR #138) |
+| [`09_trigger_rules`](09_trigger_rules/dag.py) | All nine `trigger_rule` conditions side by side |
 | [`10_no_schedule`](10_no_schedule/dag.py) | An on-demand pipeline with **`schedule=None`** (manual trigger only) |
 | [`11_assets_outlets_inlets`](11_assets_outlets_inlets/dag.py) | Declaring asset `outlets`/`inlets` on tasks *(experimental)* |
 | [`12_assets_schedule_trigger`](12_assets_schedule_trigger/dag.py) | `schedule=[asset]` — a pipeline triggered by another pipeline's asset (push model) *(experimental)* |
@@ -30,12 +26,13 @@ composite end-to-end run).
 
 ## Run one locally
 
+With the CLI installed ([README → Install](../README.md#install)), clone this repository (or download its source archive) and `cd` into an example; nothing else to install:
+
 ```bash
-pip install -e .                 # from the repo root, once
 cd examples/01_single_task
 
 polyris-validate                 # is the DAG valid?
-polyris-validate -v              # verbose: tasks, dependencies, ASL preview
+polyris-validate -v              # verbose: schedule and task count
 polyris-output --graph           # the DAG as an ASCII graph
 polyris-output --mermaid         # a Mermaid diagram you can paste anywhere
 polyris-output --json            # the Step Functions definition and its task specs
@@ -52,6 +49,4 @@ cd examples/02_linear_chain
 polyris-deploy                   # builds + deploys via CloudFormation
 ```
 
-See the top-level [README](../README.md) and
-[docs/getting-started](../docs/getting-started/) for setup, the tutorial, and the
-full DSL reference.
+Setup: [QUICKSTART.md](../docs/getting-started/QUICKSTART.md). Every DSL feature: [DSL.md](../docs/features/DSL.md).

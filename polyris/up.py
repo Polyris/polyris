@@ -719,7 +719,7 @@ def run_up(args: argparse.Namespace) -> None:
         return                  # what comes next is the redeploy of those pipelines, not a first one
     if existing is not None:
         return                  # an update: the platform's pipelines run as before, none is a first one
-    print("\n   Next — a first pipeline that runs right away:")
+    print("\n   Next — a first pipeline, ready to deploy and run:")
     print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
     print(f"     {_c(f'cd hello-world && polyris-deploy{flags}', CYAN)}   then press Run in the console")
 

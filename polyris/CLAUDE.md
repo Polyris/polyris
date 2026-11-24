@@ -424,7 +424,7 @@ expression `infer_cron_cadence` cannot parse will fail that test immediately.
 **When changing a preset expression:** the parity test fails until `infer_cron_cadence`
 is updated to handle the new form — the coupling is enforced, not advisory.
 
-**A preset fires when its partition begins:** the hour, 00:00 UTC, Monday 00:00 UTC (an ISO week), the 1st of the month. A `rate(...)` counts from when the schedule was created, so `@daily` ran at the time of day of the deploy until 1.3.1 (`test_each_preset_fires_when_its_partition_begins`).
+**A preset fires at the start of its period:** the hour, 00:00 UTC, Monday 00:00 UTC (an ISO week), the 1st of the month. A `rate(...)` counts from when the schedule was created, so `@daily` ran at the time of day of the deploy until 1.3.1 (`test_each_preset_fires_at_the_start_of_its_period`).
 
 **Sub-daily rate/step cadences return `None`, never `"hourly"`:** `rate(N hours)` and
 `*/N` in the hours cron field for N>1 fire every N hours (sub-daily). Returning

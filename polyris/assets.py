@@ -49,7 +49,7 @@ class ExperimentalWarning(UserWarning):
 
     EXPERIMENTAL-ASSETS: this whole warning mechanism (class, module flag, and the
     warn() call in Asset.__init__) is temporary scaffolding. Remove it when assets
-    graduate to stable — see docs/reference/MAINTAINER_ASSETS_GRADUATION.md.
+    graduate to stable — see docs/design/MAINTAINER_ASSETS_GRADUATION.md.
 
     Assets work end to end (define, produce, wait on, asset-triggered schedules),
     but the API is not yet frozen. Silence this warning with:
@@ -1152,7 +1152,7 @@ class AssetAny:
     triggers this consumer once). Use `AssetAny([x])` when the consumer
     should react to every update, e.g. an hourly producer, or a deliberate
     re-run whose downstream should recompute too. See
-    docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md for the full analysis.
+    docs/design/SPIKE_ASSET_TRIGGER_GRANULARITY.md for the full analysis.
     """
     assets: List[Union[AssetOperand, AssetAll]] = field(default_factory=list)
     

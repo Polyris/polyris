@@ -6,8 +6,7 @@
 |------|---------|-------|
 | Python | 3.11+ | All Lambdas run on 3.12 |
 | Node.js | 22+ | LTS recommended; minimum 20.19, which Vite needs |
-| AWS SAM CLI | latest | For infrastructure deployment |
-| AWS CLI | 2.x | For local testing |
+| AWS SAM CLI | latest | To deploy your checkout to a dev account |
 | Make | any | For convenience commands |
 
 No AWS credentials needed for running tests locally (uses pytest-mock `mocker` fixture).
@@ -72,14 +71,18 @@ cp .env.example .env.local
 
 # Edit .env.local — full invoke URL incl. stage and /api:
 # NEXT_PUBLIC_API_URL=https://xxx.execute-api.us-east-1.amazonaws.com/dev/api
-# NEXT_PUBLIC_AUTH_ENABLED=false
+# A stack has Cognito auth on by default, so sign in as the console does:
+# NEXT_PUBLIC_AUTH_ENABLED=true
+# NEXT_PUBLIC_COGNITO_USER_POOL_ID=<CognitoUserPoolId stack output>
+# NEXT_PUBLIC_COGNITO_CLIENT_ID=<CognitoClientId stack output>
+# NEXT_PUBLIC_COGNITO_REGION=us-east-1
 
 # Start dev server
 npm run dev
 # → http://localhost:3000
 ```
 
-**Note:** UI needs a backend API: point it to a deployed environment (set `NEXT_PUBLIC_API_URL` in `.env.local`; see `docs/operations/UI.md`).
+**Note:** the UI needs a deployed API: `NEXT_PUBLIC_API_URL` is the stack output `ConsoleApiUrl` followed by `/api`. With `NEXT_PUBLIC_AUTH_ENABLED=false` against a stack whose auth is on, every call answers 401.
 
 ---
 
@@ -93,13 +96,13 @@ polyris/
 │   ├── generators.py     # Step Functions JSON generation
 │   └── ...
 │
-├── sam/     # AWS Infrastructure
-│   ├── lambdas/          # Lambda function code
+├── sam/                  # AWS infrastructure
+│   ├── lambdas/          # Code of the 8 Lambda functions
 │   │   ├── console_api/  # REST API (24 free endpoints)
 │   │   ├── coordination/ # Start_Run, the dispatcher, the sweeper and asset fan-out (ADR #137)
 │   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
-│   ├── sfn_templates/    # Step Functions ASL templates
-│   └── template.yaml    # SAM template
+│   ├── sfn_templates/    # The 2 orchestration definitions: run_task, bulk_backfill
+│   └── template.yaml     # SAM template: every AWS resource, 5 SFN definitions (2 orchestration + 3 test)
 │
 ├── ui/                   # React Console UI
 │   └── src/
@@ -107,7 +110,7 @@ polyris/
 │       ├── hooks/        # Custom hooks (with tests!)
 │       └── utils/        # Helpers
 │
-├── tests/                # SDK integration tests
+├── tests/                # SDK, backend, integration and docs tests
 ├── docs/                 # Documentation
 └── examples/             # Example pipelines
 ```
@@ -149,43 +152,18 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 | Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The nine trigger rules' truth table, and an unknown rule failing its task |
 | SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for every template in `sam/sfn_templates/` |
 | JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, every expression compiles |
-| coordination Lambdas | `sam/lambdas/coordination/tests/` | `PYTHONPATH=.:../../.. pytest tests/` | The dispatcher, start-run, asset-fanout, the sweeper, IAM grants against recorded calls |
+| coordination Lambdas | `sam/lambdas/coordination/tests/` | `make test-lambdas` | The dispatcher, start-run, asset-fanout, the sweeper, IAM grants against recorded calls |
 | Coordination scenarios | `tests/backend/coordination/` | `pytest tests/backend/coordination/` | Whole runs through the real SFN templates and Lambdas on moto |
-| console_api Lambda | `sam/lambdas/console_api/tests/` | `PYTHONPATH=.:../../.. pytest` | API routes, query/scan pagination, validation |
+| console_api Lambda | `sam/lambdas/console_api/tests/` | `make test-lambdas` | API routes, query/scan pagination, validation |
 | UI hooks | `ui/src/hooks/*.test.{ts,tsx}` | `npm test` | React hooks, state management |
 
 **Note:** `pip install -e ".[dev]"` installs pytest, pytest-cov, pytest-mock, moto, ruff, mypy and the boto3 type stubs; the Lambda suites need nothing more.
-
-### Local Lambda Development
-
-```bash
-cd sam/lambdas/coordination
-
-# Run tests against moto tables built from sam/template.yaml
-PYTHONPATH=.:../../.. pytest tests/ -v
-
-# One file
-PYTHONPATH=.:../../.. pytest tests/test_coordination_dispatcher.py -v
-```
 
 ---
 
 ## Common Tasks
 
-> **Open-core & skills.** polyris is open-core with **three tiers**: free
-> (open-source), **Team** and **Enterprise** (both paid, hosted). Proprietary code
-> lives per tier under `ui/src/ee/{team,enterprise}/` and
-> `console_api/ee/{team,enterprise}/`; everything else is public and the public
-> build ships without `ee/`. Two boundaries: **free↔paid** is a physical strip;
-> **Team↔Enterprise** is a runtime entitlement (`POLYRIS_TIER` + `can()`). Before
-> adding a feature, decide the tier (authoring, basic read, running and live-run
-> intervention = free; operations and observability = Team; governance/cost/SSO
-> = Enterprise). The checklists below cover the free
-> (public) surface. The **`add-aws-service`** skill in
-> [`.claude/skills/`](.claude/skills) walks adding a new AWS service to the DSL.
-> See ADR #97 (plugin route registration), #98 (open-core split structure), and
-> #99 (UI open-core exclusion) in `docs/reference/` for the mechanism behind the
-> open-core UI surface and API route registration.
+> **Open-core & skills.** polyris is open-core with **three tiers**: free (open-source), **Team** and **Enterprise** (both paid). Proprietary code lives per tier under `ui/src/ee/{team,enterprise}/` and `console_api/ee/{team,enterprise}/`; everything else is public and the public build ships without `ee/`. Two boundaries: **free↔paid** is a physical strip; **Team↔Enterprise** is a runtime entitlement (`POLYRIS_TIER` + `can()`). Before adding a feature, decide the tier (authoring, basic read, running and live-run intervention = free; operations and observability = Team; governance/cost/SSO = Enterprise). The checklists below cover the free (public) surface. The **`add-aws-service`** skill in [`.claude/skills/`](.claude/skills) walks adding a new AWS service to the DSL. See ADR #97 (plugin route registration), #98 (open-core split structure), and #99 (UI open-core exclusion) in `docs/reference/` for the mechanism behind the open-core UI surface and API route registration.
 
 ### Adding a New Task Status
 
@@ -202,25 +180,23 @@ Free (public) routes live in `console_api/routes/`. In short:
 3. Tests with `pytest-mock` in `console_api/tests/`
 4. Document in `docs/operations/API.md`
 
-The plugin registration pattern is described in ADR #97. (Paid Team/Enterprise
-routes follow the same `register(router)` seam in the private repo.)
+The plugin registration pattern is described in ADR #97. (Paid Team/Enterprise routes follow the same `register(router)` seam in the private repo.)
 
 ### Modifying Step Functions
 
-1. Edit template in `sfn_templates/<helper>/sfn.tpl.json`
-2. Run graph validation: `pytest tests/sdk/test_sfn_flow.py -v`
-3. Run JSONata tests: `cd tests/sfn_jsonata && npm test`
-4. Run smoke tests: `pytest tests/sdk/test_smoke.py -v`
-5. Update ASL snapshots if needed: `SNAPSHOT_UPDATE=1 pytest tests/sdk/test_asl_snapshots.py`
-6. Deploy to dev from your checkout: [FROM_SOURCE.md](docs/deployment/FROM_SOURCE.md)
-7. Test in AWS Console
+1. Edit the template in `sam/sfn_templates/<name>/sfn.tpl.json`
+2. Run graph validation: `pytest tests/sdk/test_sfn_flow.py`
+3. Run the JSONata tests: `make test-sfn-jsonata`
+4. Run whole runs through the templates: `pytest tests/backend/coordination/`
+5. Run the Lambda suites: `make test-lambdas`
+6. Update ASL snapshots if needed: `SNAPSHOT_UPDATE=1 pytest tests/sdk/test_asl_snapshots.py`
+7. Deploy your checkout to a dev account ([FROM_SOURCE.md](docs/deployment/FROM_SOURCE.md)) and run the coordination smoke: `make e2e-coordination STACK=<stack> PROFILE=<profile>`
 
 ---
 
 ## Sign your commits (GPG)
 
-Every commit must carry a GPG signature. CI enforces this — unsigned commits
-will be rejected on merge.
+Every commit must carry a GPG signature.
 
 ```bash
 # One-time setup: tell git which key to use

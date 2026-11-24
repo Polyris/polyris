@@ -161,7 +161,30 @@ asset-fanout Lambda
                     push retry row for the sweeper; anything else → warning
 ```
 
-A fact's partition is the partition of the run that produced it; Mark Successful records it for the marked run's date. A task is woken only when a fact serves its own run's date (hourly and daily: that date; weekly and monthly: its period or the one before).
+A fact's partition is the partition of the run that produced it; Mark Successful records it for the marked run's date. A task is woken only when a fact serves its own run's date (hourly and daily: that date; weekly and monthly: its period or the one before), so a run for an old date never starts on today's fact.
+
+The waiting task's side (a task with `wait_for`):
+
+```
+Run starts (Start_Run)
+        ├── Write the task row, waiting
+        └── Write one pointer per asset: "asset:<name>" → this run's task
+                │
+                ▼
+Dispatcher (woken when the task's upstreams finish, or by a fact)
+        ├── Read asset-events for this run's partition, consistently
+        │   (and `.within(...)` freshness, `.consecutive(...)` days)
+        ├── If ready → deps_ready → start the task's run_task
+        └── If not   → the row waits; the pointer brings the next fact
+```
+
+The tables involved, all created by the platform stack:
+
+| Table | Purpose |
+|-------|---------|
+| `asset-events` | Every fact (PK: `asset_name`, SK: `event_time`), with the partition it belongs to; the `asset-partition-index` finds facts by partition date |
+| `dep-subscriptions` | Per-run pointers: `asset:<name>` → each waiting task of a run whose `wait_for` names the asset |
+| `asset-subscriptions` | Pipelines scheduled on an asset (PK: `asset_name`, SK: `pipeline_name`) |
 
 ### Flow 5: Failure → decision
 
@@ -185,12 +208,12 @@ polyris-deploy
      │  CloudFormation creates/updates the pipeline StateMachine
      ▼
 dynamodb.update_item (direct boto3 call from deploy.py)
-     └─ pipeline_registry ──── SET registered_at, format_version
+     └─ pipeline-registry ──── SET registered_at, format_version
      ▼
 sfn.start_execution(register_only=true)  ← fire-and-forget
-     ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, spec_id, task_count, ...]
+     ├─ Register_Pipeline ──────► pipeline-registry [updateItem: sfn_arn, spec_id, task_count, ...]
      └─ Register_Asset_Subscriptions (if asset triggers)
-          └─ Map ──────────────► asset_subscriptions [putItem]
+          └─ Map ──────────────► asset-subscriptions [putItem]
 ```
 
 **On destroy:**
@@ -206,14 +229,14 @@ CloudFormation delete_stack ◄── until the stack is gone: stop the pipeline
 
 | Symptom | Where to look | Table / Service |
 |---------|--------------|-----------------|
-| Task stuck in `waiting` | The task in the console: why it waits, and since when. reconcile logs for its run | `pipeline_tokens` — the row's `reasons` and `attention_at` (its next check); `asset_events` — a fact for the run's date? |
-| Task never becomes `deps_ready` | reconcile logs for the run; its timeline's decisions | `pipeline_tokens` — the upstreams' rows of the same run |
-| Task `deps_ready` but not running | run_task's execution named by the row's `task_run_id` | `pipeline_tokens` — `start_failed_first`, `start_failures`; the bell |
-| The **System** pill in the console header is amber | "no connection" or "API error": its panel, and the console API's logs for `/api/pipelines`. Else its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
-| `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
-| Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
-| Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
-| Wrong DAG in UI for old execution | Check `dag_source` in API response | `run`: the run row's `spec_id` in `pipeline-specs`; `snapshot` (a run started before 1.3): `dag_snapshot::{execution}` in `pipeline_tokens` |
+| Task stuck in `waiting` | The task in the console: why it waits, and since when. reconcile logs for its run | `pipeline-tokens` — the row's `reasons` and `attention_at` (its next check); `asset-events` — a fact for the run's date? |
+| Task never becomes `deps_ready` | reconcile logs for the run; its timeline's decisions | `pipeline-tokens` — the upstreams' rows of the same run |
+| Task `deps_ready` but not running | run_task's execution named by the row's `task_run_id` | `pipeline-tokens` — `start_failed_first`, `start_failures`; the bell |
+| The **System** pill in the console header is amber | "no connection" or "API error": its panel, and the console API's logs for `/api/pipelines`. Else its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline-tokens` — the `_engine_health` row |
+| `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset-events` — a fact for the run's partition? `dep-subscriptions` — `asset:{name}` pointer? |
+| Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset-events` + `asset-subscriptions` |
+| Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline-registry` — is a row present for the pipeline name? |
+| Wrong DAG in UI for old execution | Check `dag_source` in API response | `run`: the run row's `spec_id` in `pipeline-specs`; `snapshot` (a run started before 1.3): `dag_snapshot::{execution}` in `pipeline-tokens` |
 | Wrong trigger_rule result | The task's timeline: the dispatcher's decision and its reasons | reconcile logs for the run |
 
 ---
@@ -225,13 +248,16 @@ Quick reference — for full attribute definitions and access patterns see
 
 | Table | Purpose | PK | SK |
 |-------|---------|----|----|
-| pipeline_tokens | Task rows and run rows (`_run_{execution}`) | execution_name | - |
-| dependency_subscriptions | Per-run pointers to waiting tasks | dependency_key | subscriber |
-| pipeline_registry | Pipeline metadata | pipeline_name | - |
-| pipeline_specs | Task specs, by version and by text hash | pk | sk |
-| asset_events | Asset history | asset_name | event_time |
-| asset_subscriptions | Pipelines scheduled on an asset | asset_name | pipeline_name |
-| task_events | Task history | task_run_id | event_time |
+| pipeline-tokens | Task rows and run rows (`_run_{execution}`) | execution_name | - |
+| dep-subscriptions | Per-run pointers to waiting tasks | dependency_key | subscriber |
+| pipeline-registry | Pipeline metadata | pipeline_name | - |
+| pipeline-specs | Task specs, by version and by text hash | pk | sk |
+| asset-events | Asset history | asset_name | event_time |
+| asset-subscriptions | Pipelines scheduled on an asset | asset_name | pipeline_name |
+| task-events | Task history | task_run_id | event_time |
+| api-tokens | Read by the console's sign-in check for a `plrs_` token; no route of this console creates one | token_id | - |
+
+Each table's full name is `<namespace>-<stage>-polyris-<name>`.
 
 ---
 
@@ -277,7 +303,7 @@ One-line inventory — for what each one does see
 | `asset-fanout` | Takes new facts to the runs that wait for them, and starts the pipelines scheduled on them |
 | `sweeper` | Every 5 minutes: a pass over each due run, push retries and catch-up, the engine's self-check |
 | `console-api` | The console's REST API |
-| `notify` | The function `run_task` invokes when a task fails and when it recovers |
+| `notify` | Reserved for alert delivery: `run_task` invokes it when a task fails or recovers, and no route of this console configures a channel for it |
 
 ---
 
@@ -358,7 +384,7 @@ The web console follows a clear data separation pattern:
 
 **Testing:** Vitest + Testing Library. ReactFlow components are tested via mock renderers that output DOM-testable `<div>` elements.
 
-See [UI Operations Guide](../operations/UI.md) for component details, accessibility, and testing patterns.
+Component details, accessibility and testing patterns: [DEVELOPMENT.md](../tools/DEVELOPMENT.md#console-ui).
 
 ---
 
@@ -370,7 +396,7 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 
 1. Open the task in the console: it shows why it waits (its reasons) and since when.
 2. Search the reconcile Lambda's logs for its run: each decision gives its reasons. The sweeper checks a run with waiting rows 10, 20, then every 30 minutes; if the console's System status says the periodic re-check is not running, that check is not happening.
-3. For `wait_for`: `dependency_subscriptions` holds one `asset:{name}` pointer per asset, with the task's `execution_name`; `asset_events` must hold a fact for the run's partition.
+3. For `wait_for`: `dep-subscriptions` holds one `asset:{name}` pointer per asset, with the task's `execution_name`; `asset-events` must hold a fact for the run's partition.
 
 ### Pipeline doesn't start
 
@@ -388,6 +414,8 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 
 ## Glossary
 
+The engine's own terms, for contributors. The terms a pipeline author meets (run, task, run's date, fact, trigger rule, decision and the like) are in [GLOSSARY.md](../../GLOSSARY.md).
+
 | Term | Definition |
 |------|------------|
 | **Run** | One execution of a pipeline: a run row and one task row per task |
@@ -397,6 +425,4 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 | **run_task** | The state machine that runs one attempt of a task's work |
 | **Sweeper** | Every 5 minutes, checks each due run: a lost wake-up only delays a task |
 | **Token** | The run's `waitForTaskToken`, which the dispatcher answers once every row is final |
-| **Pointer** | An `asset:{name}` row of `dependency_subscriptions`: a waiting task's link to an asset |
-| **Trigger Rule** | Condition for when task should run based on upstream statuses |
-| **Asset** | Data artifact produced by tasks (for data-driven orchestration) |
+| **Pointer** | An `asset:{name}` row of `dep-subscriptions`: a waiting task's link to an asset |

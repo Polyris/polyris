@@ -186,7 +186,7 @@ with DAG(
         cluster="polyris-test-ecs",
         # No trailing `:N` revision — ECS RunTask resolves the family name to
         # the latest ACTIVE revision. Pinning `:1` locks you to whatever code
-        # CFN built the first time; the next `sam deploy` bumps the container
+        # CFN built the first time; the next deploy of that stack bumps the container
         # Command into TaskDefinition:2, but a pinned DAG keeps calling :1.
         task_definition=(
             "arn:aws:ecs:us-east-1:000000000000:task-definition/"

@@ -45,8 +45,8 @@ with DAG(
     @task.sfn(arn=ARN, trigger_rule="all_done")
     def merge():
         """Runs once every branch is final — success, skip or failure. (A
-        branch that fails waits for a decision first — ADR #114 — so this
-        waits with it rather than running early.)"""
+        branch that fails waits for a decision first, so this waits with it
+        rather than running early.)"""
         pass
 
     @task.sfn(arn=ARN, trigger_rule="all_done")

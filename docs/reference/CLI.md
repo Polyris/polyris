@@ -1,15 +1,28 @@
 # CLI Reference
 
-All polyris commands. Run from your pipeline directory unless noted.
+Every polyris command and its options. install.sh installs them all ([README → Install](../../README.md#install)); each takes `--help`.
 
-`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag`, a helper function, or other files it runs — and not one that a module it imports makes. While the file runs, its folder and then the folder above it come first on `sys.path`, and `sys.exit(0)` ends it normally. Each DAG is one stack, so a `dag_id` made twice is refused. With `--all`, both commands load the folders directly in the current directory, each in its own Python process, so one folder's modules never reach another's. In each folder they load `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files: a Glue script that imports only `xcom` is never run, whatever its comments say. Both warn about a pipeline file in the current directory itself or deeper, which `--all` does not load, and refuse a `dag_id` that two files make.
+| Command | What it does |
+|---------|-------------|
+| [`polyris`](#polyris) | Lists the commands; `--version` prints the installed version |
+| [`polyris-up`](#polyris-up) | Installs or upgrades the platform in your AWS account |
+| [`polyris-down`](#polyris-down) | Removes the platform |
+| [`polyris-init`](#polyris-init) | Creates a pipeline folder, or a project's `config.py` |
+| [`polyris-validate`](#polyris-validate) | Checks a pipeline file for errors |
+| [`polyris-local`](#polyris-local) | Previews or simulates a pipeline without AWS |
+| [`polyris-output`](#polyris-output) | Prints the generated definition, a graph or the assets |
+| [`polyris-deploy`](#polyris-deploy) | Deploys a pipeline |
+| [`polyris-destroy`](#polyris-destroy) | Removes a pipeline |
+| [`polyris-register`](#polyris-register) | Registers a deployed pipeline in the console by hand |
+| [`polyris-build-lambda`](#polyris-build-lambda) | Copies the `xcom` helpers into a Lambda handler's folder |
+
+The pipeline commands read `dag.py` in the current folder (`--file` for another); how they load it: [How a pipeline file is loaded](#how-a-pipeline-file-is-loaded).
 
 ---
 
 ## polyris
 
-Top-level help dispatcher. Prints the list of available commands and exits.
-Each command is a separate console script — run any with `--help` for options.
+Prints the list of commands and exits.
 
 ```bash
 polyris              # print the command index
@@ -22,10 +35,10 @@ The installed version is also the platform version `polyris-up` installs, so quo
 
 ## polyris-up
 
-Install or upgrade the Polyris platform in your AWS account from the prebuilt release of the installed polyris version. Runs from any directory and writes nothing there.
+Installs or upgrades the platform in your AWS account from the prebuilt release of the installed polyris version. Runs from any folder and writes nothing there.
 
 ```bash
-polyris-up                                   # new install (asks for namespace, stage, admin email) or upgrade
+polyris-up                                   # new install (asks for a namespace, a stage and an admin email) or upgrade
 polyris-up --namespace acme --stage dev --admin-email you@acme.com --yes
 polyris-up --param EnablePitr=true           # change one template parameter, keep the rest
 polyris-up --namespace acme --stage prod     # a second stage next to an existing one
@@ -37,24 +50,24 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--stage` | Stage of a new install (default: `dev`). Namespace + Stage ≤ 33 characters |
 | `--admin-email` | First console admin; Cognito emails a temporary password |
 | `--param KEY=VALUE` | Set a template parameter (repeatable). Unset parameters keep their current value. `Namespace`, `Stage`, `ArtifactsBucket`, `UiArtifactsPrefix` are refused |
-| `--stack` | Platform stack name (default: the one stack tagged as a Polyris platform, or `<namespace>-<stage>` when those flags are given). Naming a platform stack created with `sam deploy` switches it to `polyris-up` (asks to confirm); a stack that isn't a Polyris platform is refused |
+| `--stack` | Platform stack name (default: the one stack tagged as a polyris platform, or `<namespace>-<stage>` when those flags are given). Naming a platform stack created with `sam deploy` switches it to `polyris-up` (asks to confirm); a stack that isn't a polyris platform is refused |
 | `--profile`, `--region` | AWS profile / region (default: `AWS_REGION`, then the standard credential chain; no region anywhere is an error) |
 | `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
 | `--yes` | Don't ask for confirmation |
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
-| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses. A pre-release such as `1.3.0rc1` counts as older than `1.3.0`. No flag rolls a platform that runs 1.3 back below 1.3: a pipeline deployed for 1.3 would not run on 1.2 |
+| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
 | `--disable-rollback` | If the update fails, keep what it already changed (`UPDATE_FAILED`) instead of rolling back. Fix the cause and run the same command again; if the release has nothing more to change, retry the failed update from the CloudFormation console. A first install always rolls back. Use it when the release notes ask for it |
-| `--accept-stopped-runs` | Upgrade a 1.2 platform to 1.3 although a run may be in flight (one is, or the check found none of the engine's state machines), or although 1.2 finished adopting older rows and facts less than 48 hours ago. `polyris-up` stops what 1.2 left running and prints the runs to start again. It never covers a platform older than 1.2.0 |
+| `--accept-stopped-runs` | Only for the upgrade from 1.2: [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md) |
 
-The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`).
+The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`). At the end of an upgrade, `polyris-up` lists the pipelines that need a redeploy, with the command for each.
 
-Before it upgrades a platform below 1.3, `polyris-up` checks it, and refuses one that is older than 1.2.0, whose 1.2 has not finished adopting older rows and facts for 48 hours, or that has a run in flight. Each refusal says what to do. The upgrade stops the executions that 1.2 left running and prints the runs it stopped; a later `polyris-up` does so again only while a state machine of 1.2 is left, or the stack still cleans up after an interrupted upgrade. On a platform that runs 1.3, every `polyris-up` waits until DynamoDB has built `run-start-index`, which the console's run lists read, and lists the pipelines that still need a redeploy, with the command for each. The steps of that upgrade: [manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13).
+Upgrading from 1.2: see [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md).
 
 ---
 
 ## polyris-down
 
-Delete the platform stack. Lists the DynamoDB tables (always deleted) and buckets with their object counts, then asks you to type the stack name.
+Deletes the platform stack. Lists the DynamoDB tables (always deleted) and buckets with their object counts, then asks you to type the stack name.
 
 ```bash
 polyris-down                    # refuses while ResultsBucket holds task results
@@ -67,292 +80,216 @@ polyris-down --delete-data      # also delete task results
 | `--stack`, `--profile`, `--region` | As for `polyris-up` |
 | `--yes` | Don't ask for confirmation |
 
-It refuses a stack that isn't a Polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines and prints how many of each. The artifacts bucket is deleted when no other platform stack is left in the region.
+It refuses a stack that isn't a polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines and prints how many of each. The artifacts bucket is deleted when no other platform stack is left in the region.
 
 ---
 
 ## polyris-init
 
-Create a new pipeline or initialize project config.
+Creates a pipeline folder with a `dag.py`, or a project's `config.py`.
 
 ```bash
-# A first pipeline that runs right away on the installed platform
+# A first pipeline that deploys and runs without edits (press Run in the console)
 polyris-init hello-world --hello
 
-# Initialize project — writes pipelines/config.py (creates pipelines/ if missing).
-polyris-init --project
-
-# Create a new pipeline (creates my-pipeline/dag.py)
-polyris-init my-pipeline
-
-# Try locally without AWS (explore DSL)
+# A pipeline to try without AWS: example ARNs that polyris-validate and polyris-local accept
 polyris-init my-pipeline --local
 
-# Custom schedule
+# A pipeline to edit and deploy (creates my-pipeline/dag.py)
+polyris-init my-pipeline
+
+# A project: writes pipelines/config.py; then create pipelines inside pipelines/, so they find it
+polyris-init --project
+cd pipelines && polyris-init my-pipeline
+
+# A schedule other than @daily
 polyris-init my-pipeline --schedule "@hourly"
-polyris-init my-pipeline --schedule "0 9 * * MON-FRI"
+polyris-init my-pipeline --schedule "cron(0 9 ? * MON-FRI *)"
 
 # Interactive wizard
 polyris-init my-pipeline -i
-
-# Custom directory
-polyris-init my-pipeline --dir ./pipelines
 ```
 
 | Option | Description |
 |--------|-------------|
 | `name` | Pipeline name (optional with `--project` or `-i`) |
-| `--project` | Generate `pipelines/config.py` (creates `pipelines/` if missing) |
-| `--hello` | Scaffold a pipeline that calls the platform's built-in test Step Function — deploys and runs without edits. Finds the platform like `polyris-deploy` does; accepts `--profile`, `--region`, `--stack` |
-| `--cfn` | Create CloudFormation-ready files (default) |
-| `--local` | Create pipeline without AWS (for exploring DSL) |
-| `--schedule` | Cron schedule (default: `@daily`) |
-| `--dir` | Base directory (default: `.`) |
+| `--hello` | Scaffold a pipeline that runs the platform's built-in test state machine: it deploys and runs without edits. Finds the platform as `polyris-deploy` does; accepts `--profile`, `--region`, `--stack` |
+| `--local` | Scaffold a pipeline with example ARNs (account `123456789012`), to try the commands without AWS. Point the ARNs at your own state machines before you deploy |
+| `--cfn` | Scaffold a pipeline to deploy (default) |
+| `--project` | Write `pipelines/config.py` (creates `pipelines/` if missing) |
+| `--schedule` | The schedule: a preset such as `@hourly`, `cron(…)` or `rate(…)` (default: `@daily`). A bare 5-field cron is refused |
+| `--dir` | Base folder (default: `.`) |
 | `-i`, `--interactive` | Interactive wizard |
-
----
-
-## polyris-local
-
-Preview, validate, and simulate a pipeline without deploying to AWS. Run from the pipeline directory.
-
-```bash
-# Dry run — shows DAG config, execution order, and validation result
-polyris-local
-
-# Validate and exit 0 (valid) or 1 (invalid)
-polyris-local --validate
-
-# Simulate execution with mock results
-polyris-local --mock
-
-# Dry run + generated Step Functions ASL JSON
-polyris-local --dry-run --asl
-
-# Use a different pipeline file (default: dag.py)
-polyris-local --file other.py
-```
-
-| Option | Description |
-|--------|-------------|
-| `--validate` | Validate structure and exit 0/1 |
-| `--mock` | Simulate execution with mock results |
-| `--dry-run` | Show execution plan (default when no mode given) |
-| `--asl` | Include generated Step Functions JSON in dry-run output |
-| `--file`, `-f` | Pipeline file (default: `dag.py`) |
 
 ---
 
 ## polyris-validate
 
-Validate pipeline(s) for errors. Run from pipeline directory.
+Checks a pipeline file for errors, without AWS. Run it in the pipeline's folder.
 
 ```bash
-# Validate dag.py in current directory
-polyris-validate
-
-# Verbose — shows schedule, task count, state count
-polyris-validate -v
-
-# Validate every pipeline folder in the current directory, as polyris-deploy --all deploys them
-polyris-validate --all
-
-# All pipelines, verbose
-polyris-validate --all -v
-
-# Specific file
+polyris-validate              # validate dag.py in this folder
+polyris-validate -v           # verbose: schedule and task count
+polyris-validate --all        # every pipeline folder in this folder, as polyris-deploy --all deploys them
+polyris-validate --all -v     # all pipelines, verbose
 polyris-validate --file my_pipeline.py
-
-# Run python_callable for @task.python tasks
-polyris-validate --test
-
-# JSON output
-polyris-validate --json
+polyris-validate --test       # run each task's Python body locally
+polyris-validate --json       # JSON output
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--all`, `-a` | Validate the pipeline files of each folder directly in the current directory, as `polyris-deploy --all` deploys them, and check them against each other (asset cycles, a `dag_id` made twice) |
-| `-v`, `--verbose` | Show schedule, task count, state count |
+| `--all`, `-a` | Validate the pipeline files of each folder directly in the current folder, as `polyris-deploy --all` deploys them, and check them against each other (asset cycles, a `dag_id` made twice) |
+| `-v`, `--verbose` | Show the schedule and the task count |
 | `--file`, `-f` | Pipeline file (default: `dag.py`) |
-| `--test` | Run python_callable for `@task.python` tasks |
+| `--test` | Run each task's Python body locally and report the ones that raise |
 | `--json` | Output results as JSON |
+
+---
+
+## polyris-local
+
+Previews, validates and simulates a pipeline without AWS. Run it in the pipeline's folder. Details and the Python API: [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md).
+
+```bash
+polyris-local                    # dry run: the DAG, the order of its tasks, the validation result
+polyris-local --validate         # exit 0 if valid, 1 if not
+polyris-local --mock             # run each task's Python function, with the trigger rules
+polyris-local --dry-run --asl    # dry run, with the generated Step Functions JSON
+polyris-local --file other.py
+```
+
+| Option | Description |
+|--------|-------------|
+| `--validate` | Validate and exit 0/1 |
+| `--mock` | Simulate a run with mock results |
+| `--dry-run` | Show the execution plan (default when no mode is given) |
+| `--asl` | Include the generated Step Functions JSON in the dry run |
+| `--file`, `-f` | Pipeline file (default: `dag.py`) |
 
 ---
 
 ## polyris-output
 
-Generate pipeline artifacts. Run from pipeline directory.
+Prints what polyris generates from a pipeline file, without AWS.
 
 ```bash
-# The Step Functions definition and the task specs it names
-polyris-output --json
-
-# Generate Mermaid diagram
-polyris-output --mermaid
-
-# Show DAG as ASCII graph
-polyris-output --graph
-
-# Generate asset registry JSON
-polyris-output --assets
-
-# Custom file
+polyris-output --json                       # the Step Functions definition and its task specs
+polyris-output --mermaid                    # a Mermaid diagram
+polyris-output --graph                      # an ASCII graph
+polyris-output --assets                     # the assets this file declares
 polyris-output --json --file my_pipeline.py
-
-# Multi-DAG file — select specific DAG
-polyris-output --json --select my-dag-id
+polyris-output --json --select my-dag-id    # one DAG of a file with several
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--json` | The Step Functions definition (`definition`) and the task specs polyris-deploy writes to `pipeline-specs` (`specs`: `spec_id`, `task_count`, `format_version` and each task's spec) |
-| `--mermaid` | Generate Mermaid diagram |
-| `--graph` | Show DAG as ASCII graph |
-| `--assets` | Generate asset registry JSON |
+| `--json` | The Step Functions definition (`definition`) and the task specs `polyris-deploy` writes (`specs`: `spec_id`, `task_count`, `format_version` and each task's spec) |
+| `--mermaid` | A Mermaid diagram |
+| `--graph` | An ASCII graph |
+| `--assets` | The assets this pipeline file declares, with their producers and consumers within the file, as JSON |
 | `--file`, `-f` | Pipeline file (default: `dag.py`) |
-| `--select` | Select DAG by ID (for multi-DAG files) |
+| `--select` | One DAG by its ID, for a file with several |
 
 ---
 
 ## polyris-deploy
 
-Deploy pipeline to AWS via CloudFormation. Run from pipeline directory.
+Deploys a pipeline to AWS through a CloudFormation change set, with boto3: no AWS CLI or SAM CLI. Run it in the pipeline's folder.
 
 ```bash
-# Deploy using defaults from config.py
-polyris-deploy
-
-# Deploy to specific stage
-polyris-deploy --stage prod
-
-# Override AWS profile
-polyris-deploy --profile my-aws-profile
-
-# Both
+polyris-deploy                        # the stage of config.py's DEFAULT_STAGE, or the one platform in the region
 polyris-deploy --stage prod --profile my-aws-profile
-
-# Preview without deploying
-polyris-deploy --dry-run
-
-# Remove pipeline stack
-polyris-destroy
-
-# Deploy specific file
-polyris-deploy --file my_dag.py
-
-# Multi-DAG file — deploy specific DAG
-polyris-deploy --select my-dag-id
-
-# Bulk: deploy every folder in the current directory (hidden ones and caches aside)
-# (each directory in its own process; dag.py and every .py whose code imports
-# DAG, dag or Pipeline from polyris are loaded — other files are listed and not
-# run; every DAG found is deployed; a file with zero DAGs is skipped; a file that
-# does not load counts as a failure: the summary lists it, the other directories
-# still deploy, exit code 1; a dag_id two files make deploys nothing, exit code 1)
-polyris-deploy --all
-
-# Bulk: deploy only the listed subdirectories
-polyris-deploy --only dir1 dir2
-
-# Bulk + destroy
-polyris-destroy --all
-polyris-destroy --only dir1 dir2
-
-# Bulk + pick one DAG per directory (directories without that DAG are skipped,
-# not an error)
-polyris-deploy --only dir1 dir2 --select my-dag-id
+polyris-deploy --dry-run              # show what it would deploy; changes nothing
+polyris-deploy --all                  # every pipeline folder in this folder
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--stage` | Deployment stage (default: from `config.py DEFAULT_STAGE`). The pipeline file reads it as `POLYRIS_STAGE` |
-| `--stack` | Platform stack to read outputs from (default: `config.py` `ENVIRONMENTS[stage].stack_name`, or the one `polyris-up` platform in the region) |
-| `--profile` | AWS profile (default: from `config.py` or AWS default) |
+| `--stage` | Stage (default: `config.py`'s `DEFAULT_STAGE`). The pipeline file reads it as `POLYRIS_STAGE` |
+| `--stack` | The platform stack to read outputs from (default: `config.py`'s `ENVIRONMENTS[stage].stack_name`, or the one `polyris-up` platform in the region) |
+| `--profile` | AWS profile (default: from `config.py`, or the standard credential chain) |
+| `--region` | AWS region (default: `POLYRIS_REGION` / `AWS_REGION`, then `config.py`, then your profile's region) |
 | `--file` | Pipeline file (default: `dag.py`). Not used with `--all`/`--only` |
-| `--dry-run` | Preview CloudFormation changes without deploying |
-| `--destroy` | Remove the pipeline's stack, stopping its running runs until the stack is gone |
-| `--select` | Select DAG by ID (for multi-DAG files); combinable with `--all`/`--only` to filter within each directory |
-| `--all` | Bulk: every folder directly in the current directory, but hidden ones (`.venv`) and caches. Mutually exclusive with `--only` |
-| `--only DIR [DIR ...]` | Bulk: only the listed subdirectories. Mutually exclusive with `--all` |
-| `--region` | AWS region (default: from `config.py`) |
-| `--log-level` | CloudWatch log level: `ALL`, `ERROR`, `FATAL`, `OFF` (default: `ERROR`) |
+| `--select` | One DAG by its ID, for a file with several; with `--all`/`--only`, the DAG to deploy from each folder |
+| `--all` | Every folder directly in the current folder, but hidden ones (`.venv`) and caches. Not with `--only` |
+| `--only DIR [DIR ...]` | Only the listed folders. Not with `--all` |
+| `--dry-run` | Show the stack, its resources and the spec version it would write; changes nothing |
+| `--destroy` | Same as `polyris-destroy` |
+| `--log-level` | The pipeline's CloudWatch log level: `ALL`, `ERROR`, `FATAL`, `OFF` (default: `ERROR`) |
 | `--log-retention` | Log retention in days (default: `30`) |
+
+**What it deploys.** One stack per pipeline, `<namespace>-<stage>-polyris-<dag_id>`, with:
+- the pipeline's state machine (`AWS::StepFunctions::StateMachine`) and its log group;
+- for a `cron(…)`, `rate(…)` or preset schedule, an EventBridge Scheduler schedule and the role it starts the state machine with. A pipeline scheduled on assets, with `@once` or with `schedule=None`, has none.
+
+**Before the stack.** `polyris-deploy` checks that the AWS resources your tasks name exist, and stops if one does not. It writes each task's spec to the platform's `pipeline-specs` table, reads the version back and checks it; a spec it cannot write or confirm stops the deploy before the stack changes. A pipeline beyond a limit of [DSL.md → Pipeline limits](../features/DSL.md#pipeline-limits) is refused before anything reaches AWS. After the stack deploys, it records the pipeline in the console's registry and prints `✅ <dag_id> deployed successfully!`.
+
+**Which platform.** The stack: `--stack`, then `stack_name` in `config.py`, then the one stack `polyris-up` tagged in the region; several tagged stacks and no name is an error that asks for `--stack`. Without a `config.py`, the namespace and the stage come from that platform stack.
+
+**Needs:** the platform, installed with `polyris-up` ([QUICKSTART.md](../getting-started/QUICKSTART.md)), and AWS credentials for its account and region with the deploy permissions of [IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#deploy--per-pipeline-polyris-deploy).
 
 ### Bulk mode (`--all` / `--only`)
 
-Run from the parent directory containing your pipeline subdirectories (e.g.
-`examples/`, with `cd examples`). Each target directory is scanned
-independently:
+Run it from the folder that holds your pipeline folders (for example `cd examples`).
 
-1. `dag.py` and every `.py` file directly in the directory whose code
-   imports `DAG`, `dag` or `Pipeline` from polyris are loaded
-   (non-recursive), except test files, in a Python process of the
-   directory's own. A directory with
-   several independent pipeline files (`orders.py`, `inventory.py`, ...) has
-   all of them deployed; a Glue script beside them is never run.
-2. Every DAG object found in every file is deployed — a file with several
-   DAGs (see the multi-DAG-file note above) gets all of them, same as
-   single-file mode.
-3. A pipeline file with zero DAGs contributes nothing and is skipped — not
-   an error. A shared `config.py` or `utils.py` that imports no DAG maker is
-   listed as not a pipeline file and never run.
-4. Before anything is deployed, every directory's `dag_id`s are collected:
-   a `dag_id` that two files make (in one directory or two) stops the run,
-   and nothing is deployed — each DAG is one stack, so one would replace the
-   other. With `--select`, only that `dag_id` counts. A directory whose
-   `dag_id`s could not be read (its process ended without answering) is not
-   deployed and counts as a failure.
-5. With `--all`, a pipeline file in the current directory itself, or deeper
-   than one folder, is not deployed: a warning names it. Move it into its own
-   folder, or deploy it with `--file`.
+```bash
+polyris-deploy --all                              # every folder
+polyris-deploy --only orders inventory            # only these folders
+polyris-deploy --only orders inventory --select orders-daily   # one DAG per folder; a folder without it is skipped
+```
 
-One DAG failing (a validation error, an AWS error) does not stop the batch —
-every DAG in every directory is still attempted, and a summary prints at the
-end listing what succeeded and what failed. The process exits non-zero if
-anything failed, so it's safe to use as a CI/script gate.
+1. In each folder, `dag.py` and every `.py` file directly in it whose code imports `DAG`, `dag` or `Pipeline` from polyris are loaded, except test files, in a Python process of the folder's own. A folder with several pipeline files (`orders.py`, `inventory.py`) has all of them deployed; a Glue script beside them is never run.
+2. Every DAG found in every file is deployed. A file with no DAG is skipped; a shared `config.py` or `utils.py` that imports no DAG maker is listed as not a pipeline file and never run.
+3. Before anything is deployed, every folder's `dag_id`s are collected: a `dag_id` that two files make, in one folder or two, stops the run and nothing is deployed, since each DAG is one stack. With `--select`, only that `dag_id` counts. A folder whose `dag_id`s could not be read is not deployed and counts as a failure.
+4. With `--all`, a pipeline file in the current folder itself, or deeper than one folder, is not deployed: a warning names it. Move it into its own folder, or deploy it with `--file`.
 
-`--file` is not used in bulk mode (each directory's files are discovered
-automatically) — passing both is a usage error.
+One DAG failing (a validation error, an AWS error) does not stop the others. A summary at the end lists what succeeded and what failed, and the exit code is non-zero if anything failed, so you can use it as a CI gate.
+
+---
+
+## polyris-destroy
+
+Removes a pipeline: its stack, its running runs and its entry in the console. Takes the same options as `polyris-deploy`, bulk mode included.
+
+```bash
+polyris-destroy                  # the pipeline of dag.py
+polyris-destroy --stage prod
+polyris-destroy --all            # the pipeline of every folder
+polyris-destroy --dry-run        # show what it would remove
+```
+
+It stops the pipeline's running runs until the stack is gone; a task already running may finish first. To stop work at once, stop the runs in the console first.
 
 ---
 
 ## polyris-register
 
-Manually register a pipeline in DynamoDB (without running tasks).
+Registers a deployed pipeline in the console's registry, without running it. Use it when a deployed pipeline is missing from the console ([REGISTRATION.md](../features/REGISTRATION.md)).
 
 ```bash
-# Register by ARN
-polyris-register arn:aws:states:us-east-1:123456789:stateMachine:my-pipeline
-
-# Register by name
+polyris-register arn:aws:states:us-east-1:123456789012:stateMachine:mycompany-dev-polyris-my-pipeline
 polyris-register --name my-pipeline
-
-# With specific profile and region
 polyris-register --name my-pipeline --profile prod --region us-east-1
-
-# Assume IAM role (cross-account)
-polyris-register --name my-pipeline --role-arn arn:aws:iam::123:role/deploy
-
-# JSON output
+polyris-register --name my-pipeline --role-arn arn:aws:iam::123456789012:role/deploy
 polyris-register --name my-pipeline --json
 ```
 
 | Option | Description |
 |--------|-------------|
-| `arn` | Step Function ARN (positional, optional) |
-| `--name`, `-n` | Pipeline name (alternative to ARN) |
-| `--region`, `-r` | AWS region (default: from `config.py` or `us-east-1`) |
-| `--profile`, `-p` | AWS profile from `~/.aws/credentials` |
-| `--namespace` | Namespace prefix for pipeline search |
+| `arn` | The pipeline's state machine ARN (positional, optional) |
+| `--name`, `-n` | Pipeline name (instead of the ARN) |
+| `--region`, `-r` | AWS region (default: the region of the ARN, or of your AWS profile) |
+| `--profile`, `-p` | AWS profile |
+| `--namespace` | Namespace prefix for the search by name |
 | `--role-arn` | IAM role ARN to assume (cross-account) |
-| `--json` | Output result as JSON |
+| `--json` | Output the result as JSON |
 
 ---
 
 ## polyris-build-lambda
 
-Copy the `xcom` helpers into a Lambda handler's folder, so the handler can `from polyris import xcom` without installing polyris in its package. Rebuild the package after you upgrade polyris.
+Copies the `xcom` helpers into a Lambda handler's folder, so the handler can `from polyris import xcom` without installing polyris in its package. Rebuild the package after you upgrade polyris.
 
 ```bash
 polyris-build-lambda lambdas/load_orders          # writes lambdas/load_orders/polyris/
@@ -363,3 +300,14 @@ polyris-build-lambda lambdas/load_orders --force  # replace an existing polyris/
 |--------|-------------|
 | `dir` | The Lambda handler's folder (positional) |
 | `--force` | Overwrite an existing `polyris/` folder |
+
+---
+
+## How a pipeline file is loaded
+
+`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` load a pipeline file the same way, so a file that validates also deploys.
+
+- A pipeline is every DAG the file's code makes: with or without `with`, through `@dag`, a helper function, or other files it runs. A DAG that a module it imports makes is not one.
+- While the file runs, its folder and then the folder above it come first on `sys.path`, and `sys.exit(0)` ends it normally.
+- Each DAG is one stack, so a `dag_id` made twice is refused.
+- With `--all`, `polyris-validate` and `polyris-deploy` load the folders directly in the current folder, each in its own Python process, so one folder's modules never reach another's. In each folder they load `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files: a Glue script that imports only `xcom` is never run, whatever its comments say. Both warn about a pipeline file in the current folder itself or deeper, which `--all` does not load, and refuse a `dag_id` that two files make.

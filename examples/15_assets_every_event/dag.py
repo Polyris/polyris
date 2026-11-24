@@ -15,7 +15,7 @@ when `orders-clean` runs MORE than once on the same calendar day:
   - `orders-analytics` (12): triggers on the FIRST run only. The second
     materialization that day hits the same day-scoped dedup key and is
     silently treated as a duplicate — see
-    docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md.
+    docs/design/SPIKE_ASSET_TRIGGER_GRANULARITY.md.
   - `orders-live-feed` (this DAG): triggers on EVERY run, including the
     second, third, etc. — AssetAny has no day-scoped dedup at all.
 

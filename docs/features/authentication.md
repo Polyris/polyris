@@ -1,383 +1,124 @@
-# polyris Console Authentication
+# Console authentication
 
-This document describes how the polyris Console authenticates users via AWS Cognito
-(browser UI uses Amplify). For scripts/CI, authenticate with a Cognito access token —
-`scripts/get-e2e-token.sh` obtains one from the deployment's user pool — or set
-`AUTH_ENABLED=false`.
+The console signs users in with Amazon Cognito. A platform installed with `polyris-up` has sign-in on by default, and there is no self sign-up: an admin creates every user, and every user has full access to the console. This page shows how to manage users, get a token for scripts, and turn sign-in on or off.
 
-> **Navigating this doc.** Reader intent → jump-to:
-> **Set it up** → [Enabling Authentication](#enabling-authentication).
-> **Add / manage users** → [User Management](#user-management).
-> **Understand the design** → [Architecture](#architecture).
-> **Something's broken** → [Troubleshooting](#troubleshooting).
-> **Dev locally** → [Development](#development).
+## Turn sign-in on or off
 
-> **How enforcement actually works (v0.87+, ADR #65).** Auth is enforced by a
-> single gate inside the `console-api` Lambda (`auth.authenticate`), **not** by
-> an API Gateway authorizer. The HTTP API uses a `/{proxy+}` integration, so
-> every request reaches the Lambda, and the gate runs there before route
-> dispatch. Enforcement is gated by the `AUTH_ENABLED` env var and is **on by
-> default** (the deployed template sets it `true`) — disabling it is a
-> deliberate step (see "Enabling enforcement" below). Health/metrics paths are
-> always public.
-
-## Overview
-
-- **AWS Amplify SDK** - handles the Cognito auth flow (login, MFA challenge, refresh)
-- **Admin-only user creation** - No self-registration, users must be created by administrators
-- **Auth at the Lambda gate** - the `console-api` Lambda verifies a Cognito token **offline** (RS256 against the pool JWKS, bound to this deployment's app client) on every non-public request when `AUTH_ENABLED=true`
-- **TOTP sign-in** - the login page handles a TOTP challenge; the user pool is created with MFA off
-- **Password policy** - 12+ characters with upper- and lowercase letters and a number
-
-## Prerequisites
-
-Before enabling authentication, ensure you have:
-
-- The platform installed — with `polyris-up` (auth is on by default) or from source with `sam deploy`
-- For the from-source path: the AWS CLI and Node.js 22+ to rebuild the UI
-
-## Architecture
-
-```
-┌─────────────────┐     ┌─────────────┐     ┌──────────────┐     ┌──────────────────────┐
-│   React UI      │────▶│ CloudFront  │────▶│ API Gateway  │────▶│  Lambda console_api  │
-│   + Amplify     │     │   /api/*    │     │ /{proxy+}    │     │  auth.authenticate() │
-└─────────────────┘     └─────────────┘     └──────────────┘     └──────────────────────┘
-        │                                    (no authorizer)              │
-        │  Amplify.Auth                                                    │ verify JWT (JWKS)
-        ▼                                                                  │
-┌───────────────────────────────────────────────────────┐                 │
-│     {namespace}-{stage}-polyris-console               │◀────────────────┘
-│  - Admin-only user creation                           │
-│  - Secure Remote Password (SRP) protocol              │
-│  - Automatic token refresh                            │
-└───────────────────────────────────────────────────────┘
-```
-
-## Resource Naming
-
-All Cognito resources follow the pattern `{namespace}-{stage}-polyris-{resource}`:
-
-| Resource | Name Pattern |
-|----------|--------------|
-| User Pool | `{namespace}-{stage}-polyris-console` |
-| App Client | `{namespace}-{stage}-polyris-console-client` |
-
-The user pool carries the tags `polyris:namespace`, `polyris:stage` and `polyris:component`.
-
-## Enabling Authentication
-
-**Installed with `polyris-up`:** auth is on by default, and `--admin-email` creates the first user. Self sign-up is disabled: every Cognito user gets full console access, so only an admin creates users (see *User Management* below). If your stack ran with self sign-up enabled, check who has an account and revoke what you don't recognise: `aws cognito-idp list-users --user-pool-id <CognitoUserPoolId>`, then `admin-delete-user` for unknown users. To turn it on for an existing stack:
+Sign-in is on unless you turned it off. `polyris-up` updates the stack and the console's `config.js` together, so there is no UI step:
 
 ```bash
-polyris-up --param EnableCognitoAuth=true --admin-email admin@yourcompany.com
+polyris-up --param EnableCognitoAuth=false   # turn sign-in off
+polyris-up --param EnableCognitoAuth=true --admin-email admin@yourcompany.com   # turn it back on
 ```
 
-The stack's `UiBootstrap` resource rewrites `config.js` with the new Cognito settings, so there is no UI step. The steps below are for a from-source `sam deploy`.
+`--admin-email` creates the first user, and Cognito emails it a temporary password. Changing the email later replaces that user: the previous one is deleted.
 
-### Step 1: Enable Cognito
+> **Warning:** Turning sign-in off deletes the user pool with its users. Turning it back on creates a new, empty pool with only the `--admin-email` user. With sign-in off, anyone who can reach the console URL can use the console.
 
-In `sam/samconfig.toml`, set `EnableCognitoAuth` to `true`:
+## Manage users
 
-```toml
-parameter_overrides = [
-  "Namespace=myorg",
-  "Stage=dev",
-  "EnableCognitoAuth=true",   # Enable Cognito authentication
-]
-```
-
-CloudFront URL is automatically added to Cognito callbacks by the SAM template.
-
-### Step 2: Redeploy SAM stack
+Users sign in with their email address. The commands below need the user pool's id, which the platform stack (`<namespace>-<stage>`, the one `polyris-up` installed) has as its output `CognitoUserPoolId`:
 
 ```bash
-cd sam
-sam build && sam deploy
-```
-
-### Step 3: Rebuild and upload the UI
-
-```bash
-cd ui && npm ci && npm run build && ./deploy.sh polyris-dev us-east-1
-```
-
-`ui/deploy.sh <stack-name> <region>` reads the stack's outputs and writes `config.js` with the Cognito settings. A local build reads them from these variables instead:
-
-| Variable | Value |
-|----------|-------|
-| `NEXT_PUBLIC_AUTH_ENABLED` | `true` |
-| `NEXT_PUBLIC_COGNITO_USER_POOL_ID` | (from output) |
-| `NEXT_PUBLIC_COGNITO_CLIENT_ID` | (from output) |
-| `NEXT_PUBLIC_COGNITO_REGION` | `us-east-1` |
-
-
-**For local development**, create `.env.local`:
-```bash
-cd ui
-cp .env.example .env.local
-# Edit with your Cognito values
-```
-
-### Step 4: Create First User
-
-```bash
-# Get User Pool ID from aws cloudformation describe-stacks --stack-name polyris-dev --query "Stacks[0].Outputs"
-USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name polyris-dev \
+USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name mycompany-dev \
   --query "Stacks[0].Outputs[?OutputKey=='CognitoUserPoolId'].OutputValue" --output text)
+```
 
-# Create admin user
+### Create a user
+
+In the AWS console: Cognito → User pools → `<namespace>-<stage>-polyris-console` → Users → **Create user**. Enter the email address as the user name, set or generate a temporary password, and tick **Mark email address as verified**.
+
+With the AWS CLI:
+
+```bash
 aws cognito-idp admin-create-user \
-  --user-pool-id $USER_POOL_ID \
-  --username admin@yourcompany.com \
-  --user-attributes Name=email,Value=admin@yourcompany.com \
-  --temporary-password "TempPassword123!"
-```
-
-## Disabling Authentication
-
-**Installed with `polyris-up`:** `polyris-up --param EnableCognitoAuth=false` — `config.js` follows automatically.
-
-From-source stacks:
-
-### Step 1: Update SAM parameters
-
-In `sam/samconfig.toml`, change `EnableCognitoAuth` to `false`:
-
-```toml
-parameter_overrides = [
-  "EnableCognitoAuth=false",
-]
-```
-
-### Step 2: Apply Changes
-
-```bash
-cd sam
-sam build && sam deploy
-```
-
-### Step 3: Redeploy UI
-
-Rerun `ui/deploy.sh` to regenerate `config.js`:
-
-Set `NEXT_PUBLIC_AUTH_ENABLED` = `false`
-
-Or remove all `NEXT_PUBLIC_COGNITO_*` variables.
-
-
-> **Note:** Disabling auth will NOT delete the Cognito User Pool. Users and settings are preserved if you re-enable later.
-
-## User Management
-
-### Creating Users
-
-Users can only be created by administrators. There are two methods:
-
-#### Method 1: AWS Console (Recommended)
-
-1. **Go to AWS Console** → Cognito → User pools
-2. **Select your user pool** (e.g., `mycompany-dev-polyris-console`)
-3. **Click "Users"** in the left sidebar
-4. **Click "Create user"** button
-5. **Fill in the form:**
-   - **Invitation message:** Send email invitation (optional)
-   - **User name:** Enter email address (e.g., `user@company.com`)
-   - **Email address:** Same as username
-   - **Temporary password:** Set or generate one
-   - ✅ **Mark email address as verified**
-6. **Click "Create user"**
-
-#### Method 2: AWS CLI
-
-```bash
-# Get User Pool ID
-USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name polyris-dev \
-  --query "Stacks[0].Outputs[?OutputKey=='CognitoUserPoolId'].OutputValue" --output text)
-
-# Create user
-aws cognito-idp admin-create-user \
-  --user-pool-id $USER_POOL_ID \
+  --user-pool-id "$USER_POOL_ID" \
   --username user@example.com \
-  --user-attributes \
-      Name=email,Value=user@example.com \
-      Name=email_verified,Value=true \
-  --temporary-password "TempPassword123!" \
-  --message-action SUPPRESS  # Remove to send email invitation
+  --user-attributes Name=email,Value=user@example.com Name=email_verified,Value=true \
+  --temporary-password "TempPassword123"
 ```
 
-Every user has full access to the console.
+Cognito emails the user an invitation; add `--message-action SUPPRESS` to send none and pass the password yourself.
 
-### Listing Users
+### List, disable, delete, reset
 
 ```bash
-aws cognito-idp list-users \
-  --user-pool-id us-east-1_abc123XYZ
+aws cognito-idp list-users --user-pool-id "$USER_POOL_ID"
+
+aws cognito-idp admin-disable-user --user-pool-id "$USER_POOL_ID" --username user@example.com   # can be re-enabled
+aws cognito-idp admin-delete-user --user-pool-id "$USER_POOL_ID" --username user@example.com    # permanent
+
+aws cognito-idp admin-set-user-password --user-pool-id "$USER_POOL_ID" \
+  --username user@example.com --password "NewPassword123" --permanent
 ```
 
-### Disabling/Deleting Users
+### First sign-in
+
+A new user signs in with the email and the temporary password, and then chooses a permanent password: at least 12 characters, with an uppercase letter, a lowercase letter and a number. A temporary password expires after 7 days.
+
+## A token for scripts
+
+The console API takes the same Cognito token the console uses: `Authorization: Bearer <token>`. To get one without a browser, give a user a permanent password (`admin-set-user-password ... --permanent`, above) and sign in with an admin call, which needs AWS credentials allowed `cognito-idp:AdminInitiateAuth`:
 
 ```bash
-# Disable user (can be re-enabled)
-aws cognito-idp admin-disable-user \
-  --user-pool-id us-east-1_abc123XYZ \
-  --username user@example.com
+CLIENT_ID=$(aws cloudformation describe-stacks --stack-name mycompany-dev \
+  --query "Stacks[0].Outputs[?OutputKey=='CognitoClientId'].OutputValue" --output text)
+API_URL=$(aws cloudformation describe-stacks --stack-name mycompany-dev \
+  --query "Stacks[0].Outputs[?OutputKey=='ConsoleApiUrl'].OutputValue" --output text)
 
-# Delete user (permanent)
-aws cognito-idp admin-delete-user \
-  --user-pool-id us-east-1_abc123XYZ \
-  --username user@example.com
+TOKEN=$(aws cognito-idp admin-initiate-auth \
+  --user-pool-id "$USER_POOL_ID" --client-id "$CLIENT_ID" \
+  --auth-flow ADMIN_USER_PASSWORD_AUTH \
+  --auth-parameters "USERNAME=ci@example.com,PASSWORD=$CI_PASSWORD" \
+  --query 'AuthenticationResult.AccessToken' --output text)
+
+curl -s "$API_URL/api/pipelines" -H "Authorization: Bearer $TOKEN"
 ```
 
-### Resetting Password
+The token is valid for 1 hour. In a checkout of this repository, `scripts/get-e2e-token.sh` runs the same sign-in. The routes are listed in [API.md](../operations/API.md).
 
-```bash
-aws cognito-idp admin-set-user-password \
-  --user-pool-id us-east-1_abc123XYZ \
-  --username user@example.com \
-  --password "NewPassword123!" \
-  --permanent
-```
+## Which requests need a token
 
-## First Login Experience
-
-When a new user first logs in:
-
-1. Enter email and temporary password
-2. System prompts to set a new permanent password
-3. Password must meet requirements:
-   - Minimum 12 characters
-   - Uppercase letter
-   - Lowercase letter  
-   - Number
-4. If MFA is enabled, user may be prompted to set up TOTP
-
-## Security Features
-
-### Password Policy
-
-- Minimum length: 12 characters
-- Requires: uppercase, lowercase, numbers
-- Temporary password validity: 7 days
-
-### Token Management (Amplify)
-
-- Access tokens expire after 1 hour (configurable)
-- Refresh tokens valid for 30 days (configurable)
-- **Automatic token refresh** handled by Amplify SDK
-- Sign-out clears the tokens from this browser
-
-### MFA Configuration
-
-The user pool is created with MFA `OFF` (`MfaConfiguration` in `sam/template.yaml`). Cognito offers:
-- `OFF` - No MFA
-- `OPTIONAL` - Users can enable MFA
-- `ON` - MFA required for all users
-
-When MFA is enabled, users can use any TOTP authenticator app (Google Authenticator, Authy, 1Password, etc.)
-
-## API Route Protection
-
-When `AUTH_ENABLED=true`, the gate inside the `console-api` Lambda enforces
-authentication on every request except the small allowlist below. The gate
-runs before route dispatch, so this rule applies uniformly to every route in
-the API — no per-route opt-in needed.
-
-### Public routes (never require auth)
-
-These paths are always public, regardless of the `AUTH_ENABLED` setting:
+With sign-in on, every API request needs a token except these, which are always public:
 
 | Path | Why public |
 |------|-----------|
 | `GET /api/health` and `GET /api/health/live` | Probes and monitors must work without credentials. Without a valid token, `/api/health` answers the status words only; its details (messages, resource names, `findings`) need one |
 | `GET /api/metrics` | Ops metrics endpoint; scraped by monitoring agents |
 
-### Everything else requires a Cognito bearer token
+The check runs in the `console-api` Lambda, not in an API Gateway authorizer: it verifies the token offline, against the user pool's keys, and accepts only tokens issued to this console's app client.
 
-All other routes — pipelines, tasks, executions, settings, notifications
-— require `Authorization: Bearer <cognito-access-token>`.
+## Security settings
 
-Full route inventory: [../operations/API.md](../operations/API.md).
+| Setting | Value |
+|---------|-------|
+| User pool | `<namespace>-<stage>-polyris-console`, app client `<namespace>-<stage>-polyris-console-client` |
+| Password | 12+ characters with upper- and lowercase letters and a number; a temporary password expires after 7 days |
+| Tokens | Access token 1 hour, refresh token 30 days; the console refreshes the access token on its own. Sign-out clears the tokens from this browser |
+| MFA | Off when the pool is created (`MfaConfiguration` in `sam/template.yaml`). If you turn it on in Cognito, the login page asks for a code from a TOTP app |
+
+The user pool carries the tags `polyris:namespace`, `polyris:stage` and `polyris:component`.
 
 ## Troubleshooting
 
 ### "Invalid username or password"
 
-- Verify the email is correct
-- Check if user exists in Cognito
-- Ensure temporary password hasn't expired (7 days)
+- Check the email, and that the user exists (`list-users`).
+- A temporary password expires after 7 days: set a new one with `admin-set-user-password`.
 
 ### "User not confirmed"
 
-- Admin-created users don't need confirmation
-- Check if user status is `FORCE_CHANGE_PASSWORD` - user needs to set new password
+Admin-created users need no confirmation. A user whose status is `FORCE_CHANGE_PASSWORD` still has to choose a permanent password at sign-in.
 
-### Token refresh failing
+### Signed out again and again
 
-- Check if refresh token hasn't expired (30 days)
-- Clear browser storage and sign in again
-- Verify Cognito user pool is accessible
+The refresh token lasts 30 days. Clear the browser's storage for the console and sign in again.
 
-### 401 Unauthorized from API
+### 401 Unauthorized from the API
 
-- Confirm `AUTH_ENABLED=true` is intended (when off, the API requires no token)
-- Check the token isn't expired; sign out and sign in again to get a fresh token
-- Ensure `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` on the `console-api`
-  Lambda match the pool/client the UI logs into (the gate binds tokens to this
-  app client). Note: auth is enforced **in the Lambda gate**, not by an API
-  Gateway authorizer.
+- Get a fresh token: an access token lasts 1 hour.
+- Check that the token comes from this platform's user pool and app client: the API accepts no other.
 
-## Development
+## From source
 
-### Running Locally Without Auth
-
-For local development, create `.env.local`:
-
-```bash
-cd ui
-cp .env.example .env.local
-```
-
-Keep auth disabled (default):
-```env
-NEXT_PUBLIC_AUTH_ENABLED=false
-```
-
-### Testing Auth Locally
-
-To test auth locally against deployed Cognito, set in `.env.local` (the
-`API_GATEWAY_URL` name in older docs is gone — use `NEXT_PUBLIC_API_URL`, the full
-invoke URL with stage and `/api`):
-
-```env
-NEXT_PUBLIC_API_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/dev/api
-NEXT_PUBLIC_AUTH_ENABLED=true
-NEXT_PUBLIC_COGNITO_USER_POOL_ID=us-east-1_abc123XYZ
-NEXT_PUBLIC_COGNITO_CLIENT_ID=7abcdef123456789ghijklmnop
-NEXT_PUBLIC_COGNITO_REGION=us-east-1
-```
-
-Amplify signs in with email/password directly, so **no OAuth callback URLs need
-to be registered** for `http://localhost:3000`. The pool/client above must match
-what the `console-api` Lambda validates against. Then run:
-```bash
-npm run dev
-```
-
-See `docs/operations/UI.md` → *Local UI against a deployed API* for the full
-setup (with and without auth).
-
-## Related Files
-
-| File | Description |
-|------|-------------|
-| `sam/template.yaml` | Auth & Console parameters |
-| `sam/template.yaml` | Cognito infrastructure |
-| `ui/src/lib/config.ts` | Config module (env vars + fallback) |
-| `ui/src/lib/amplifyConfig.ts` | Amplify configuration |
-| `ui/src/hooks/useAuth.tsx` | Auth context and hooks (Amplify) |
-| `ui/src/components/LoginPage.tsx` | Login UI |
-| `ui/src/components/AuthGate.tsx` | Auth wrapper component |
-| `ui/src/components/UserMenu.tsx` | User dropdown in header |
-| `ui/src/utils/api.ts` | API client with auth headers |
-| `ui/.env.example` | Example environment variables |
+On a stack deployed from a checkout with `sam deploy`, set `EnableCognitoAuth` in `sam/samconfig.toml`'s `parameter_overrides`, run `sam build && sam deploy`, then rebuild and upload the UI so `config.js` follows: `cd ui && npm ci && npm run build && ./deploy.sh <stack> <region>`. To run the UI locally against a deployed API, with or without sign-in, see [ui/README.md](../tools/DEVELOPMENT.md#run-the-console-locally-against-a-deployed-api). The code: the console's sign-in in `ui/src/hooks/useAuth.tsx`, `ui/src/components/LoginPage.tsx` and `ui/src/lib/amplifyConfig.ts`; the API's check in `sam/lambdas/console_api/auth.py`; the user pool in `sam/template.yaml`.

@@ -88,7 +88,7 @@ Default to deletion when migrating — git preserves it. Don't add a `Deprecated
 
 ## Historical vs current docs — mark them, or delete them
 
-`docs/reference/` contains both current reference and historical dev notes (`SPIKE_*.md`, `PLAN_*.md`, `COMPLETENESS_REPORT_*.md`). A reader can't tell from the filename.
+Historical dev notes (`SPIKE_*.md`, `COMPLETENESS_REPORT_*.md`, maintainer plans) live in `docs/design/`, apart from the current reference in `docs/reference/`. A reader still can't tell from a filename alone whether a design note is current.
 
 **Rule:** every historical/frozen doc must open with a status line:
 - **Frozen-and-current:** `**Historical analysis @ v0.94. Behaviour changed in ADR #117 (see \`DSL.md\` for the current trigger rules).**`

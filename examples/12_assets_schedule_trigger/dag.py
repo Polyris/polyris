@@ -15,7 +15,7 @@ Instead of a timer, this DAG is **triggered by the asset**: `schedule=[clean_ord
 means "run whenever clean/orders is updated" — the first time each day. If
 `orders-clean` runs more than once on the same calendar day, only the first
 materialization triggers this pipeline; see
-docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md for why, and
+docs/design/SPIKE_ASSET_TRIGGER_GRANULARITY.md for why, and
 `AssetAny([clean_orders])` below for the escape hatch when every run should
 recompute the consumer (e.g. an hourly producer). Scheduling options:
 

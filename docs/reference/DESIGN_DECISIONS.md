@@ -19,7 +19,7 @@ not declared in the DAG. The old `alerts=` DAG parameter has been **removed**.
 The DSL no longer defines an `alerts=` parameter; passing it raises a `TypeError`.
 Non-secret config (channel, mentions, severity,
 enabled channels) lives in `alert_config`; secrets go to SSM with only the
-parameter name kept in the config. See `docs/features/alerts.md`.
+parameter name kept in the config. See `docs/features/notifications.md`.
 
 ---
 
@@ -9082,7 +9082,7 @@ on which endpoint answered the request.
 **Context.** Skip / Mark Successful / Mark Failed / Stop all resolve a task's orchestration
 token directly from `console_api`, bypassing every state in the `run_task` wrapper a normal
 completion goes through. Investigation (full detail in
-`docs/reference/SPIKE_TASK_ACTIONS_DATA_LIFECYCLE.md`) found this had three consequences
+`docs/design/SPIKE_TASK_ACTIONS_DATA_LIFECYCLE.md`) found this had three consequences
 beyond the originally-reported "Input tab is empty for a skipped task": a downstream task
 calling `xcom.pull()` on a manually-resolved task crashes with `PullError`; the manual
 action's immediate `notify_dependents_via_sfn` call can unblock downstream trigger rules
@@ -9149,7 +9149,7 @@ step a silent no-op for every restart, consequential specifically for this new c
 ### 121. Restart correctness: two-level wrapper stop, `task_config`/`outlets` reconstruction, `restart-` name prefix
 
 **Context.** Live testing of ADR #120's direct-Restart-from-`waiting_decision` surfaced
-three further, real gaps — full detail in `docs/reference/SPIKE_TASK_ACTIONS_DATA_LIFECYCLE.md`
+three further, real gaps — full detail in `docs/design/SPIKE_TASK_ACTIONS_DATA_LIFECYCLE.md`
 §9.5–9.6.
 
 **Decisions:**

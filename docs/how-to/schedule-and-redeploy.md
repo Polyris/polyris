@@ -1,24 +1,19 @@
 # How to schedule a pipeline and understand what happens on redeploy
 
-Two lifecycle questions this doc answers:
-
-1. When does a scheduled pipeline first fire? What does polyris deploy when I set `schedule="..."`?
-2. What happens to a run that's already in-flight when I `polyris-deploy` a new version?
-
-For the raw schedule syntax (cron / rate / preset / asset), see [DSL.md#schedule-options](../features/DSL.md#schedule-options). This doc is the lifecycle companion — what happens *around* the schedule at deploy time.
+How to schedule a pipeline, pause and change its schedule, redeploy it while runs are in flight, and destroy it. Schedule syntax (cron, rate, preset, asset): [DSL.md#schedule-options](../features/DSL.md#schedule-options).
 
 ## What polyris deploys for a schedule
 
 When you set `schedule="cron(...)"` or `schedule="rate(...)"` or `schedule="@daily"` on a DAG, `polyris-deploy` creates an `AWS::Scheduler::Schedule` resource in the pipeline's CFN stack. It has:
 
-- **A trigger** — the cron / rate expression, converted verbatim from your DSL string. All expressions are interpreted in **UTC**. Polyris does not currently support `ScheduleExpressionTimezone`; convert your intended local time to UTC in the cron.
+- **A trigger** — the cron / rate expression from your DSL string, or the one a preset stands for. Every expression is in **UTC**: polyris sets no time zone, so convert your local time to UTC in the cron.
 - **A target** — the pipeline's state machine ARN, invoked via `states:StartExecution`.
-- **An execution role** — `{pipeline}-scheduler-role`, trusted only by `scheduler.amazonaws.com`, allowed only to `StartExecution` on this one state machine. Scoped tight; nothing else.
+- **An execution role** — `{namespace}-{stage}-polyris-{dag_id}-scheduler-role`, trusted only by `scheduler.amazonaws.com`, allowed only to `StartExecution` on this one state machine.
 - **A state** — `ENABLED` unless you set `is_paused_upon_creation=True` on the DAG.
 
 `schedule=None` deploys no scheduler resources — the state machine is manual-only (trigger via Console or `states:StartExecution`).
 
-`schedule=[some_asset]` deploys no scheduler either — the platform's asset-fanout function starts the pipeline when the facts of its assets satisfy its schedule, not EventBridge. See [ASSETS.md](../features/ASSETS.md).
+`schedule=[some_asset]` deploys no scheduler either: polyris starts the pipeline when its assets get the new data its schedule asks for. See [ASSETS.md](../features/ASSETS.md).
 
 ## When does the first run fire?
 
@@ -58,51 +53,33 @@ Switching between schedule *types* (cron → asset, or asset → cron) recreates
 
 - Removing a cron schedule (setting `schedule=None` or `schedule=[some_asset]`) deletes the `AWS::Scheduler::Schedule` in the next deploy.
 - Adding a cron schedule to a previously manual-or-asset DAG creates it.
-- Asset-triggered DAGs never have an `AWS::Scheduler::Schedule` — asset-fanout starts them from their `asset-subscriptions` rows.
+- Asset-triggered DAGs never have an `AWS::Scheduler::Schedule`: polyris starts them when their assets get new data.
 
 ## What happens to in-flight runs when you redeploy
 
-You're at a pipeline that has one or more runs currently executing. You `polyris-deploy` a new version of `dag.py`. Here's what changes and what doesn't.
+A run keeps the version of the pipeline it started with. `polyris-deploy` records each deploy as a new version; a run in flight goes on with its own, and the next run takes the new one. So a change to a task's retries, retry delay, time limits or trigger rule applies from the next run, also to the tasks of a running run that have not started yet. The console draws each run's graph from its own version.
 
-### The state machine definition updates. In-flight executions keep the OLD definition.
+A changed schedule takes effect at its next tick: change `cron(0 8 * * ? *)` to `cron(0 6 * * ? *)`, and the run that started at 08:00 goes on; the next one starts at 06:00 tomorrow.
 
-`polyris-deploy` calls CloudFormation, which calls `states:UpdateStateMachine`. AWS documents this behavior explicitly:
+### What a redeploy cannot change
 
-> Existing executions started before the update do not use the new definition. They continue with the definition they were started with.
-
-The state machine holds the run's start and its direct steps; the tasks come from the spec version the run started with (below). Either way, a change takes effect on the **next** run. If you added `retries=3` to a task, the task that's currently on attempt 1 does not gain retries.
-
-### The schedule expression updates. It affects the next tick.
-
-If you changed `schedule="cron(0 8 * * ? *)"` to `schedule="cron(0 6 * * ? *)"`, the current in-flight run (triggered at 08:00) is unaffected. The scheduler fires next at 06:00 tomorrow, not 08:00.
-
-### A run keeps the version it started with.
-
-`polyris-deploy` writes the pipeline's task specs as a new version in `pipeline-specs` before the CFN deploy, and each run reads the version it started with. The Console shows the new graph for the runs that start after the deploy; a run in flight keeps its own graph.
-
-### Task settings change from the next run.
-
-A task's retries, retry delay, time limits and trigger rule come from its run's version. A redeploy that changes them does not touch a run in flight, the tasks that have not started yet in it included: they take the new values on the *next* run.
-
-### What redeploy CANNOT recover
-
-- **A task that waits for a decision** (`waiting_decision`). Redeploying doesn't unstick it. Act from the console: Skip, Restart, Fail or Mark Successful.
+- **A task that waits for a decision** (`waiting_decision`). A redeploy doesn't change it: act from the console with Skip, Restart, Fail or Mark Successful.
 - **A change to `dag_id`.** That's a *new* pipeline as far as polyris is concerned — the old CFN stack (`{namespace}-{stage}-polyris-{old_dag_id}`) stays put unless you run `polyris-destroy` first. Rename with care.
-- **A change to a task's `task_id`.** The task disappears from the next run: a run takes its tasks from the version it started with. In-flight runs finish with the old `task_id`; their `pipeline-tokens` rows stay a year and 90 days, and their `task-events` rows 90 days.
+- **A change to a task's `task_id`.** The next run has the task under its new name only. Runs in flight finish with the old `task_id`.
 
 ## Safe redeploy checklist
 
 Before you `polyris-deploy` a running pipeline:
 
-1. **Inspect the local diff.** `git diff dag.py` — you know exactly what changed.
-2. **Preview the CFN change.** `polyris-deploy --dry-run` — shows the resource-level diff CloudFormation will apply.
-3. **Check what's in-flight.** Console → pipeline → Runs — do you have runs mid-execution you don't want to interfere with? (Redeploy doesn't kill them; it also doesn't help them.)
-4. **If the change is risky** (renamed a task, changed a trigger rule, tightened retries), consider pausing first: `is_paused_upon_creation=True` → deploy → wait for in-flight to drain → resume.
-5. **`polyris-deploy`.** New state machine version live; next scheduled trigger uses it; in-flight runs finish on the old version.
+1. **Inspect the local diff.** `git diff dag.py`.
+2. **Preview.** `polyris-deploy --dry-run` lists the stack and resources it would deploy, and changes nothing.
+3. **Check what's in flight.** Console → pipeline → Runs. A redeploy neither stops those runs nor changes them.
+4. **If the change is risky** (a renamed task, a changed trigger rule), pause first: `is_paused_upon_creation=True` → deploy → wait for the runs in flight to end → resume.
+5. **`polyris-deploy`.** The next run uses the new version; runs in flight finish on theirs.
 
 ## Destroy a pipeline
 
-`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one. CloudFormation deletes the state machine only once its executions have ended, and a run keeps its execution open until every task of it is final, a paused run forever. The engine stops the tasks of each stopped run at its next check of the run; until then the run goes on, and a task that finishes records its success and starts its dependants. To stop new work at once, Stop the run in the console first. To let a run finish, wait until it has, then destroy. Once the stack is gone, `polyris-destroy` removes the pipeline from the console: its row in the pipeline registry and its subscriptions to the assets of its schedule.
+`polyris-destroy` deletes the pipeline's stack (state machine, schedule, scheduler role, log group) and removes the pipeline from the console. It stops the pipeline's running runs on the way; a task already running may finish first. To stop work at once, Stop the runs in the console first; to let a run finish, wait until it has, then destroy.
 
 Does not delete:
 
@@ -114,7 +91,6 @@ Does not delete:
 ## Related
 
 - [DSL.md#schedule-options](../features/DSL.md#schedule-options) — cron / rate / preset / asset syntax
-- [DEPLOY.md](../deployment/DEPLOY.md) — `polyris-deploy` CLI reference
 - [CLI.md#polyris-deploy](../reference/CLI.md#polyris-deploy) — every deploy flag
 - [ASSETS.md](../features/ASSETS.md) — asset-triggered pipelines (no `AWS::Scheduler::Schedule` deployed)
 - [REGISTRATION.md](../features/REGISTRATION.md) — how pipeline registration works

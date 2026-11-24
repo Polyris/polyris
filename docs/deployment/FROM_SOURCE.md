@@ -25,9 +25,25 @@ npm ci && npm run build
 ./deploy.sh <stack-name> <region> ./out --profile <profile>
 ```
 
-`ui/deploy.sh` reads the stack outputs and writes `config.js`. A stack deployed this way isn't tagged as a `polyris-up` platform, so set `stack_name` in `pipelines/config.py` (or pass `--stack`) when you deploy pipelines to it ([CONFIGURATION.md](../reference/CONFIGURATION.md)).
+`ui/deploy.sh` reads the stack outputs and writes `config.js`; it reads no `config.py`, so pass it the stack and the region. Run it again after each `sam deploy` that changes an output.
 
 Namespace + Stage may be at most 33 characters (IAM role names are capped at 64).
+
+## Pipelines on a stack deployed with SAM
+
+A stack deployed with `sam deploy` isn't tagged as a `polyris-up` platform, so `polyris-deploy` does not find it on its own. Name it in `config.py` ([CONFIGURATION.md](../reference/CONFIGURATION.md)), or pass `--stack`:
+
+```python
+ENVIRONMENTS = {
+    "dev": {
+        "stack_name": "mycompany-dev",  # the stack_name of sam/samconfig.toml
+        "namespace": "mycompany",
+        "region": "us-east-1",           # the region of that stack
+    },
+}
+```
+
+`stack_name` must equal the `stack_name` in `sam/samconfig.toml`. polyris cannot check this when the pipelines and the checkout live in different repositories. To manage such a stack with `polyris-up` from then on: [manage-the-platform.md](../how-to/manage-the-platform.md).
 
 ## Test the release path
 

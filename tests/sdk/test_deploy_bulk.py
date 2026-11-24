@@ -601,6 +601,18 @@ class TestBulkRealProcesses:
         assert "exited with code 0 before reporting" in capsys.readouterr().out
 
 
+def test_destroys_help_describes_the_destroy(monkeypatch, capsys):
+    """polyris-destroy --help said "Deploy Polyris pipeline via CloudFormation" and listed
+    --destroy (the docs audit after 1.3)."""
+    monkeypatch.setattr("sys.argv", ["polyris-destroy", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        deploy.main(force_destroy=True)
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Remove a Polyris pipeline" in out and "polyris-destroy --stage prod" in out
+    assert "Deploy Polyris pipeline" not in out and "--destroy" not in out
+
+
 class TestStageReachesThePipelineFile:
     """``--stage`` names the stage of the pipeline file too: a file that picks its ARNs by
     ``POLYRIS_STAGE`` took the shell's stage, or its default, under ``polyris-deploy --stage prod``

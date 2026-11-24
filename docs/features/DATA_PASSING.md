@@ -1,34 +1,8 @@
 # Passing data between tasks
 
-**Reference.** Task A returns some data. Task B reads it. This page pins the
-API surface, error taxonomy, DDB shape, and IAM contract for every task type
-polyris supports. For a step-by-step introduction, start with the
-[`16_xcom_showcase` example](../../examples/16_xcom_showcase/); for the
-end-to-end design rationale, see
-[ADR #123](../reference/adr-123-xcom-reliable-data-passing.md).
+Task A returns some data; task B reads it. This page is the reference for `xcom`, the module that passes a task's output to its dependants, for every task type. For a walk-through, start with the [`16_xcom_showcase` example](../../examples/16_xcom_showcase/).
 
-## Requires
-
-`polyris >= 1.3.0` in your task deployment bundles: a Lambda's package (`polyris-build-lambda`), a Glue job's wheel (`--extra-py-files`), an ECS or Batch image. Rebuild them when you upgrade to 1.3. An older copy of `xcom` returns `None` for an upstream whose output the task's input could not hold (a fan-in over about 1,500 upstreams). It also raises for an upstream the run skipped, and can read an older run's output of the same date after an upstream failed.
-
-## Contents
-
-- [Cheat sheet — one call, every task type](#cheat-sheet--one-call-every-task-type)
-- [Reading upstream: `xcom.get()`](#reading-upstream-xcomget)
-- [Writing output](#writing-output)
-- [Legacy reader: `xcom.pull()`](#legacy-reader-xcompull)
-- [Failure taxonomy](#failure-taxonomy)
-- [`XComManuallyResolvedError` — reading the marker for diagnostics](#xcommanuallyresolvederror--reading-the-marker-for-diagnostics)
-- [The service task metadata trap](#the-service-task-metadata-trap)
-- [Lambda write pattern](#lambda-write-pattern)
-- [Size limits](#size-limits)
-- [Large outputs — Claim Check pattern](#large-outputs--claim-check-pattern)
-- [Installing polyris SDK in Glue / ECS / Batch / EMR](#installing-polyris-sdk-in-glue--ecs--batch--emr)
-- [IAM](#iam)
-- [Anti-patterns](#anti-patterns)
-- [Where data lives (DDB schema)](#where-data-lives-ddb-schema)
-- [Determinism](#determinism)
-- [Migration from 0.99](#migration-from-099)
+Task code that imports `polyris` needs the platform's version of it. Build a Lambda's package (`polyris-build-lambda`), a Glue job's wheel or an ECS or Batch image with polyris 1.3.0, and rebuild it when you upgrade the platform ([Installing the polyris SDK](#installing-polyris-sdk-in-glue--ecs--batch--emr)).
 
 ## Cheat sheet — one call, every task type
 
@@ -50,7 +24,7 @@ def main():
 Writes:
 
 ```python
-# Lambda — just return
+# Lambda — return the value
 def handler(event, context):
     return {"rows": 1240, "path": "s3://lake/2026-01-01/data.parquet"}
 
@@ -60,7 +34,34 @@ def main():
     xcom.push({"rows": df.count(), "path": "s3://lake/2026-01-01/data.parquet"})
 ```
 
+### Per task type
+
+| Task type | Reads an upstream's output | Writes its own output | Stored when it does not push |
+|-----------|----------------------------|-----------------------|------------------------------|
+| `lambda_function` | `xcom.get(event, "name")` | returns it | its return value |
+| `sfn` | the child state machine's input: `upstream.<name>.output` | its output | its output |
+| `glue_job`, `ecs_task`, `batch_job` | `xcom.get(None, "name")` | `xcom.push(value)` | the AWS response: `{"JobRunId": ...}`, `{"Tasks": [{"TaskArn": ...}]}`, `{"JobId": ...}` |
+| `emr_step` | `xcom.get(None, "name")`, without the upstream's status ([EMR and Athena](#emr-and-athena--reads-yes-xcompush-no)) | cannot push | the AWS response with the step's id |
+| `athena_query` | none: the query is SQL | cannot push | `{"QueryExecution": {"QueryExecutionId": ...}}` |
+
 That's the whole mental model. The rest of this page is the specification.
+
+## Contents
+
+- [Reading upstream: `xcom.get()`](#reading-upstream-xcomget)
+- [Writing output](#writing-output)
+- [Legacy reader: `xcom.pull()`](#legacy-reader-xcompull)
+- [Failure taxonomy](#failure-taxonomy)
+- [`XComManuallyResolvedError` — reading the marker for diagnostics](#xcommanuallyresolvederror--reading-the-marker-for-diagnostics)
+- [The service task metadata trap](#the-service-task-metadata-trap)
+- [Lambda write pattern](#lambda-write-pattern)
+- [Size limits](#size-limits)
+- [Large outputs — Claim Check pattern](#large-outputs--claim-check-pattern)
+- [Installing polyris SDK in Glue / ECS / Batch / EMR](#installing-polyris-sdk-in-glue--ecs--batch--emr)
+- [IAM](#iam)
+- [Anti-patterns](#anti-patterns)
+- [Where data lives (DDB schema)](#where-data-lives-ddb-schema)
+- [Determinism](#determinism)
 
 ## Reading upstream: `xcom.get()`
 
@@ -88,11 +89,7 @@ runs after a failure never reads an older run's output of the same date:
   `XComMissingError` naming the status, or returns `None` with
   `raise_on_missing=False`.
 
-A task's result is stored as JSON and reaches its dependants as the value the
-task returned: a string as that string (stored with its quotes, `"ok"`). A
-string of JSON text (`json.dumps(...)`) reaches them parsed, as in 1.2. A
-string result that an older version stored as it was reaches them as that
-string.
+A task's result is stored as JSON and reaches its dependants as the value the task returned: a string as that string (stored with its quotes, `"ok"`). A string of JSON text (`json.dumps(...)`) reaches them parsed.
 
 An upstream that succeeded always has its output, because the output is written
 together with the success. If it is missing anyway, the task fails with that
@@ -191,9 +188,7 @@ xcom.pull(task_name, context=None, *,
 ```
 
 Low-level DDB reader — hits `output#{pipeline}#{task}#{date}` directly with no
-event-inject shortcut. Kept for pre-1.0.0 code and for callers that need to
-read a specific date / pipeline explicitly (out-of-band tooling). New code
-should prefer `xcom.get()`, which layers the manual-resolution guard, the
+event-inject shortcut. Use it to read a specific date or pipeline explicitly (out-of-band tooling). Task code should prefer `xcom.get()`, which layers the manual-resolution guard, the
 upstream-failure guard, and inject → DDB fallback on top of the same reader.
 
 **Behaviour differences from `get()`:**
@@ -244,9 +239,7 @@ in this exact order for a dep that exists in `event.upstream`:
 
 ## `XComManuallyResolvedError` — reading the marker for diagnostics
 
-When you catch a `XComManuallyResolvedError`, four attributes are populated on
-the exception; the fifth (`pipeline_execution`) is present when the marker was
-written by 1.0.0 or later:
+When you catch a `XComManuallyResolvedError`, the exception carries these attributes:
 
 ```python
 except XComManuallyResolvedError as e:
@@ -290,22 +283,7 @@ if isinstance(marker, dict) and marker.get("_manually_resolved"):
 
 ## The service task metadata trap
 
-Without `xcom.push()`, a service task's stored `result` is the AWS API
-response, not application data. Downstream sees:
-
-| Task type | Stored `result` without push |
-|-----------|------------------------------|
-| `lambda_function` | Lambda return value (real data — no push needed) |
-| `sfn` | Child SFN Output (real data — no push needed) |
-| `glue_job` | `{"JobRunId": ...}` |
-| `ecs_task` | `{"Tasks": [{"TaskArn": ...}]}` |
-| `athena_query` | `{"QueryExecution": {"QueryExecutionId": ...}}` |
-| `batch_job` | `{"JobId": ...}` |
-| `emr_step` | AWS response with step identifier (no push option — see EMR note) |
-
-Console flags this: when the Output tab detects an AWS-response shape, a banner
-appears with the hint to call `xcom.push()` (or, for EMR / Athena, to switch
-to a Lambda front).
+Without `xcom.push()`, a Glue, ECS, Batch, EMR or Athena task's stored output is the AWS API response, not your data ([Per task type](#per-task-type)). The console's Output tab shows a banner when a stored output looks like an AWS response, with the hint to call `xcom.push()` (or, for EMR and Athena, to put a Lambda after the task).
 
 ## Lambda write pattern
 
@@ -326,7 +304,7 @@ see the wrong value.
 |-----------|-------|------------------|
 | Runtime inject per dep | 25 KB, and all of a task's upstreams share about 200 KB with its input | Use `xcom.get()` — auto-falls-back to DDB (~350 KB). |
 | DDB `result` field | 350 KB | Use [Claim Check pattern](#large-outputs--claim-check-pattern). |
-| Console preview (`task_input`) | ~380 KB | New in 1.0.0 — separate `input#` DDB record. |
+| Console preview (`task_input`) | ~380 KB | Stored in its own `input#` row. |
 | DDB item hard limit (AWS) | 400 KB | AWS constraint. |
 
 For >350 KB payloads, use the Claim Check pattern.
@@ -364,32 +342,23 @@ grants only DDB read, not S3 read on user buckets.
 
 ## Installing polyris SDK in Glue / ECS / Batch / EMR
 
-`xcom.get()` / `xcom.push()` live in the `polyris` package. Your task code
-needs to import it. Install it directly from a git tag.
+`xcom.get()` / `xcom.push()` live in the `polyris` package, which your task code imports. Install the release your platform runs; the snippets below use v1.3.0.
 
-> Replace `<VERSION>` in every snippet below with a real git tag from
-> [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
-> (e.g. `v1.0.1`). Never pin to `main` in production.
-
-**Glue (Spark ETL and Python Shell)** — Glue does not install a git URL reliably: `--additional-python-modules` splits `polyris @ git+https://...` on its spaces and the job fails at launch. Bake polyris into a wheel and pass it via `--extra-py-files`, which both job types accept:
+**Glue (Spark ETL and Python Shell)**: `--additional-python-modules` splits a `polyris @ https://...` requirement on its spaces and the job fails at launch. Build a wheel and pass it via `--extra-py-files`, which both job types accept:
 
 ```yaml
 DefaultArguments:
-  "--extra-py-files": "s3://<your-bucket>/wheels/polyris-<VERSION>-py3-none-any.whl"
+  "--extra-py-files": "s3://<your-bucket>/wheels/polyris-1.3.0-py3-none-any.whl"
 ```
 
-Build the wheel once from the git tag: `pip wheel --no-deps "polyris @ git+https://github.com/Polyris/polyris@<VERSION>" -w dist/` then `aws s3 cp dist/polyris-*.whl s3://<your-bucket>/wheels/`.
+Build the wheel once: `pip wheel --no-deps "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz" -w dist/`, then `aws s3 cp dist/polyris-*.whl s3://<your-bucket>/wheels/`.
 
-**ECS / Batch** — install into your container image:
+**ECS / Batch**: install into your container image:
 
 ```dockerfile
-FROM python:3.12
-RUN pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
+FROM python:3.12-slim
+RUN pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
 ```
-
-`python:3.12` (full, not `slim`) has `git` bundled — needed for git+URL
-install. Use `-slim` only if you download the wheel from S3 in the container
-entrypoint instead.
 
 **Lambda** — two options:
 
@@ -408,14 +377,14 @@ overwrite an existing `polyris/` directory.
 
 Add one line to your Lambda's `requirements.txt`:
 ```
-polyris @ git+https://github.com/Polyris/polyris@<VERSION>
+polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz
 ```
 Then `pip install -r requirements.txt -t .` before zipping.
 
 **EMR** — bootstrap script:
 
 ```bash
-sudo pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
+sudo pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
 ```
 
 Reads work; writes via `xcom.push()` are not supported (see
@@ -423,7 +392,7 @@ Reads work; writes via `xcom.push()` are not supported (see
 
 ## IAM
 
-The polyris SAM stack exports two managed policies via CloudFormation exports:
+The platform stack exports two managed policies (CloudFormation exports `<namespace>-<stage>-polyris-task-read-policy` and `-task-write-policy`):
 
 | Task type + usage | `PolyrisTaskReadPolicy` | `PolyrisTaskWritePolicy` |
 |-------------------|:-----------------------:|:------------------------:|
@@ -463,7 +432,7 @@ trust relationship or route through a Lambda proxy in the polyris account.
 | Rely on `event["upstream"]` for a Glue upstream without knowing about metadata leak | Read Console — banner warns; then add `xcom.push()` in the Glue job |
 | `xcom.push()` from a Lambda handler | `return value` — deterministic ordering |
 | Read `event["upstream"][X]["output"]["field"]` without checking status | `xcom.get(event, X)` — loud errors surface bugs earlier |
-| Access raw `event["upstream"]` dict in **new** code | `xcom.get(event, X)` — auto-resolves `_s3_ref`, auto-falls-back on truncated. Existing readers keep working — see [Migration from 0.99](#migration-from-099). |
+| Access the raw `event["upstream"]` dict | `xcom.get(event, X)` — auto-resolves `_s3_ref`, auto-falls-back on truncated |
 | Read a `XComManuallyResolvedError` marker as if it were data | Catch the error; route on `.resolution` / `.operator` / `.reason` |
 
 ## Where data lives (DDB schema)
@@ -512,42 +481,9 @@ GSI's key attribute (`date`) so `input#` rows don't populate that GSI.
 
 ## Determinism
 
-Data flows are keyed on the logical run date, not wall-clock time. Both
+Data flows are keyed on the run's date, not wall-clock time. Both
 `event.upstream` and `xcom.get()` / `xcom.pull()` are deterministic and safe
 to re-run — as long as your task's return value doesn't include `now()` or
 similar wall-clock inputs.
 
 Same-date re-runs overwrite; different dates never collide. A date's output lives a year from its latest write, its input 90 days.
-
-## Migration from 0.99
-
-If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
-
-1. **Reader API.** Existing readers keep working — nothing to change on day
-   one:
-   - `event["upstream"][X]["output"]` — still populated by `run_task`.
-   - `xcom.pull(X, event)` — same signature, same return shape.
-   - `except PullError` — still catches missing rows (`PullError` is now an
-     alias for `XComMissingError`).
-
-   When you're ready to adopt the new guards, replace call-sites with
-   `xcom.get(event, X)`. The new call adds: upstream-status check
-   (`raise_on_failure`), manual-resolution guard (`raise_on_manual`), and
-   transparent inject → DDB fallback on truncation.
-
-2. **Writer API for service tasks.** Before 1.0.0, Glue / ECS / Batch tasks
-   silently stored the AWS API response as `result` — downstream received
-   `{"JobRunId": ...}` instead of the real work output. In 1.0.0, call
-   `xcom.push({...})` before the job ends to overwrite the metadata with the
-   actual payload. The Console shows a warning banner on tasks whose stored
-   result looks like AWS metadata.
-
-3. **New error types.** Existing `except PullError:` code continues to work.
-   New code should catch the specific `XCom*Error` type it's handling —
-   catching `XComError` covers all four.
-
-Deploy order: install the new SDK in your task bundles first
-(`polyris @ git+https://github.com/Polyris/polyris@<VERSION>` — see the
-[install section above](#installing-polyris-sdk-in-glue--ecs--batch--emr)),
-then redeploy the pipeline. Polyris 1.3 needs every bundle rebuilt with its
-own SDK (see *Breaking* in the [CHANGELOG](../../CHANGELOG.md)).

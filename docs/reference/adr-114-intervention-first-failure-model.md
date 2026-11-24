@@ -18,7 +18,7 @@ pause is not configurable, it is the model.
 This was not previously written down as a decision — it was implicit in `run_task`'s
 control flow. Investigating why several `trigger_rule`s (`one_failed`, `all_failed`,
 `all_done`, `all_done_min_one_success`) cannot fire (see
-`docs/reference/SPIKE_TRIGGER_RULES.md`) surfaced the reason: those rules require a
+`docs/design/SPIKE_TRIGGER_RULES.md`) surfaced the reason: those rules require a
 **genuine terminal failure** to reach a sibling branch, but a resolved failure calls
 `SendTaskFailure`, which `Run_All_Tasks`'s `Parallel` catches (`Catch: States.ALL ->
 Pipeline_Failed`), cancelling every sibling branch before a failure-reactive rule can
