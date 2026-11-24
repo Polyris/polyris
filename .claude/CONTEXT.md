@@ -22,8 +22,8 @@ Add a term the moment it is resolved, not in a batch at the end.
 | **execution_name** | DDB partition key for a task row. `{task}-{date}-{short}`. |
 | **pipeline_execution** | Full SFN execution ARN of the parent run. |
 | **pipeline_execution_short** | Last 20 chars of `pipeline_execution`, `.` and `:` stripped. Format `-{date}-{hex8}`. Kept deliberately (ADR-tracked); ~103 references. |
-| **dependency_key** | `{task_name}-{pipeline_execution_short}`. Must match exactly between the registration writer and the `query_subscriptions` reader. |
-| **wrapper_execution_arn** | The `dependency_wrapper` execution for one task, distinct from the task's own service call. |
+| **dependency_key** | `asset:{name}` in `dependency-subscriptions`: a waiting task's pointer to an asset it waits for, written by `Start_Run` and read by AssetFanout (ADR #137 §7). |
+| **run_task_arn** | The task's `run_task` execution, distinct from the task's own service call (the row's `run_task_helper_arn`). |
 
 **The trap:** `run` and `execution` are not the same noun. One run contains many
 executions. A feed that says "runs" and queries executions counts wrong.

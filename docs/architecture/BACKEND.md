@@ -148,12 +148,10 @@ Pipeline metadata:
 | task_count | N | The number of tasks in that version |
 | format_version | N | The format `polyris-deploy` deployed the pipeline with (`task_spec.FORMAT_VERSION`); missing or older, the console marks the pipeline "redeploy needed" |
 | registered_at | S | The last `polyris-deploy` |
-| dag | S | JSON: nodes, edges. Written for the 1.2 engine only; no console code reads it |
-| tasks | S | JSON: task definitions. Written for the 1.2 engine only; no console code reads it |
 | schedule | S | Schedule expression |
 | asset_schedule | S | JSON: asset trigger config |
 
-`polyris-deploy` writes `registered_at` and `format_version`; the pipeline's own `Register_Pipeline` state writes the rest on every run. `tests/sdk/test_registry_readers.py` fails for any code that reads `tasks` or `dag`.
+`polyris-deploy` writes `registered_at` and `format_version`; the pipeline's own `Register_Pipeline` state writes the rest on every run, and removes the `dag` and `tasks` that a 1.2 deploy wrote. `tests/sdk/test_registry_readers.py` fails for any code that reads `tasks` or `dag`.
 
 ### pipeline_specs
 

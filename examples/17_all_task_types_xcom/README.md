@@ -47,7 +47,7 @@ participation is:
   the SQL parser. The SDK guard fails this at `polyris-validate` since
   1.0.1. `variables=` on the DAG records values for Console visibility
   but is NOT interpolated into the query.
-- **Write side** — the wrapper stores the `StartQueryExecution` API response
+- **Write side** — `run_task` stores the `StartQueryExecution` API response
   (`{"QueryExecution": {"QueryExecutionId": "..."}}`) as the task's xcom
   output. That's AWS metadata, not data.
 - **Handoff** — the following Lambda (`resolve_athena`) reads that metadata,
@@ -158,7 +158,7 @@ renders each hop as one row with a green stripe.
 The ECS / Batch containers in this example use a **runtime install** pattern:
 `python:3.12` base image → `pip install 'polyris @ git+https://github.com/Polyris/polyris@v1.0.0'`
 at container start → run inline `xcom.get()` / `xcom.push()` code. This is
-fine for smoke-testing that the wrapper injects `POLYRIS_*` env vars and
+fine for smoke-testing that `run_task` injects `POLYRIS_*` env vars and
 `xcom.push()` reaches DDB end-to-end, but it has multiple runtime failure
 points that make it unsuitable for production:
 

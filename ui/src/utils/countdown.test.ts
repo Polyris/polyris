@@ -11,7 +11,7 @@ const countingDown = {
 };
 
 describe('the countdown of a 1.3 row (review of TR-6d, P-3)', () => {
-    it('ends at the row countdown_end, and at 1.2 wait_delay_until_ms when a row has one', () => {
+    it('ends at the row countdown_end, and at wait_delay_until_ms, run_task\'s wait between retries, when a row has one', () => {
         expect(waitUntilMs(countingDown)).toBe(Date.parse('2026-11-22T06:30:00.000Z'));
         expect(waitUntilMs({ wait_delay_until_ms: 1234, countdown_end: '2026-11-22T06:30:00.000Z' })).toBe(1234);
         expect(waitUntilMs({ countdown_end: 'not a time' })).toBeUndefined();
