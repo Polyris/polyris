@@ -1,5 +1,7 @@
 # ADR #131 — `polyris-up` / `polyris-down`: install the platform from prebuilt release assets
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md), *Migration and upgrade* (1.3.0).** `polyris-up` checks a platform older than 1.3 before it upgrades it, stops what 1.2 left running and lists the pipelines to redeploy; `polyris-down` stops the platform's running executions until its stack is gone (§4).
+
 > **Status:** ACCEPTED (2026-11-12).
 >
 > **Amends:** the install path — `scripts/setup-polyris.sh` is removed; `scripts/install.sh` installs only the CLI. ADR #35 step 4: `polyris-deploy` deploys through boto3 change sets instead of `aws cloudformation deploy`.

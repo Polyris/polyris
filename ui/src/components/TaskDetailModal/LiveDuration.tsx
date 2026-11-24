@@ -5,7 +5,7 @@ import type { LiveDurationProps } from '@/types';
 
 /**
  * LiveDuration - Shows live updating duration for running tasks
- * Uses running_at (when task actually started running) not started_at (wrapper start)
+ * Uses running_at (when task actually started running) not started_at (when Start_Run wrote the row)
  */
 export const LiveDuration = ({ task }: LiveDurationProps) => {
     const [tick, setTick] = useState(() => Date.now());
@@ -18,7 +18,7 @@ export const LiveDuration = ({ task }: LiveDurationProps) => {
         return () => clearInterval(interval);
     }, [isRunning]);
     
-    // Use running_at (actual task start) not started_at (wrapper start)
+    // Use running_at (actual task start) not started_at (when Start_Run wrote the row)
     const runningAt = task?.running_at;
     
     // Not started running yet

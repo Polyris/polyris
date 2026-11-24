@@ -376,9 +376,9 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
     output = None
     task_input = None
     truncated = False
-    # `run_id` on canonical rows (set by Init_Output_Row / Save_Canonical_Output /
-    # Save_Input_Record — all use $states.context.Execution.Id = run_task_helper
-    # ARN). Returned so the UI can detect cross-run staleness: rows keyed by
+    # `run_id` on canonical rows (set by run_task's Record_Success and
+    # Save_Input_Record, and by xcom.push — each the run_task execution's ARN,
+    # $states.context.Execution.Id). Returned so the UI can detect cross-run staleness: rows keyed by
     # (pipeline, task, DATE) are shared across every same-date run; a row whose
     # run_id doesn't match THIS task's run_task_helper_arn was written by a
     # prior same-date run and its content should not be attributed to this run.
@@ -430,9 +430,9 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
         'input': task_input,
         'truncated': truncated,
         # Canonical-row run_ids for the UI's cross-run staleness gate.
-        # `expected_run_id` is the run_task_helper ARN this run's wrapper
-        # invoked (set on the per-run task row by Send_Ready_Signal_Sfn); UI
-        # compares row.run_id vs this to know if the row belongs to this run.
+        # `expected_run_id` is the task row's run_task_helper_arn, which run_task
+        # writes when it starts the work; the UI compares row.run_id with it to
+        # know whether the row belongs to this run.
         'output_row_run_id': output_row_run_id,
         'input_row_run_id': input_row_run_id,
         'expected_run_id': resolved.get('run_task_helper_arn'),

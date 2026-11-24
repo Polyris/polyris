@@ -33,24 +33,22 @@ If you need history for dates before deploy, start the pipeline manually for eac
 
 ## Pause and resume a schedule
 
-Three ways to pause, in order of what to reach for:
+Two ways to pause, in order of what to reach for. Either way, runs in flight keep going and no *new* run starts. The polyris console's **Pause** pauses a run, not its schedule.
 
-**1. Console UI — the day-to-day path.** Pipelines page → open pipeline → **Pause**. Sets the schedule `DISABLED` in EventBridge Scheduler and marks the pipeline paused in `pipeline-registry` DDB. In-flight runs keep going; no *new* runs are triggered.
-
-**2. Change the DAG and redeploy.** Add `is_paused_upon_creation=True` to `DAG(...)` and `polyris-deploy`. The schedule deploys `DISABLED`. Also fixes a schedule you manually paused via the AWS console: `polyris-deploy` re-applies the DAG's declared state on every deploy, so a manual console override reverts the next time you deploy.
+**1. Change the DAG and redeploy.** Add `is_paused_upon_creation=True` to `DAG(...)` and `polyris-deploy`. The schedule deploys `DISABLED`. `polyris-deploy` re-applies the DAG's declared state on every deploy, so a pause made in the AWS console reverts the next time you deploy.
 
 ```python
 with DAG(
     "orders-etl",
     schedule="@daily",
-    is_paused_upon_creation=True,   # deploy paused; enable later via Console
+    is_paused_upon_creation=True,   # deploy with the schedule off
 ) as dag:
     ...
 ```
 
-**3. Directly via AWS CLI.** `aws scheduler update-schedule --name {pipeline}-schedule --state DISABLED`. Fast for a one-off manual pause, but `polyris-deploy` will re-`ENABLED` it if the DAG doesn't have `is_paused_upon_creation=True` — the DSL is the source of truth.
+**2. In the AWS console, for a one-off pause.** EventBridge → Scheduler → Schedules → `{pipeline}-schedule` → **Disable**. The next `polyris-deploy` enables it again unless the DAG has `is_paused_upon_creation=True`: the DSL is the source of truth. The AWS CLI's `aws scheduler update-schedule` replaces the whole schedule, so it needs every field of it, not only `--state`.
 
-Resume: Console → **Resume**, or `--state ENABLED` in the CLI, or remove `is_paused_upon_creation=True` and redeploy.
+Resume: **Enable** in the same place, or remove `is_paused_upon_creation=True` and redeploy.
 
 ## Change the schedule
 
@@ -88,9 +86,9 @@ A task's retries, retry delay, time limits and trigger rule come from its run's 
 
 ### What redeploy CANNOT recover
 
-- **A run that's currently paused for a manual decision** (task in `waiting_decision`). Redeploying doesn't unstick it. Act via Console (Skip / Restart / Fail / Mark Success) or `aws stepfunctions send-task-success/failure` with the stored task token.
+- **A task that waits for a decision** (`waiting_decision`). Redeploying doesn't unstick it. Act from the console: Skip, Restart, Fail or Mark Successful.
 - **A change to `dag_id`.** That's a *new* pipeline as far as polyris is concerned — the old CFN stack (`{namespace}-{stage}-polyris-{old_dag_id}`) stays put unless you run `polyris-destroy` first. Rename with care.
-- **A change to a task's `task_id`.** The task disappears from the DAG in the next run's snapshot. In-flight runs finish with the old task_id; the task-events / pipeline-tokens rows for the old id stay in DDB (subject to TTL, ~120 days).
+- **A change to a task's `task_id`.** The task disappears from the next run: a run takes its tasks from the version it started with. In-flight runs finish with the old `task_id`; their `pipeline-tokens` rows stay a year and 90 days, and their `task-events` rows 90 days.
 
 ## Safe redeploy checklist
 

@@ -36,7 +36,7 @@ Click the notification → opens Task Detail modal. The task's **Actions** tab h
 | Action | When to use |
 |--------|-------------|
 | **Restart** | Run the task again from its wait: it waits for its dependencies and assets again, and its attempt count goes on. Tick *Also rerun the dependants its failure or stop decided* to rerun them too. Use when the failure was transient (dependency was down, quota reset) |
-| **Mark success** | Mark the task `success` and record the facts of its outlets: its dependants start. Use when you verified the work is actually done (checked S3, checked the target table) |
+| **Mark success** | Mark the task `success` and record the facts of its outlets: its dependants start if they still wait. Once a rule has decided them after a final failure, Restart each of them, with its dependants, to run them. Use when you verified the work is actually done (checked S3, checked the target table) |
 | **Skip** | Mark the task `skipped`. Its dependants run as after a success: `all_success` counts a skip by an operator as done ([ADR #138](../reference/adr-138-trigger-rules-after-run-end-change.md)). Use when the task is not needed for this run (bad input data, partition already handled elsewhere) |
 | **Fail** | Mark the task `failed`. Dependants that need its success end `upstream_failed`, and the rest of the run goes on until every task is final. Use when the failure is real |
 | **Stop** | Stop an unfinished task and its work: it ends `stopped`, which its dependants' rules count as a failure. Use when a running task does the wrong thing |

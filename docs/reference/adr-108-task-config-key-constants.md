@@ -1,5 +1,7 @@
 # ADR #108 — `TaskConfigKey`: shared constants for the SDK↔wrapper `task_config` contract
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §8, §9 (1.3.0).** The contract runs from the SDK through the task spec to `run_task`, whose input the dispatcher builds.
+
 > **Status:** ACCEPTED — implemented. No wire-format change: the str-Enum
 > members serialize to the exact same JSON keys the wrapper already reads.
 > Structural follow-up to ADR #106 (parameter parity), closing the bug class

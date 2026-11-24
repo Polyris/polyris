@@ -369,7 +369,7 @@ export function DAGGraphFlow({
             const task = tasks?.find(t => t.task_name === node.id);
             const status = isBlueprint ? 'blueprint' : (task?.status || 'waiting');
             
-            // Calculate duration - use running_at (actual task start) not started_at (wrapper start)
+            // Calculate duration - use running_at (actual task start) not started_at (when Start_Run wrote the row)
             let duration = '';
             if (task?.running_at && task?.finished_at) {
                 const ms = new Date(task.finished_at).getTime() - new Date(task.running_at).getTime();

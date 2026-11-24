@@ -16,7 +16,7 @@ class TestPipelineTokensFields:
 
     These values must match:
     - SAM template (`sam/template.yaml::PipelineTokensTable.AttributeDefinitions`)
-    - SFN templates (e.g., `sam/sfn_templates/dependency_wrapper/sfn.tpl.json`)
+    - SFN templates (e.g., `sam/sfn_templates/helpers/run_task/sfn.tpl.json`)
     - All `routes/*.py` handlers that read or write these fields
     """
 

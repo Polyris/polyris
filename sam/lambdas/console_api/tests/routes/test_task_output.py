@@ -270,8 +270,8 @@ def test_run_id_fields_all_null_when_rows_absent(mocker):
 
 def test_output_row_run_id_returned_from_store(mocker):
     """output_row_run_id must be the `run_id` field on the output# row
-    (stamped by Init_Output_Row / Save_Canonical_Output_Preserve via
-    $states.context.Execution.Id = run_task_helper ARN)."""
+    (stamped by run_task's Record_Success, or by xcom.push, with the run_task
+    execution's ARN, $states.context.Execution.Id)."""
     _patch(mocker, store={"result": json.dumps({"rows": 1}), "run_id": _ARN})
     body = _body(get_task_output("extract", _event()))
     assert body["output_row_run_id"] == _ARN
@@ -291,7 +291,7 @@ def test_input_row_run_id_returned_from_input_store(mocker):
 
 def test_expected_run_id_returned_from_per_run_row(mocker):
     """expected_run_id must be the run_task_helper_arn on the per-run task
-    row (set by Send_Ready_Signal_Sfn on Init_Output_Row). It's the source
+    row (written by run_task when it starts the work). It's the source
     of truth the UI matches row_run_ids against."""
     _patch(mocker, store=None, run_task_helper_arn=_ARN)
     body = _body(get_task_output("extract", _event()))

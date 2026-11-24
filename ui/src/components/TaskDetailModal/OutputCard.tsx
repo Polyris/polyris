@@ -31,14 +31,14 @@ interface Props {
      * a prior same-date run. Suppress. Optional for backwards compat.
      */
     taskStatus?: string;
-    /** run_id stamped on the canonical `output#*` row (Init_Output_Row /
-     * Save_Canonical_Output). Compared with expectedRunId — mismatch is
-     * the second layer of the gate: settled tasks whose row nevertheless
-     * came from a prior same-date run (e.g. resolved via UI without ever
-     * running the wrapper). */
+    /** run_id stamped on the canonical `output#*` row: the run_task
+     * execution that wrote it (its success transaction, or `xcom.push`).
+     * Compared with expectedRunId — mismatch is the second layer of the gate:
+     * settled tasks whose row nevertheless came from a prior same-date run
+     * (e.g. resolved in the console without ever running). */
     outputRowRunId?: string | null;
-    /** The run_task_helper ARN this run's wrapper invoked. From the per-run
-     * task row's `run_task_helper_arn`. */
+    /** The run_task execution that ran this task in this run: the task row's
+     * `run_task_helper_arn`, which run_task writes when it starts the work. */
     expectedRunId?: string | null;
 }
 
@@ -72,12 +72,12 @@ export const OutputCard: React.FC<Props> = ({
     //    doesn't belong to this run. Two sub-cases:
     //    (a) Explicit mismatch — row has a run_id, we have an expected one,
     //        they differ.
-    //    (b) Cascade / auto-skip — task settled without the wrapper ever
-    //        running Init_Output_Row / Save_Canonical_Output, so this run's
-    //        per-run task row has NO `run_task_helper_arn` (`expectedRunId
-    //        === null`). Any content already on the row was written by a
-    //        prior same-date run. Auto_Skip_Register / notify_dependents'
-    //        Update_Status_Skip are the two states that produce this case.
+    //    (b) No run_task — the task settled without run_task ever starting
+    //        its work (a rule's skip or upstream_failed, the run's skip, an
+    //        operator's Skip or Fail of a task that never ran), so this run's
+    //        task row has NO `run_task_helper_arn` (`expectedRunId === null`).
+    //        Any content already on the row was written by a prior
+    //        same-date run.
     const isSettled = taskStatus === undefined || TASK_SETTLED_STATUSES.includes(taskStatus);
     const rowFromPriorRun = Boolean(
         outputRowRunId && (
@@ -149,9 +149,9 @@ export const OutputCard: React.FC<Props> = ({
     }
 
     // Settled task but the canonical row was stamped by a DIFFERENT run
-    // (e.g. this run's task was skipped via UI so the wrapper never ran
-    // Save_Canonical_Output — canonical row still holds a prior same-date
-    // run's content). Suppress rather than attribute another run's output.
+    // (e.g. this run's task was skipped in the console, so run_task never
+    // wrote it — canonical row still holds a prior same-date run's content).
+    // Suppress rather than attribute another run's output.
     if (rowFromPriorRun) {
         return (
             <div className="td-upstream-dep td-upstream-dep--muted td-output-card">

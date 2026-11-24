@@ -375,14 +375,14 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`, cut to 63 characters, followed by a 16-character hash; a Restart gets a new name |
-| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work. Unset, the work has no limit |
+| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work; a Lambda invocation runs on until its own timeout. Unset, the work has no limit |
 | `orchestration_timeout` | timedelta | none | A cap on all of the task's waiting, until it is ready. It never falls back to `execution_timeout`. Unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
 | `retry_exponential_backoff` | bool | False | Double the wait each retry: `min(retry_delay·2^n, max_retry_delay)` |
 | `max_retry_delay` | timedelta | none (3600s cap) | Ceiling for exponential backoff |
 | `retry_jitter` | bool | False | Randomise each wait into `[base/2, base)` (avoids retry stampede) |
-| `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting) |
+| `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting). The wait ends at the platform's next check after it, up to 5 minutes later |
 | `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
 | `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
 | `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 97, each once (the decorator refuses an asset named twice) |

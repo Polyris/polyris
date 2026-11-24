@@ -25,6 +25,8 @@ parameter name kept in the config. See `docs/features/alerts.md`.
 
 ### 2. SFN-Based Dependency Notification (not polling, not EventBridge)
 
+> **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §1, §7 (1.3.0).** Dependencies are no longer resolved through `notify_dependents` and task tokens: the dispatcher decides each task row from its upstreams' rows, woken by the tasks table's stream.
+
 **Decision:** Use Step Function helper (`notify_dependents`) + `waitForTaskToken` for dependency resolution.
 
 **Rationale:**
@@ -41,6 +43,8 @@ parameter name kept in the config. See `docs/features/alerts.md`.
 ---
 
 ### 3. Separate Helpers (not monolithic wrapper)
+
+> **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The helpers the wrapper was split into go with the wrapper: `run_task` runs one attempt of a task's work, and the dispatcher decides the rest.
 
 **Decision:** Split wrapper into multiple small Step Functions.
 
@@ -351,6 +355,8 @@ return {"output_path": "s3://bucket/output/2026-01-01/", "row_count": 50000}
 
 ### 18. Standard vs Express Step Functions
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The Express helpers and the wrapper go; `run_task`, `bulk_backfill` and the test state machines stay Standard.
+
 **Decision:** Use Standard for long-running/debuggable workflows, Express only for fire-and-forget helpers.
 
 | Express (cheap, no history) | Standard (visible, debuggable) |
@@ -373,6 +379,8 @@ return {"output_path": "s3://bucket/output/2026-01-01/", "row_count": 50000}
 
 ### 19. Zero-Cost Waiting (waitForTaskToken + .sync)
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** A waiting task costs nothing because it is a row, not because it waits on a token.
+
 **Decision:** Use Step Functions callback patterns for all waiting instead of polling.
 
 **Rationale:**
@@ -393,6 +401,8 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 ---
 
 ### 20. Transparency: Step Functions over EventBridge for Orchestration
+
+> **Superseded in part by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** A waiting task leaves Step Functions, and the console shows why it waits.
 
 **Decision:** Migrate all orchestration logic from EventBridge+Lambda to Step Functions for visibility.
 
@@ -841,6 +851,8 @@ This pattern is already applied throughout `console_api/routes/`.
 ---
 
 ### 39. Asset Enrichment: Schema Declaration + asset_registry Removal
+
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** Asset data comes from the specs of each pipeline's `spec_id`, not from the registry's `tasks`.
 
 **Decision:** Add `owner`, `schema`, `glue_table`, `glue_catalog` to Asset DSL. Remove `asset_registry` DynamoDB table entirely. All asset data derived from `pipeline_registry.tasks` at query time.
 
@@ -2215,6 +2227,8 @@ Hover a cell with re-runs:
 
 ### 51. Backfill Unification — one concept, one endpoint, one bulk-run SFN (v0.78.0)
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** A backfill record carries a `date`, and lives while its backfill runs and 90 days after, instead of 30 days from its creation.
+
 > **Deferral notes (v0.78.0 implementation):**
 >
 > One design element is not shipped in v0.78 and is marked as deferred:
@@ -3239,6 +3253,8 @@ constant in `polyris/partitions.py` — a single source location.
   SFN
 
 ### 54. Bulk-Backfill SFN — Standard, Map-based, fire-and-wait architecture (v0.78.0)
+
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** `bulk_backfill` waits for each run as long as the run lives, not 24 hours.
 
 #### Context
 
@@ -9361,6 +9377,8 @@ Never `$now()`. The expressions test values, not presence, so a `null` is no dat
 
 
 ## ADR #135 — A run is told how its task ended by whoever ends it
+
+> **Superseded in part by [ADR #137](adr-137-tasks-as-rows.md) §4 (1.3.0).** Decision 1 and its table go: the dispatcher answers a run once every row is final, and no template answers one. Decisions 2–4 carry over to that one place, and a `stopped` row now counts as finished.
 
 **Context.** A pipeline run waits for each of its tasks on a token, the row's `orchestration_token`. Two places answered it when a task failed: `run_task` on its own failure paths, and the failure handler on every other path. Between them stood a flag, `helper_failed`, which the wrapper set when `run_task` failed and which told the failure handler that `run_task` had answered already. The flag was a guess about another state machine's paths, and in the 1.2.0 rehearsal it was wrong twice (Principle #42). When the flag was missing, the JSONata read it as set (F16: a dependency wait that timed out). When it was set, `run_task` had failed before answering (a pause token that could not be saved). Other paths had no answer, or swallowed a failed one:
 - the reconciler closing a task whose wrapper was stopped in the AWS console (Z1, found by the harness invariant below and confirmed live);

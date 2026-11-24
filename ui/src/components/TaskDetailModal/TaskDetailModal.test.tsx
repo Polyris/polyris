@@ -545,8 +545,8 @@ describe('TaskDetailModal', () => {
         });
 
         it('suppresses Output for cascade-skipped task (settled but no run_task_helper_arn)', () => {
-            // Auto_Skip_Register / notify_dependents' Update_Status_Skip never
-            // set run_task_helper_arn on the per-run task row — so `expectedRunId`
+            // A task that settled without run_task starting its work (a rule's
+            // skip) has no run_task_helper_arn on its task row — so `expectedRunId`
             // is null. If the canonical row already carries content from a
             // prior same-date run, the gate must still catch it via the null-
             // expected sub-case (SEV3 must-fix from architect audit).

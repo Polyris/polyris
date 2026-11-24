@@ -736,13 +736,13 @@ interface OutputTabProps {
      * the date-scoped canonical-row read on settled state (see the CLAUDE.md
      * rule about date-scoped canonical DDB rows). */
     taskStatus: string;
-    /** run_id stamped on the canonical output# row by the wrapper. */
+    /** run_id stamped on the canonical output# row by the run_task execution that wrote it. */
     outputRowRunId: string | null;
     /** run_id stamped on the input# row by Save_Input_Record. */
     inputRowRunId: string | null;
-    /** The run_task_helper ARN this run's wrapper invoked. Row-run-ids that
-     * don't match belong to a prior same-date run and should suppress the
-     * canonical-row read. */
+    /** The task row's run_task_helper_arn, which run_task writes when it starts
+     * the work. Row-run-ids that don't match belong to a prior same-date run
+     * and should suppress the canonical-row read. */
     expectedRunId: string | null;
 }
 
