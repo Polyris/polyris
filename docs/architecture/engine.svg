@@ -1,0 +1,198 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 760" role="img" aria-labelledby="title desc">
+  <title id="title">The polyris engine and the path of a run</title>
+  <desc id="desc">The pipeline's state machine runs Start_Run, which writes the run's rows into the pipeline-tokens table. The table's stream wakes the dispatcher, which writes its decisions and starts run_task. run_task runs the work in your resources and writes its success back to the table, with the facts of its assets in asset-events. Once every row is final, the dispatcher answers the run's token. The sweeper checks what is due every 5 minutes, asset-fanout handles asset facts, and the console reads DynamoDB.</desc>
+  <style>
+    svg { --bg: #F5F7F9; --surface: #FFFFFF; --ink: #17212C; --muted: #5A6676; --line: #C4CCD6; --edge: #4A5666;
+          --tbl: #E6EEF5; --tbl-line: #8FA7C0; --sm: #F1EFEA; --sm-line: #B9B09F; --accent: #0B7A72; --on-accent: #FFFFFF; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg: #0F1318; --surface: #161C23; --ink: #E5EAF0; --muted: #9BA6B4; --line: #364150; --edge: #A9B4C2;
+            --tbl: #182432; --tbl-line: #46658A; --sm: #221F19; --sm-line: #625946; --accent: #39C2B3; --on-accent: #08201D; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: var(--ink); }
+    .bg { fill: var(--bg); }
+    .h { font-weight: 600; font-size: 12.5px; }
+    .m, .mh { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 11.5px; }
+    .mh { font-size: 12px; font-weight: 600; }
+    .s { font-size: 11px; fill: var(--muted); }
+    .lb { font-size: 11px; fill: var(--muted); }
+    .t-tbl { fill: var(--tbl); stroke: var(--tbl-line); stroke-width: 1.2; }
+    .t-fn { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+    .t-sm { fill: var(--sm); stroke: var(--sm-line); stroke-width: 1.2; }
+    .t-in { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+    .key { stroke: var(--accent); stroke-width: 2; }
+    .e { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+    .e-run { stroke: var(--accent); stroke-width: 1.8; }
+    .ah { fill: var(--edge); }
+    .ahr { fill: var(--accent); }
+    .bd { fill: var(--accent); }
+    .bt { fill: var(--on-accent); font-size: 10.5px; font-weight: 700; text-anchor: middle; }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ahr" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1180" height="760" rx="14"/>
+
+  <!-- 7: every row final, the dispatcher answers the run's token -->
+  <path class="e e-run" d="M845,180 V34 H10 V422 H33" marker-end="url(#ahr)"/>
+  <circle class="bd" cx="362" cy="23" r="8"/><text class="bt" x="362" y="26.5">7</text>
+  <text class="lb" x="376" y="27">every row final → the dispatcher answers the run's token</text>
+
+  <!-- Console -->
+  <rect class="t-fn" x="330" y="54" width="320" height="86" rx="10"/>
+  <text class="h" x="346" y="77">Console · UI and <tspan class="mh">console-api</tspan></text>
+  <text class="s" x="346" y="99">reads runs and tasks from DynamoDB only</text>
+  <text class="s" x="346" y="117">actions: conditional transactions and requests</text>
+  <path class="e" d="M490,140 V176" marker-end="url(#ah)"/>
+  <text class="lb" x="498" y="163">reads · acts</text>
+
+  <!-- What starts a run -->
+  <rect class="t-fn" x="20" y="180" width="236" height="112" rx="10"/>
+  <text class="h" x="36" y="203">What starts a run</text>
+  <text class="s" x="36" y="225">a schedule: EventBridge Scheduler</text>
+  <text class="s" x="36" y="243">Run in the console</text>
+  <text class="s" x="36" y="261">an asset's fact: a push consumer</text>
+  <path class="e" d="M130,292 V316" marker-end="url(#ah)"/>
+  <circle class="bd" cx="147" cy="304" r="8"/><text class="bt" x="147" y="307.5">1</text>
+  <text class="lb" x="161" y="308">start</text>
+
+  <!-- The pipeline's state machine -->
+  <rect class="t-sm" x="20" y="320" width="236" height="190" rx="12"/>
+  <text class="h" x="36" y="343">The pipeline · state machine</text>
+  <rect class="t-in" x="36" y="354" width="204" height="30" rx="7"/>
+  <text class="m" x="50" y="373">Register_Pipeline</text>
+  <path class="e" d="M130,384 V396" marker-end="url(#ah)"/>
+  <rect class="t-in key" x="36" y="398" width="204" height="48" rx="7"/>
+  <text class="mh" x="50" y="417">Start_Run</text>
+  <text class="s" x="50" y="435">invokes a Lambda, waits for a token</text>
+  <path class="e" d="M130,446 V458" marker-end="url(#ah)"/>
+  <rect class="t-in" x="36" y="460" width="204" height="30" rx="7"/>
+  <text x="50" y="479">the run ends</text>
+
+  <!-- 2: Start_Run writes the run -->
+  <path class="e e-run" d="M240,416 H327" marker-end="url(#ahr)"/>
+  <circle class="bd" cx="272" cy="401" r="8"/><text class="bt" x="272" y="404.5">2</text>
+  <text class="lb" x="286" y="405">writes</text>
+
+  <!-- The tasks table -->
+  <rect class="t-tbl" x="330" y="180" width="320" height="330" rx="12"/>
+  <text class="mh" x="346" y="204">pipeline-tokens</text>
+  <text class="s" x="472" y="204">DynamoDB table</text>
+  <rect class="t-in" x="346" y="218" width="288" height="40" rx="6"/>
+  <text class="m" x="358" y="234">_run_…</text>
+  <text class="s" x="358" y="250">the run row: token, run_version, summary</text>
+  <rect class="t-in" x="346" y="264" width="288" height="40" rx="6"/>
+  <text class="m" x="358" y="280">_run_…#input</text>
+  <text class="s" x="358" y="296">the run's input: variables, skip_tasks</text>
+  <rect class="t-in key" x="346" y="310" width="288" height="40" rx="6"/>
+  <text class="h" x="358" y="326">a task row</text>
+  <text class="s" x="358" y="342">waiting → deps_ready → running → final</text>
+  <rect class="t-in" x="346" y="356" width="288" height="40" rx="6"/>
+  <text class="m" x="358" y="372">output# · input#</text>
+  <text class="s" x="358" y="388">a task's output and input</text>
+  <rect class="t-in" x="346" y="402" width="288" height="40" rx="6"/>
+  <text class="m" x="358" y="418">_notify_warn_…</text>
+  <text class="s" x="358" y="434">warnings for the bell</text>
+  <rect class="t-in" x="346" y="456" width="140" height="40" rx="6"/>
+  <text class="m" x="356" y="472">attention-index</text>
+  <text class="s" x="356" y="488">what is due, and when</text>
+  <rect class="t-in" x="494" y="456" width="140" height="40" rx="6"/>
+  <text class="m" x="504" y="472">run-start-index</text>
+  <text class="s" x="504" y="488">runs for the console</text>
+
+  <!-- 3: the stream wakes the dispatcher; 4: its decisions -->
+  <path class="e e-run" d="M650,224 H737" marker-end="url(#ahr)"/>
+  <circle class="bd" cx="668" cy="212" r="8"/><text class="bt" x="668" y="215.5">3</text>
+  <text class="lb" x="682" y="216">stream</text>
+  <path class="e" d="M740,272 H653" marker-end="url(#ah)"/>
+  <circle class="bd" cx="668" cy="260" r="8"/><text class="bt" x="668" y="263.5">4</text>
+  <text class="lb" x="682" y="264">decisions</text>
+
+  <!-- The dispatcher -->
+  <rect class="t-fn key" x="740" y="180" width="210" height="110" rx="10"/>
+  <text class="h" x="756" y="203">Dispatcher · <tspan class="mh">reconcile</tspan></text>
+  <text class="s" x="756" y="224">a pass over the run's rows</text>
+  <text class="s" x="756" y="242">deps_ready → starts run_task</text>
+  <text class="s" x="756" y="260">every row final → answers</text>
+  <text class="s" x="756" y="278">console requests: stop, restart</text>
+  <path class="e" d="M845,290 V326" marker-end="url(#ah)"/>
+  <text class="lb" x="853" y="313">starts it, does not wait</text>
+
+  <!-- run_task -->
+  <rect class="t-sm" x="740" y="330" width="210" height="90" rx="12"/>
+  <text class="mh" x="756" y="353">run_task</text>
+  <text class="s" x="824" y="353">state machine</text>
+  <text class="s" x="756" y="374">marks the task running</text>
+  <text class="s" x="756" y="392">the work: .sync or a call</text>
+  <text class="s" x="756" y="410">success in one transaction</text>
+
+  <!-- 5: the work; 6: the success back to the table -->
+  <path class="e" d="M950,360 H1027" marker-end="url(#ah)"/>
+  <circle class="bd" cx="966" cy="348" r="8"/><text class="bt" x="966" y="351.5">5</text>
+  <text class="lb" x="980" y="352">work</text>
+  <path class="e" d="M740,382 H653" marker-end="url(#ah)"/>
+  <circle class="bd" cx="668" cy="370" r="8"/><text class="bt" x="668" y="373.5">6</text>
+  <text class="lb" x="682" y="374">success</text>
+
+  <!-- Your resources -->
+  <rect class="t-fn" x="1030" y="330" width="140" height="108" rx="10"/>
+  <text class="h" x="1044" y="353">Your resources</text>
+  <text class="s" x="1044" y="374">Lambda · Glue</text>
+  <text class="s" x="1044" y="392">ECS · Batch</text>
+  <text class="s" x="1044" y="410">EMR · Athena</text>
+  <text class="s" x="1044" y="428">Step Functions</text>
+
+  <!-- Asset facts -->
+  <path class="e" d="M845,420 V456" marker-end="url(#ah)"/>
+  <text class="lb" x="853" y="443">facts</text>
+  <rect class="t-tbl" x="740" y="460" width="210" height="60" rx="10"/>
+  <text class="mh" x="756" y="484">asset-events</text>
+  <text class="s" x="756" y="504">the facts of assets</text>
+  <path class="e" d="M845,520 V566" marker-end="url(#ah)"/>
+  <text class="lb" x="853" y="548">stream</text>
+  <rect class="t-fn" x="740" y="570" width="210" height="80" rx="10"/>
+  <text class="mh" x="756" y="593">asset-fanout</text>
+  <text class="s" x="756" y="614">a narrow pass for wait_for</text>
+  <text class="s" x="756" y="632">starts push consumers</text>
+  <path class="e" d="M740,610 H696 V480 H653" marker-end="url(#ah)"/>
+  <text class="lb" x="689" y="545" text-anchor="end">wait_for</text>
+
+  <!-- The sweeper -->
+  <rect class="t-fn" x="500" y="570" width="150" height="90" rx="10"/>
+  <text class="h" x="514" y="593">Sweeper</text>
+  <text class="s" x="514" y="612">every 5 minutes</text>
+  <text class="s" x="514" y="629">runs, liveness, limits</text>
+  <text class="s" x="514" y="646">→ System status</text>
+  <path class="e" d="M575,570 V513" marker-end="url(#ah)"/>
+  <text class="lb" x="567" y="545" text-anchor="end">what is due</text>
+
+  <!-- Task specs -->
+  <rect class="t-tbl" x="330" y="570" width="150" height="90" rx="10"/>
+  <text class="mh" x="344" y="593">pipeline-specs</text>
+  <text class="s" x="344" y="612">task specs by hash</text>
+  <text class="s" x="344" y="629">read by Start_Run</text>
+  <text class="s" x="344" y="646">and the dispatcher</text>
+
+  <!-- Deploy -->
+  <rect class="t-fn" x="20" y="570" width="236" height="130" rx="10"/>
+  <text class="h" x="36" y="593">Deploy</text>
+  <text class="mh" x="36" y="615">polyris-deploy</text>
+  <text class="s" x="36" y="632">specs → pipeline-specs,</text>
+  <text class="s" x="36" y="649">then the pipeline's stack</text>
+  <text class="mh" x="36" y="671">polyris-up</text>
+  <text class="s" x="36" y="688">installs, upgrades the platform</text>
+  <path class="e" d="M256,615 H327" marker-end="url(#ah)"/>
+  <text class="lb" x="276" y="608">specs</text>
+  <path class="e" d="M130,570 V513" marker-end="url(#ah)"/>
+  <text class="lb" x="138" y="545">stack</text>
+
+  <!-- Legend -->
+  <rect class="t-tbl" x="330" y="722" width="22" height="14" rx="4"/>
+  <text class="s" x="360" y="733">DynamoDB table</text>
+  <rect class="t-fn" x="470" y="722" width="22" height="14" rx="4"/>
+  <text class="s" x="500" y="733">Lambda or tool</text>
+  <rect class="t-sm" x="610" y="722" width="22" height="14" rx="4"/>
+  <text class="s" x="640" y="733">state machine</text>
+  <circle class="bd" cx="752" cy="729" r="8"/><text class="bt" x="752" y="732.5">1</text>
+  <text class="s" x="768" y="733">the path of a run</text>
+</svg>

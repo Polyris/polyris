@@ -17,28 +17,17 @@
 
 ## High-Level Overview
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                              polyris system                               │
-├──────────────────────────────────────────────────────────────────────────┤
-│  polyris-deploy ──► pipeline-specs: the task specs of the pipeline        │
-│        └────────► the pipeline's stack: its state machine (Start_Run and  │
-│                   direct steps), its EventBridge schedule, its log group  │
-│                                                                           │
-│  The platform's stack (polyris-up)                                        │
-│   State machines        Lambdas                    DynamoDB (8 tables)    │
-│   • run_task            • start-run                • pipeline-tokens:     │
-│   • bulk_backfill       • reconcile (dispatcher)     task rows, run rows  │
-│   • test-quick,         • asset-fanout             • pipeline-specs       │
-│     -success, -failure  • sweeper (every 5 min)    • pipeline-registry    │
-│                         • console-api, notify,     • asset-events, …      │
-│                           ui-bootstrap, …                                 │
-│                                                                           │
-│  Web console (React): reads DynamoDB through the console API; its actions │
-│  write rows (Skip, Fail, Mark Successful, Stop, Restart; Stop, Pause and  │
-│  Resume of a run)                                                         │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+![The polyris engine and the path of a run: Start_Run writes the run's rows, the tasks table's stream wakes the dispatcher, which starts run_task; run_task records its success, and once every row is final the dispatcher answers the run's token.](engine.svg)
+
+1. A schedule, Run in the console, or an asset's fact starts the pipeline's state machine.
+2. After the run's registration, its `Start_Run` state invokes the platform's start-run Lambda with a task token. The Lambda writes the run row, the run's input and one row per task, `waiting`, and returns within seconds. The state waits for its token, and a waiting state costs nothing.
+3. The tasks table's stream wakes the dispatcher.
+4. The dispatcher passes over the run's rows, writes `deps_ready` in a transaction and starts `run_task`.
+5. `run_task` marks the task `running` and runs the work in your resources.
+6. Its success is one transaction: the status, `output#` and the facts of the task's assets. The row's change wakes the dispatcher again, which starts the next tasks.
+7. Once every row is final, the dispatcher answers the run's token, and the pipeline's execution ends.
+
+The sweeper checks what is due every 5 minutes, so a lost wake-up delays a task instead of losing it. `asset-fanout` makes a narrow pass over the tasks that wait for a new fact, and starts the pipelines scheduled on it. `polyris-deploy` writes a pipeline's task specs to `pipeline-specs` and deploys its stack: its state machine, its schedule and its log group. `polyris-up` installs and upgrades the platform. [State Machines and Lambdas](#state-machines-and-lambdas) and [DynamoDB Tables](#dynamodb-tables) list every piece.
 
 ---
 
