@@ -8,22 +8,19 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 1.1.4 · **Next milestone:** v1.2.0, the coordination reconciler (ADR #130)
+**Version:** 1.2.3 · **Next milestone:** v1.3.0, tasks as rows (ADR #137)
 
 ## In flight
 
-- **Coordination reconciler** (`docs/reference/adr-130-coordination-reconciler.md`), on
-  `feat/coordination-reconciler`, ships as v1.2.0 in one delivery. Done: `reconcile` and
-  `asset-fanout` decide readiness from facts, and registration, `notify_dependents`, asset
-  facts and asset-scheduled pipelines are wired to them. The old coordination Lambdas, the
-  push state machine and the AND-queue table are gone. Pause, resume and restart decide from
-  facts; the sweeper re-checks, retries, catches up and reports. The console shows engine
-  health and reads warnings by write time, and the docs describe the new model. Three review
-  rounds are done and their blockers fixed. The live run (Principle #15) is under way: the
-  1.1.4 → 1.2.0 upgrade rehearsal and the coordination smoke pass on a dev stack, and an
-  external review's findings are fixed and checked live (ADR #135). Left: the last game-day
-  faults, then the release. The upgrade-only code (adoption, the generation's branches for
-  old rows, the frozen v1.1.4 wrapper) goes in 1.3: ADR #130 *Out of scope* lists it.
+- **Tasks as rows** (`docs/reference/adr-137-tasks-as-rows.md`), on `feat/tasks-as-rows`,
+  ships as v1.3.0. Done: `Start_Run` writes a run's tasks as rows. The dispatcher, woken by
+  the tasks table's stream, decides each row from the rows and the facts and starts
+  `run_task`, and the sweeper checks every due run. The console's actions write rows.
+  `polyris-up` upgrades from 1.2 and stops what 1.2 left running, and 1.2's engine is gone.
+  Reviews of each part and of the whole branch are done, and their blockers fixed. The live
+  run (Principle #15) is under way: a dev stack upgraded from 1.2.1 runs the branch, and the
+  coordination smoke passes on it. Left: the smoke of tasks, the docs pass, the release
+  rehearsal, then the release. Scale and cost are estimated on the harness, not run live.
 
 ## Decided, not done
 
@@ -36,9 +33,9 @@ Update it when something moves. Paths here are checked by
   sequential-chain fallback overrides the answer and a fan-out of independent
   tasks is unreachable. Pinned by a test that documents current behaviour;
   fixing it changes that function's contract.
-- **Coordination follow-ups after v1.2.0.** Listed with their reasons in ADR #130,
-  *Out of scope* → *Deferred after the CR-6 reviews*; the first is the next ADR on the
-  execution model (a waiting task as a row, not a process).
+- **Coordination follow-ups after v1.3.0.** Listed with their reasons in ADR #137,
+  *Out of scope*. 1.4 removes the move from 1.2: a test fails from 1.4.0 until it goes
+  (`tests/sdk/test_d129_upgrade_from_1_2_guard.py`).
 
 ## Known debt, measured
 
@@ -48,7 +45,7 @@ Update it when something moves. Paths here are checked by
 
 ## Before tagging
 
-Principle #15 is not optional: deploy to dev and run a live smoke. The last pass
-touched `sam/lambdas/console_api/routes/tasks.py` and
-`polyris/coordination/actions.py` — DDB write paths where a mock can lie.
-Exercise mark_success on a task with an outlet and confirm the asset event lands.
+Principle #15 is not optional: deploy to dev and run a live smoke. The last passes
+touched the console's actions (`sam/lambdas/console_api/routes/tasks.py`,
+`polyris/coordination/actions.py`), the sweeper and `polyris-destroy` — write paths where
+a mock can lie. Run `make e2e-coordination`, and destroy a pipeline with a run in flight.

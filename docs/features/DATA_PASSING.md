@@ -134,7 +134,7 @@ def handler(event, context):
 
 ### Lambda / `@task.sfn` — return your value
 
-The wrapper captures the Lambda return value or the child SFN's `Output`. No
+`run_task` captures the Lambda return value or the child SFN's `Output`. No
 SDK call needed. This is the idiomatic path.
 
 ```python
@@ -147,7 +147,7 @@ def handler(event, context):
 
 ### Glue / ECS / Batch — call `xcom.push()`
 
-Service tasks run in their own containers / jobs — the wrapper only sees the
+Service tasks run in their own containers / jobs — `run_task` only sees the
 AWS API response (`{JobRunId}`, `{TaskArn}`, `{JobId}`), not the work output.
 `xcom.push()` writes the real value directly to DDB.
 
@@ -164,8 +164,8 @@ def main():
     })
 ```
 
-The push writes to the same DDB key the wrapper writes on success
-(`output#{pipeline}#{task}#{date}`). The wrapper detects a `_pushed_by_task`
+The push writes to the same DDB key `run_task` writes on success
+(`output#{pipeline}#{task}#{date}`). `run_task` detects a `_pushed_by_task`
 marker with a matching `pushed_run_id` and skips overwriting the pushed value
 with the AWS API response.
 
@@ -316,15 +316,15 @@ to a Lambda front).
 
 ## Lambda write pattern
 
-`xcom.push()` from a Lambda handler races with the wrapper's `Save_Success`
-write. If the push completes before the handler returns, it's fine; if it
+`xcom.push()` from a Lambda handler races with `run_task`'s success write
+(`Record_Success`). If the push completes before the handler returns, it's fine; if it
 happens asynchronously after return, ordering is undefined and downstream may
 see the wrong value.
 
-- Prefer `return value` from Lambda — the wrapper captures it deterministically.
+- Prefer `return value` from Lambda — `run_task` captures it deterministically.
 - `xcom.push()` from a Lambda emits a `UserWarning` explaining this.
 - If you call both `xcom.push({A})` and `return {B}`, the pushed value wins
-  (the wrapper detects the marker and doesn't overwrite `result`). Pick one;
+  (`run_task` detects the marker and doesn't overwrite `result`). Pick one;
   don't mix.
 
 ## Size limits
@@ -464,7 +464,7 @@ MyGlueTaskRole:
 ```
 
 The write policy scopes `dynamodb:UpdateItem` to keys with `output#*` prefix
-— user tasks can't touch internal wrapper records (`_pause_*`,
+— user tasks can't touch the platform's own records (`_run_*`,
 `_notify_warn_*`, `input#*`).
 
 **Cross-account tasks** (task role in a different AWS account than the polyris
@@ -542,7 +542,7 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
 
 1. **Reader API.** Existing readers keep working — nothing to change on day
    one:
-   - `event["upstream"][X]["output"]` — still populated by the wrapper.
+   - `event["upstream"][X]["output"]` — still populated by `run_task`.
    - `xcom.pull(X, event)` — same signature, same return shape.
    - `except PullError` — still catches missing rows (`PullError` is now an
      alias for `XComMissingError`).
@@ -566,6 +566,5 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
 Deploy order: install the new SDK in your task bundles first
 (`polyris @ git+https://github.com/Polyris/polyris@<VERSION>` — see the
 [install section above](#installing-polyris-sdk-in-glue--ecs--batch--emr)),
-then redeploy the pipeline so the wrapper picks up the new `input#` record
-contract. The wrapper is backward-compatible with pre-1.0.0 task bundles
-(they just don't call `xcom.push()`).
+then redeploy the pipeline. Polyris 1.3 needs every bundle rebuilt with its
+own SDK (see *Breaking* in the [CHANGELOG](../../CHANGELOG.md)).

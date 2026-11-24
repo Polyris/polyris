@@ -6,7 +6,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 
 ## Contents
 
-- [The one distinction that matters: wrappers vs workloads](#the-one-distinction-that-matters-wrappers-vs-workloads)
+- [The one distinction that matters: the platform vs your workloads](#the-one-distinction-that-matters-the-platform-vs-your-workloads)
 - [Inventory by service](#inventory-by-service)
   - [Step Functions state machines (5)](#step-functions-state-machines-5)
   - [Lambda functions (8)](#lambda-functions-8)
@@ -22,22 +22,22 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 - [Step Functions definition sources](#step-functions-definition-sources)
 - [What the stack does NOT deploy](#what-the-stack-does-not-deploy)
 
-## The one distinction that matters: wrappers vs workloads
+## The one distinction that matters: the platform vs your workloads
 
 Two categories of AWS resources end up in your account.
 
-**A. Polyris wrappers.** The fixed set the SAM stack creates. Every install has exactly these — 5 state machines, 8 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. They wait for dependencies, decide when to run something, call an AWS service, record what happened, and notify downstream. They do not do your ETL work.
+**A. The polyris platform.** The fixed set the SAM stack creates. Every install has exactly these — 5 state machines, 8 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. It decides when each task runs, calls an AWS service and records what happened. It does not do your ETL work.
 
 **B. Your workloads.** Whatever your pipelines invoke. Every `@task.lambda_function(function_name="my-etl")` points at a Lambda in your account that YOU created outside polyris. Same for `@task.glue_job`, `@task.ecs_task`, `@task.batch_job`, `@task.athena_query`, `@task.sfn`, `@task.emr_step`. Polyris does not deploy or manage these — see [DSL.md](../features/DSL.md#how-polyris-relates-to-aws).
 
-At runtime the flow is: polyris wrapper (A) → assumes the polyris task role → invokes your workload (B) via the AWS service API → collects the workload's result → writes it to polyris DDB → notifies the next wrapper.
+At runtime, `run_task` (A) invokes your workload (B) via the AWS service API, under the role polyris creates (or the task's `role=` in another account). It collects the workload's result and writes it to polyris DDB with the task's status. The dispatcher, woken by that write, starts the next task.
 
 Practical consequences:
 
-- **Cost:** polyris wrappers are lean (SFN transitions ≈ $25/million, Lambda ≈ ms billing). Your workload cost dominates.
-- **Logs:** wrapper logs are in `/aws/states/polyris-*` and `/aws/lambda/polyris-*`. Your workload logs are in whatever log group your Lambda / Glue / ECS emits to.
-- **Failures:** a wrapper failure is a polyris bug; a workload failure is your task code.
-- **Permissions:** wrappers execute under IAM roles polyris creates. Workloads execute under IAM roles YOU created for them (though polyris publishes `PolyrisTaskReadPolicy` + `PolyrisTaskWritePolicy` you can attach for xcom access — see [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam)).
+- **Cost:** the platform is lean (SFN transitions ≈ $25/million, Lambda ≈ ms billing). Your workload cost dominates.
+- **Logs:** the platform's logs are in `/aws/states/polyris-*` and `/aws/lambda/polyris-*`. Your workload logs are in whatever log group your Lambda / Glue / ECS emits to.
+- **Failures:** a failure of the platform is a polyris bug; a workload failure is your task code.
+- **Permissions:** the platform runs under IAM roles polyris creates. Workloads execute under IAM roles YOU created for them (though polyris publishes `PolyrisTaskReadPolicy` + `PolyrisTaskWritePolicy` you can attach for xcom access — see [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam)).
 
 ## Inventory by service
 
@@ -193,7 +193,7 @@ Key outputs:
 |---|---|
 | `OrchestrationRoleArn` | polyris-deploy — role attached to per-pipeline state machines |
 | `PipelineRegistryTable` | Console API, notify Lambda |
-| `PipelineTokensTable` | Every wrapper execution, Console API, notify Lambda |
+| `PipelineTokensTable` | polyris-deploy — the table each pipeline's state machine writes its run's marks and warnings to; Console API, notify Lambda |
 | `AssetSubscriptionsTable` | polyris-deploy |
 | `PipelineSpecsTable` | polyris-deploy — writes every task's spec before the pipeline's stack |
 | `StartRunFunctionArn` | polyris-deploy — the function each run invokes first |

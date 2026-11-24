@@ -39,9 +39,9 @@ CDK, Terraform, hand-created). Same for Lambda / Glue / ECS / Athena / EMR /
 Batch — polyris expects them there and calls them by AWS identifier.
 
 The one thing polyris deploys is your pipeline itself — a set of orchestration
-state machines that glue your existing resources into a DAG. For the full
-wrapper-vs-workload split, see
-[INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-wrappers-vs-workloads).
+state machines that glue your existing resources into a DAG. For the split
+between the platform and your workloads, see
+[INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-the-platform-vs-your-workloads).
 
 ### `namespace` is a resource-naming prefix, not a DSL concept
 
@@ -312,7 +312,7 @@ def run_query():
     pass
 ```
 
-Omitting `output_location` makes the wrapper skip `ResultConfiguration` entirely
+Omitting `output_location` makes `run_task` skip `ResultConfiguration` entirely
 rather than sending an empty `OutputLocation` (which `StartQueryExecution`
 rejects).
 

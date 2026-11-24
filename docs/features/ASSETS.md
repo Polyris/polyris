@@ -556,17 +556,16 @@ Asset Dependencies:  acme/weekly-complete (192h)
 Consumer side (the task with `wait_for`):
 
 ```
-Consumer task starts
-        │
-        ▼
-Registration helper
-        ├── Save the task row
-        ├── Save one pointer per asset: "asset:<name>" → this run's task
-        └── reconcile Lambda
-                ├── Read asset-events for this run's partition
-                │   (and `.within(...)` freshness, `.consecutive(...)` days)
-                ├── If ready → signal the wrapper → task continues
-                └── If not   → the task waits; the pointer brings the next fact
+Run starts (Start_Run)
+        ├── Write the task row, waiting
+        └── Write one pointer per asset: "asset:<name>" → this run's task
+                │
+                ▼
+Dispatcher (woken when the task's upstreams finish, or by a fact)
+        ├── Read asset-events for this run's partition, consistently
+        │   (and `.within(...)` freshness, `.consecutive(...)` days)
+        ├── If ready → deps_ready → start the task's run_task
+        └── If not   → the row waits; the pointer brings the next fact
 ```
 
 Producer side (a task with `outlets=[...]`):
@@ -575,13 +574,13 @@ Producer side (a task with `outlets=[...]`):
 Producer task completes with outlets
         │
         ▼
-RunTask helper ── records one fact per outlet in asset-events
-        │          (partition = the producer run's date)
+run_task ── records one fact per outlet in asset-events, in the
+        │     transaction of the task's success (partition = the run's date)
         ▼
 asset-events stream ──► AssetFanout Lambda
-                            ├── Find the tasks waiting on the asset ("asset:<name>")
-                            └── reconcile Lambda for each: wake it if a fact
-                                serves its run's partition
+                            ├── Find the runs with a task waiting on the asset ("asset:<name>")
+                            └── One narrow pass of the dispatcher over each run, which
+                                decides from the facts of the run's partition
 ```
 
 A task is woken only by a fact for its own run's partition: a run for an old date never starts on today's fact. Weekly and monthly facts also serve the rest of their period and the next one.

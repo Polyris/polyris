@@ -33,8 +33,8 @@ ENVIRONMENTS = {
 )
 ```
 
-`role=` works for **every** wrapper-routed task type, not only `sfn` — the
-cross-account credentials are applied by the `run_task` wrapper for each service
+`role=` works for **every** task type that `run_task` runs, not only `sfn` — the
+cross-account credentials are applied by `run_task` for each service
 (ADR #106). For example:
 
 ```python

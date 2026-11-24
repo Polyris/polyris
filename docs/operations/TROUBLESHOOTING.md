@@ -116,10 +116,10 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
    aws stepfunctions describe-state-machine --state-machine-arn "your-task-arn"
    ```
 
-2. **IAM permissions** — wrapper role can invoke task:
+2. **IAM permissions** — the orchestration role, which runs `run_task`, can start the task:
    ```bash
    aws iam simulate-principal-policy \
-     --policy-source-arn "wrapper-role-arn" \
+     --policy-source-arn "arn:aws:iam::<account>:role/<Namespace>-<Stage>-polyris-orchestration-role" \
      --action-names "states:StartExecution" \
      --resource-arns "task-arn"
    ```
