@@ -402,7 +402,7 @@ with DAG(
 **How it works:**
 1. Every fact re-evaluates the schedule from the recorded facts for that fact's date — nothing is counted, so a lost or repeated event changes nothing
 2. The DAG starts once every asset has a fact that serves the date
-3. One run per DAG and date: a later event for the same date starts nothing
+3. One run per DAG and date: a later event for the same date starts nothing, whatever the age of the date. To run a date again, after its upstream data was recomputed, press Run for it or backfill it
 
 **Example timeline:**
 ```

@@ -268,6 +268,21 @@ def test_an_and_schedule_starts_once_per_date_when_complete(fanout, asset_events
                             "variables": {"current_date": DATE, "PARTITION_ARG": DATE}}
 
 
+def test_an_and_run_that_ran_already_starts_not_again_whatever_the_age_of_its_date(fanout, asset_events, pushed,
+                                                                                  sfn, tokens):
+    """The review of the branch (B-1): Step Functions frees a run's name 90 days after it ended, while its run row
+    lives a year and 90 days, so a later start under the name was refused by Start_Run, with a warning. One AND
+    run per consumer and date, at any age; a rerun of the date is the user's (a Run or a backfill)."""
+    from polyris.coordination import run_row
+    from polyris.coordination.run_name import KIND_AND, run_name
+
+    pushed({"operator": "AND", "assets": ["ns/a"]})
+    tokens.put_item(Item={"execution_name": run_row.key(run_name("pushed", DATE, KIND_AND))})   # ran 100 days ago
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
+    assert sfn.started == []
+    assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_")]
+
+
 def test_an_or_schedule_starts_once_per_event(fanout, asset_events, pushed, sfn):
     pushed({"operator": "OR", "assets": ["ns/a", "ns/b"]})
     _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
