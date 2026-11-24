@@ -33,7 +33,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Set, Tuple
+from typing import List, Literal, Optional, Sequence, Set, Tuple
 
 import boto3
 from botocore.exceptions import (
@@ -50,6 +50,7 @@ from .generators import (
     generate_dag_hash,
 )
 from . import limits
+from .assets import _flatten_asset_names
 from .coordination import spec_store, task_spec
 from .dag import DAG
 from . import folder_process
@@ -694,6 +695,29 @@ def destroy_stack(session, stack_name: str) -> None:
     print(_c(f"✅ Stack deleted: {stack_name}", BOLD_GREEN))
 
 
+def unregister_pipeline(session, pipeline: str, *, registry_table: Optional[str], subscriptions_table: Optional[str],
+                        assets: Sequence[str]) -> bool:
+    """Remove a destroyed pipeline from the console: its row in ``pipeline-registry``, by which the console lists
+    it, and its subscriptions to the assets its schedule names (``asset-subscriptions``). A destroyed pipeline stayed
+    listed until someone deleted its row by hand. Deleting a row that is gone already succeeds, so a second run of
+    ``polyris-destroy`` finishes the job; returns False, after it says why, when a delete is refused."""
+    ddb = session.client("dynamodb")
+    try:
+        if registry_table:
+            ddb.delete_item(TableName=registry_table, Key={"pipeline_name": {"S": pipeline}})
+        if subscriptions_table:
+            for asset in assets:
+                ddb.delete_item(TableName=subscriptions_table,
+                                Key={"asset_name": {"S": asset}, "pipeline_name": {"S": pipeline}})
+    except (ClientError, BotoCoreError) as e:
+        print(f"\n❌ The stack is gone, but {pipeline} could not be removed from the console: {e}")
+        print("   Grant dynamodb:DeleteItem on the pipeline-registry and asset-subscriptions tables "
+              f"(docs/deployment/IAM_PERMISSIONS.md), then run {_c('polyris-destroy', CYAN)} again.")
+        return False
+    print(f"   Removed {_c(pipeline, CYAN)} from the console.")
+    return True
+
+
 # =============================================================================
 # Main deploy function
 # =============================================================================
@@ -896,8 +920,13 @@ def deploy_pipeline(
         print(f"\nDestroying stack: {_c(stack_name, CYAN)}")
         if not dry_run:
             destroy_stack(session, stack_name)
+            assets = _flatten_asset_names(dag._asset_schedule) if dag.is_asset_triggered else []
+            if not unregister_pipeline(session, dag.dag_id, registry_table=registry_table,
+                                       subscriptions_table=asset_subscriptions_table, assets=assets):
+                sys.exit(1)
         else:
-            print(f"[dry-run] Would delete stack: {_c(stack_name, CYAN)}, and stop its running runs")
+            print(f"[dry-run] Would delete stack: {_c(stack_name, CYAN)}, stop its running runs, "
+                  f"and remove {_c(dag.dag_id, CYAN)} from the console")
         return
 
     # Check that referenced AWS resources exist before committing to a deploy.

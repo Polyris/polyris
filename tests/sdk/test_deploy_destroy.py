@@ -152,14 +152,61 @@ def _deploy_policy_actions() -> Set[str]:
     return actions
 
 
+class _Tables:
+    """DynamoDB's delete_item, which refuses with ``refuse`` when it is set."""
+
+    def __init__(self, refuse: Optional[str] = None):
+        self.deleted: List[tuple] = []
+        self.refuse = refuse
+
+    def delete_item(self, TableName: str, Key: Dict[str, Any]) -> Dict[str, Any]:
+        if self.refuse:
+            raise ClientError({"Error": {"Code": self.refuse, "Message": "no"}}, "DeleteItem")
+        self.deleted.append((TableName, {k: v["S"] for k, v in Key.items()}))
+        return {}
+
+
+def test_destroy_removes_the_pipeline_from_the_console(capsys):
+    """The console lists a pipeline by its registry row: a destroyed pipeline stayed listed until someone deleted
+    the row by hand, and its asset subscriptions until the next fact of each asset."""
+    tables = _Tables()
+    session = _Session(_PipelineStack(None, []), FakeStates())
+    session.clients["dynamodb"] = tables
+
+    assert deploy.unregister_pipeline(session, "sales-etl", registry_table="ns-dev-polyris-pipeline-registry",
+                                      subscriptions_table="ns-dev-polyris-asset-subscriptions",
+                                      assets=["ns/orders", "ns/customers"])
+
+    assert tables.deleted == [
+        ("ns-dev-polyris-pipeline-registry", {"pipeline_name": "sales-etl"}),
+        ("ns-dev-polyris-asset-subscriptions", {"asset_name": "ns/orders", "pipeline_name": "sales-etl"}),
+        ("ns-dev-polyris-asset-subscriptions", {"asset_name": "ns/customers", "pipeline_name": "sales-etl"}),
+    ]
+    assert "Removed sales-etl from the console" in capsys.readouterr().out
+
+
+def test_a_refused_removal_says_so_and_how_after_the_stack_is_gone(capsys):
+    session = _Session(_PipelineStack(None, []), FakeStates())
+    session.clients["dynamodb"] = _Tables(refuse="AccessDeniedException")
+
+    assert not deploy.unregister_pipeline(session, "sales-etl", registry_table="r", subscriptions_table="s", assets=[])
+
+    out = capsys.readouterr().out
+    assert "The stack is gone, but sales-etl could not be removed from the console" in out
+    assert "dynamodb:DeleteItem" in out and "AccessDeniedException" in out
+
+
 def test_the_deploy_policy_allows_every_call_destroy_makes():
     states = FakeStates()
     machine = states.machine(STACK)
     states.run(STACK, "sales-etl-run-2026-11-20-a1b2c3d4", started=PAUSED_SINCE)
     cfn = _PipelineStack(machine, ["DELETE_IN_PROGRESS"])
+    session = _Session(cfn, states)
+    session.clients["dynamodb"] = _Tables()
 
-    deploy.destroy_stack(_Session(cfn, states), STACK)
+    deploy.destroy_stack(session, STACK)
+    deploy.unregister_pipeline(session, "sales-etl", registry_table="r", subscriptions_table="s", assets=["ns/a"])
 
-    made = cfn.made | {f"states:{operation}" for operation in states.operations()}
+    made = cfn.made | {f"states:{operation}" for operation in states.operations()} | {"dynamodb:DeleteItem"}
     assert {"states:ListExecutions", "states:StopExecution", "cloudformation:DeleteStack"} <= made
     assert made <= _deploy_policy_actions()

@@ -140,8 +140,14 @@ Minimum permissions for the developer/CI role:
     {
       "Sid": "PipelineRegistryStamp",
       "Effect": "Allow",
-      "Action": "dynamodb:UpdateItem",
+      "Action": ["dynamodb:UpdateItem", "dynamodb:DeleteItem"],
       "Resource": "arn:aws:dynamodb:*:*:table/*-polyris-pipeline-registry"
+    },
+    {
+      "Sid": "PipelineAssetSubscriptions",
+      "Effect": "Allow",
+      "Action": "dynamodb:DeleteItem",
+      "Resource": "arn:aws:dynamodb:*:*:table/*-polyris-asset-subscriptions"
     },
     {
       "Sid": "PipelineTaskSpecs",
@@ -208,7 +214,7 @@ Minimum permissions for the developer/CI role:
 }
 ```
 
-`polyris-destroy` finds the pipeline's state machine among the stack's resources and stops its running executions until the stack is gone (`states:ListExecutions`, `states:StopExecution`): CloudFormation deletes a state machine only once its executions have ended. If it may not, it stops before it deletes anything.
+`polyris-destroy` finds the pipeline's state machine among the stack's resources and stops its running executions until the stack is gone (`states:ListExecutions`, `states:StopExecution`): CloudFormation deletes a state machine only once its executions have ended. If it may not, it stops before it deletes anything. Once the stack is gone, it removes the pipeline from the console: its row in `pipeline-registry` and its subscriptions to the assets of its schedule (`dynamodb:DeleteItem`). If that is refused, it says so; grant the action and run it again.
 
 `iam:PassRole` on the orchestration role is the sensitive one — it lets the caller hand that role to Step Functions. Scope the `Resource` to the exact ARN of `${Namespace}-${Stage}-polyris-orchestration-role` in your account, not a wildcard, if your org's IAM policy allows fine-grained ARNs.
 

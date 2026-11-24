@@ -102,14 +102,14 @@ Before you `polyris-deploy` a running pipeline:
 
 ## Destroy a pipeline
 
-`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one. CloudFormation deletes the state machine only once its executions have ended, and a run keeps its execution open until every task of it is final, a paused run forever. The engine stops the tasks of each stopped run at its next check of the run; until then the run goes on, and a task that finishes records its success and starts its dependants. To stop new work at once, Stop the run in the console first. To let a run finish, wait until it has, then destroy.
+`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one. CloudFormation deletes the state machine only once its executions have ended, and a run keeps its execution open until every task of it is final, a paused run forever. The engine stops the tasks of each stopped run at its next check of the run; until then the run goes on, and a task that finishes records its success and starts its dependants. To stop new work at once, Stop the run in the console first. To let a run finish, wait until it has, then destroy. Once the stack is gone, `polyris-destroy` removes the pipeline from the console: its row in the pipeline registry and its subscriptions to the assets of its schedule.
 
 Does not delete:
 
 - `pipeline-tokens` rows (the runs' tasks) — kept a year and 90 days from their last write
 - `task-events` rows (the tasks' timelines) — kept 90 days
 - `asset-events` rows produced by this pipeline's tasks — kept 365 days
-- `pipeline_registry` row — the pipeline entry (including the "Deployed at" timestamp) stays in DynamoDB. Re-deploy or manually delete the item via the AWS Console / CLI if you want the UI to stop showing it.
+- `pipeline-specs` rows (the task specs of each deployed version) — the console draws the graph of an old run from them
 
 ## Related
 
