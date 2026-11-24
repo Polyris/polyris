@@ -294,6 +294,19 @@ def test_a_missing_spec_version_fails_the_pass_with_a_warning(world):
     assert "a pass over the run failed" in item(world, f"_notify_warn_coordination_{RUN_KEY}-pass")["error"]
 
 
+def test_a_start_whose_spec_text_is_gone_fails_its_task_with_the_cause(world):
+    """ADR #137 §6, level 2: no attempt can start it, so its row fails with the cause and the run goes on. Before, the
+    row stayed deps_ready, and each liveness check started it again and warned (the review of the branch, P-4)."""
+    start(world, CHAIN)
+    digest = item(world, key("extract"))[task_row.SPEC_HASH]
+    world.client.delete_item(TableName=table("SPECS_TABLE"), Key={task_spec.PK: {"S": task_spec.text_partition("orders")},
+                                                                  task_spec.SK: {"S": digest}})
+    full(world)
+    extract = item(world, key("extract"))
+    assert extract["status"] == "failed" and "is missing" in extract["error"]
+    assert world.sfn.started == []
+
+
 def test_a_missing_row_fails_its_dependants_and_counts_as_failed_for_the_run(world):
     start(world, CHAIN)
     world.client.delete_item(TableName=table("TOKENS_TABLE"), Key={"execution_name": {"S": key("extract")}})

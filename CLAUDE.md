@@ -642,6 +642,7 @@ Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
 - Never swallow `AccessDeniedException` — always `raise`. Exception: a stream consumer (the dispatcher, AssetFanout). Its mapping retries a failed batch without end, so a raise would hold up the shard for 24 hours; it writes a `coordination` warning and leaves the row to its next check instead (ADR #137 §7)
 - Every `except Exception` must log `error=str(e)` with function context
 - If an error blocks downstream tasks → write `_notify_warn_` record to `pipeline-tokens`
+- An error that every attempt meets ends the row with the cause, not only a warning: a `deps_ready` row whose spec text or run input is gone stayed `deps_ready`, started again at each liveness check (review of the branch, P-4; `test_a_start_whose_spec_text_is_gone_fails_its_task_with_the_cause`)
 - A catch on a wake-up path (subscription write/query, `send_task_success`, a fail-open fallback) logs at `log.error`, never `log.warn` — a swallowed WARN is what hid the historical `wait_for` subscription-table schema mismatch for months (DAL wrote `dependency_key`/`subscriber`, env var pointed at `AssetSubscriptionsTable` which keyed on `asset_name`/`pipeline_name`); the ValidationException was caught and logged as warning
 
 **`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI, ADR #130 §9). Build every warning row with `records.warning_item` — never by hand:

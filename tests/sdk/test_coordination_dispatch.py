@@ -371,7 +371,18 @@ def test_a_waiting_row_a_pass_cannot_decide_fails_with_the_cause_and_warns():
     assert_dispatcher_may(S.WAITING.value, judgment)
 
 
-@pytest.mark.parametrize("status", [S.DEPS_READY.value, S.RUNNING.value, S.WAITING_DECISION.value])
+def test_a_ready_row_a_pass_cannot_start_fails_with_the_cause_and_warns():
+    """ADR #137 §6, level 2: every attempt would meet the same error, so the start counts as refused for good. Before,
+    the row stayed deps_ready, and each liveness check started it again and warned (the review of the branch, P-4)."""
+    judgment = dispatch.undecidable(row(status=S.DEPS_READY.value), now=NOW,
+                                    cause="it could not be decided: SpecError: the spec text of load is missing")
+    assert judgment.transition == "fail_start" and judgment.status == S.FAILED.value
+    assert judgment.fields[task_row.ERROR] == "it could not be decided: SpecError: the spec text of load is missing"
+    assert judgment.warning == "load: it could not be decided: SpecError: the spec text of load is missing"
+    assert_dispatcher_may(S.DEPS_READY.value, judgment)
+
+
+@pytest.mark.parametrize("status", [S.RUNNING.value, S.WAITING_DECISION.value])
 def test_any_other_row_a_pass_cannot_decide_keeps_its_state_and_warns(status):
     due = NOW + timedelta(minutes=10)
     view = dispatch.RowView(**{**row(status=status).__dict__, "due": due})

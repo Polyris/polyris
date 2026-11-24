@@ -553,10 +553,14 @@ def upstreams_first(names: Iterable[str], dependencies: Mapping[str, Sequence[st
 
 
 def undecidable(row: RowView, *, now: datetime, cause: str) -> Judgment:
-    """What a pass writes on a row it could not decide (§3, Rule 51): a waiting row fails with the cause, as on a
-    CoordinationError, so its run goes on; any other row keeps its state, and the cause goes to the bell."""
+    """What a pass writes on a row it could not decide (§3, Rule 51), for an error neither transient nor denied: a
+    waiting row fails with the cause, as on a CoordinationError, and a ``deps_ready`` row as a start refused for good,
+    since every attempt meets the same error (§6, level 2), so its run goes on. Any other row keeps its state, and
+    the cause goes to the bell."""
     if row.status in transitions.task_transition("fail_wait").sources:
         return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")
+    if row.status in transitions.task_transition("fail_start").sources:
+        return _final(row, "fail_start", now, cause=cause, warning=f"{row.task_id}: {cause}")
     return Judgment(row.task_id, due=row.due, warning=f"{row.task_id}: {cause}")
 
 
