@@ -157,7 +157,7 @@ no fleet to keep alive:
 | DynamoDB | Per read/write unit | ~$0.001 per run |
 | CloudWatch Logs | GB ingested | $0.50 – $2 / month total |
 
-**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$5–10/month
+**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$2–4/month
 for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS
 containers, Athena queries) bill separately against your existing AWS
 spend; polyris does not add a percentage on top.
@@ -169,7 +169,7 @@ environment alone starts at ~$350/month for the environment fee before
 workers or metadata storage — polyris runs the same orchestration workload
 for roughly two orders of magnitude less.
 
-*Numbers are approximate AWS list prices as of late 2025 — check AWS
+*Numbers are estimates at AWS list prices in us-east-1 as of November 2026 — check AWS
 pricing pages for current figures.*
 
 ---
