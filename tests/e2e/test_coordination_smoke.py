@@ -189,7 +189,8 @@ def test_a_restarted_task_waits_for_its_assets_again_and_runs_once(console):
     console.produce(PRODUCE_A, day)
     eventually(lambda: console.status("smoke-wait-a", day, "use_a", run) == "success", "use_a to run")
     row = console.task("smoke-wait-a", day, "use_a", run)
-    assert row is not None and row.get("attempt") == 2, row
+    # Failed before it ever ran, then restarted: one Restart (↻), and the work ran once (`attempt` counts runs).
+    assert row is not None and (row.get("restarts"), row.get("attempt")) == (1, 1), row
 
 
 # ── asset-scheduled pipelines ──────────────────────────────────────────────

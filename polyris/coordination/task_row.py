@@ -65,6 +65,7 @@ DECISION_TIMEOUT = "decision_timeout"       # seconds, the timeout in force when
 REASONS = "reasons"                         # why the row waits, with no time in them
 REASONS_AT = "reasons_at"                   # when a pass recorded them: the console shows "since" (ADR #137 §1)
 ERROR = "error"
+RESTARTS = "restarts"                       # the operator's Restarts of the row, which the console shows (↻)
 # What run_task writes on the row (its template; a test compares the two).
 RUNNING_AT = "running_at"
 ATTEMPT = "attempt"                         # the task's runs, counted across Restarts
@@ -76,7 +77,7 @@ WAIT_DELAY_UNTIL = "wait_delay_until_ms"
 NOTIFICATION_FAILED = "notification_failed"
 #: What a run of the task writes on its row after its wait: the dispatcher's decisions, run_task and an
 #: operator's action. A Restart and a reset remove them, so the row waits again as Start_Run wrote it; the
-#: attempt count stays (ADR #137 §3).
+#: counts of its runs and of its Restarts stay (ADR #137 §3).
 RUN_FIELDS = (ENABLED_AT, COUNTDOWN_END, START_FAILED_FIRST, START_FAILED_LAST, START_FAILURES, LAST_CHECK, CHECKS,
               DECISION_SINCE, DECISION_TIMEOUT, REASONS, REASONS_AT, ERROR, TASK_RUN_ID, SKIP_ORIGIN, FINISHED_AT,
               RUNNING_AT,

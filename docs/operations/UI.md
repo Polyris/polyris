@@ -125,7 +125,7 @@ Click any task to open the detail modal with:
 - **Duration** — Execution time
 - **Status** — Current task status
 - **Dependencies** — Number of upstream task dependencies
-- **Attempt** — Two chips when retries have occurred: ↻ N (manual Restarts) and ⭮ N/M (in-SFN auto-retry index / max retries). Hidden when `attempt=1` and `retry_attempt=0`.
+- **Attempt** — Two chips when retries have occurred: ↻ N (manual Restarts) and ⭮ N/M (in-SFN auto-retry index / max retries). Hidden when `restarts=0` and `retry_attempt=0`.
 - **Execution Name** — Full execution identifier
 - **Pipeline Execution** — Parent pipeline execution
 - **Started/Finished** — Timestamps

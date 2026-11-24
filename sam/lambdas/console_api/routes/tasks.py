@@ -172,9 +172,11 @@ def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
         'notification_failed': item.get('notification_failed'),
         'triggered_by': item.get('triggered_by'),
         'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
+        # `restarts` counts the operator's Restarts (↻), `attempt` the task's runs.
+        'restarts': safe_int(item.get(task_row.RESTARTS), 0),
         # retry_attempt (ADR #125) is the in-SFN auto-retry index within the task's run_task
         # execution — 0 at its start, bumped by Save_Retry_Attempt on each retry.
-        # `attempt > 1` = manual restart; `retry_attempt > 0` = auto-retry. Distinct axes.
+        # `restarts > 0` = manual restart; `retry_attempt > 0` = auto-retry. Distinct axes.
         'retry_attempt': safe_int(item.get('retry_attempt'), 0),
         # max_retries is static config (auto-retries per run of the task). Not displayed in the
         # list view (a static ceiling in a live feed is misleading). Included for the task

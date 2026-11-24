@@ -21,7 +21,7 @@ When AWS says "the task itself failed" (Lambda returned a handler exception, Glu
 
 After the last retry fails, polyris does **not** propagate failure automatically (ADR #114). The task lands in `waiting_decision` and blocks pending a human choice in the Console:
 
-- **Restart** — try the whole retry sequence again (fresh `attempt=1`)
+- **Restart** — try the whole retry sequence again: the retries count from the first again, and the task's ↻ goes up by one
 - **Skip** — mark the task `skipped`; downstream rules honor it
 - **Mark success** — mark the task `success` with a synthetic marker; downstream continues
 - **Fail** — mark the task `failed`; downstream `all_success` chains propagate `upstream_failed`
@@ -143,9 +143,9 @@ with DAG(
 - Console → Task Detail → **Details** tab → **Attempt** stat tile shows two chips when retries have occurred:
   - ↻ N — number of manual Restarts (bumps only when an operator clicks Restart)
   - ⭮ N/M — current in-SFN retry index / max retries configured
-  - Neither chip appears when the task is on its first attempt with no auto-retries.
+  - Neither chip appears when the task was never restarted and has had no auto-retry.
 - Console → **Tasks** view → **Status** column shows the same chips inline for at-a-glance visibility across all tasks.
-- The **Status** cell also shows a countdown timer while the wrapper is sleeping between retries — the same timer used for `wait_before` delays.
+- The **Status** cell also shows a countdown timer while `run_task` waits between retries — the same timer used for `wait_before` delays.
 - CloudWatch log group `/aws/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt` state entries).
 
 ## Related

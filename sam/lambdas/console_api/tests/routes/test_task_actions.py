@@ -251,6 +251,7 @@ def test_a_restart_puts_a_final_or_undecided_row_back_to_waiting_and_requests_it
     assert response["statusCode"] == 200, response
     written = row(world)
     assert (written["status"], written["generation"], written["attempt"]) == ("waiting", 3, 1)
+    assert written["restarts"] == 1                       # the console's ↻; attempt counts the task's runs
     assert "error" not in written and task_row.RUN_TASK_ARN not in written
     assert set(run_item(world)[run_row.REQUESTS]) == {run_row.POINTERS}
     assert [e["decision"] for e in world.events.scan()["Items"]] == ["restart"]

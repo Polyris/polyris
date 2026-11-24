@@ -87,9 +87,12 @@ export interface Task {
   is_decision_task?: boolean;
   slack_notification_failed?: boolean;
   notification_failed?: boolean;
+  /** How many times run_task started the task's work, across Restarts. */
   attempt?: number;
-  /** ADR #125 — in-SFN auto-retry index within the current wrapper. 0 for first dispatch;
-   * bumps on every automatic retry. Distinct from `attempt` which bumps only on manual Restart. */
+  /** How many times an operator restarted the task (↻). */
+  restarts?: number;
+  /** ADR #125 — in-SFN auto-retry index within the task's current run_task. 0 for its first
+   * try; bumps on every automatic retry. Distinct from `restarts`, an operator's Restarts. */
   retry_attempt?: number;
   triggered_by?: string;
   [key: string]: unknown;

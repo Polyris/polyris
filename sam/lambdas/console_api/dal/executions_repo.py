@@ -77,11 +77,11 @@ class ExecutionsRepo:
     # ── Single-item operations ────────────────────────────────────────────
 
     #: Run fields no task index projects (sam/template.yaml).
-    RUN_META_FIELDS = ('triggered_by', 'attempt', 'retry_attempt', 'task_config')
+    RUN_META_FIELDS = ('triggered_by', 'attempt', 'restarts', 'retry_attempt', 'task_config')
 
     def batch_get_run_meta(self, execution_names: list[str],
                            fields: tuple[str, ...] = RUN_META_FIELDS) -> dict[str, dict]:
-        """Fetch `fields` (by default triggered_by, attempt, retry_attempt, task_config)
+        """Fetch `fields` (by default triggered_by, attempt, restarts, retry_attempt, task_config)
         from the base table for a batch of execution_names. Used after GSI reads whose
         NonKeyAttributes don't include them. Returns {execution_name: {field: value, …}}.
 

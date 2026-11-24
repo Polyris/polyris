@@ -55,7 +55,7 @@ function hasVisibleError(error: TaskError | string | null): boolean {
 }
 
 function DecisionContext({ ctx }: { ctx: TaskDecisionContext }) {
-    const hasAttempts = ctx.attempt > 1 || ctx.retryAttempt > 0;
+    const hasAttempts = ctx.restarts > 0 || ctx.retryAttempt > 0;
     const withWaitFor = ctx.directDownstream.filter(d => d.hasWaitFor);
 
     if (!hasVisibleError(ctx.error) && !hasAttempts && ctx.directDownstream.length === 0 && withWaitFor.length === 0) {
@@ -72,7 +72,7 @@ function DecisionContext({ ctx }: { ctx: TaskDecisionContext }) {
             )}
             {hasAttempts && (
                 <div className="am-decision-attempts">
-                    {ctx.attempt > 1 && <span>Manual restart {ctx.attempt - 1}</span>}
+                    {ctx.restarts > 0 && <span>Manual restart {ctx.restarts}</span>}
                     {ctx.retryAttempt > 0 && (
                         <span>
                             Auto-retry {ctx.retryAttempt}

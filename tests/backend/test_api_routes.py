@@ -198,7 +198,7 @@ def test_pipeline_status_attempt_and_max_retries_in_task(mocker):
         {'execution_name': 'extract-2026-01-01-abc', 'pipeline_name': 'daily',
          'pipeline_execution': 'exec-1', 'task_name': 'extract', 'status': 'failed',
          'date': TODAY, 'started_at': '2026-01-01T00:00:00Z',
-         'attempt': Decimal('2'), 'task_config': '{"retries": 3, "timeout": 7200}'},
+         'attempt': Decimal('2'), 'restarts': Decimal('1'), 'task_config': '{"retries": 3, "timeout": 7200}'},
     ])
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
     mocker.patch('feed.executions_repo', mock_execs)
@@ -207,6 +207,7 @@ def test_pipeline_status_attempt_and_max_retries_in_task(mocker):
 
     task = resp['tasks'][0]
     assert task['attempt'] == 2, "attempt must be int, not Decimal"
+    assert task['restarts'] == 1 and isinstance(task['restarts'], int)     # the operator's Restarts (↻)
     assert task['max_retries'] == 3
 
 
@@ -224,6 +225,7 @@ def test_pipeline_status_attempt_absent_returns_none(mocker):
 
     task = resp['tasks'][0]
     assert task['attempt'] is None
+    assert task['restarts'] == 0
     assert task['max_retries'] is None
 
 
@@ -369,10 +371,11 @@ class TestFormatTaskRow:
         """boto3.resource returns DDB N values as Decimal; safe_int must convert."""
         row = self._call({
             'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
-            'status': 'running', 'date': TODAY, 'attempt': Decimal('2'),
+            'status': 'running', 'date': TODAY, 'attempt': Decimal('2'), 'restarts': Decimal('1'),
         })
         assert row['attempt'] == 2
         assert isinstance(row['attempt'], int)
+        assert row['restarts'] == 1 and isinstance(row['restarts'], int)
 
     def test_attempt_absent_is_none(self):
         row = self._call({

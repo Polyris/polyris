@@ -277,13 +277,13 @@ export function AllTasksView({
                                             Restart (↻ N) comes from manual UI action;
                                             Retry (⭮ N/M) is the in-SFN auto-retry index.
                                             Each chip appears only when its counter > 0. */}
-                                        {task.attempt != null && task.attempt > 1 && (
+                                        {task.restarts != null && task.restarts > 0 && (
                                             <span
                                                 className="atv-attempt-badge"
-                                                title={`Manual restarts: ${task.attempt - 1}`}
-                                                aria-label={`Manual restart ${task.attempt - 1}`}
+                                                title={`Manual restarts: ${task.restarts}`}
+                                                aria-label={`Manual restart ${task.restarts}`}
                                             >
-                                                <Repeat2 size={10} aria-hidden={true} /> {task.attempt - 1}
+                                                <Repeat2 size={10} aria-hidden={true} /> {task.restarts}
                                             </span>
                                         )}
                                         {task.retry_attempt != null && task.retry_attempt > 0 && (

@@ -249,6 +249,7 @@ def test_a_restart_puts_the_row_back_to_waiting_and_requests_its_pointers(ddb):
     assert send(ddb, write)
     written = get(ddb, KEY)
     assert (written["status"], written["generation"], written["attempt"]) == ("waiting", 3, 2)
+    assert written[task_row.RESTARTS] == 1                    # the operator's Restarts, which the console shows (↻)
     assert not set(task_row.RUN_FIELDS) & set(written), set(task_row.RUN_FIELDS) & set(written)
     assert written[task_row.WAITING_SINCE] == written[task_row.STATUS_SINCE] == format_utc(NOW)
     assert attention.KEY not in written                       # it waits for extract: no limit of its own
@@ -378,6 +379,21 @@ def test_a_cleared_request_goes_by_kind_on_the_version_read(ddb):
         ddb.update_item(**actions.clear_request(view, run_row.RESET_DEPENDANTS, table=TOKENS, now=NOW))
 
 
+def test_a_restart_counts_itself_from_the_count_it_read_and_a_reset_of_a_dependant_counts_nothing(ddb):
+    """The console's ↻ shows the operator's Restarts. `attempt` counts the task's runs and missed a Restart of a
+    task that never ran (the live smoke of 1.3, 2026-11-24)."""
+    row = finished(**{task_row.RESTARTS: 1})
+    seed(ddb, row, run_item=active_run())
+    assert send(ddb, restart_of(row))
+    assert get(ddb, KEY)[task_row.RESTARTS] == 2
+    dependant = {**task(S.UPSTREAM_FAILED.value), task_row.RESTARTS: 1}
+    seed(ddb, dependant, run_item=active_run())
+    view = dispatch.run_view(active_run())
+    assert send(ddb, actions.ActionWrite(actions.reset(dependant, dispatch.row_view(dependant), view, now=NOW,
+                                                       table=TOKENS)))
+    assert get(ddb, KEY)[task_row.RESTARTS] == 1
+
+
 def test_a_restart_clears_every_field_run_task_writes_on_the_row_but_the_attempt():
     """Principle #28: run_task's template writes its fields by name; a new one is cleared by a Restart or kept
     here by decision."""
@@ -390,7 +406,7 @@ def test_a_restart_clears_every_field_run_task_writes_on_the_row_but_the_attempt
             continue                                       # output# and input#, not the row
         sets = re.sub(r"\([^)]*\)", "", expression.split(" REMOVE ")[0])     # if_not_exists(a, b) has a comma
         written |= {part.split("=")[0].strip() for part in sets.split(",")}
-    kept = {"#s", "#ttl", "#att", "#due", "status_since", task_row.ATTEMPT}
+    kept = {"#s", "#ttl", "#att", "#due", "status_since", task_row.ATTEMPT}       # RESTARTS: the console writes it
     named = {"#e": task_row.ERROR}
     assert {named.get(name, name) for name in written} - kept <= set(task_row.RUN_FIELDS)
 

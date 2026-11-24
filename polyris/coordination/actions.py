@@ -242,7 +242,7 @@ def restart(*, task: Mapping[str, Any], run: Mapping[str, Any], with_dependants:
     if refusal:
         raise ActionRefused(f"{row.key}: {refusal}")
     items = [{"Update": back_to_waiting(task, row, view, transition="restart", writer=transitions.Writer.CONSOLE,
-                                        now=now, table=tokens_table)},
+                                        now=now, table=tokens_table, restarted=True)},
              {"Update": run_request(view, run, task_id=row.task_id if with_dependants else None, by=operator,
                                     now=now, table=tokens_table)}]
     event = records.manual_decision_event(
@@ -268,10 +268,14 @@ def restart_refusal(run: dispatch.RunView, *, with_dependants: bool, now: dateti
 
 
 def back_to_waiting(task: Mapping[str, Any], row: dispatch.RowView, run: dispatch.RunView, *, transition: str,
-                    writer: str, now: datetime, table: str) -> Dict[str, Any]:
+                    writer: str, now: datetime, table: str, restarted: bool = False) -> Dict[str, Any]:
     """The row's ``Update`` of a Restart or a reset: ``waiting`` from now, without what its run wrote
-    (``task_row.RUN_FIELDS``), with its due time counted anew (``deadlines.due_time``, invariant 9)."""
+    (``task_row.RUN_FIELDS``), with its due time counted anew (``deadlines.due_time``, invariant 9). A Restart
+    (``restarted``) counts itself in ``restarts`` from the count it read: the write is fenced by the generation
+    it read, so a second Restart meanwhile builds its count from a new read."""
     fields, removed, due, _ = _waiting_again(task, row, run, now)
+    if restarted:
+        fields[task_row.RESTARTS] = int(task.get(task_row.RESTARTS) or 0) + 1
     return row_write.task_update(key=row.key, read_status=row.status, read_generation=row.generation, writer=writer,
                                  transition=transition, fields=fields, removed=removed, due=due, table=table, now=now)
 

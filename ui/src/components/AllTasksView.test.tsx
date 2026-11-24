@@ -247,18 +247,24 @@ describe('AllTasksView', () => {
     // ADR #125 — two-chip retry indicator (Repeat2 = manual restart, RefreshCw = auto-retry).
     // ──────────────────────────────────────────────────────────────────────
     describe('retry chips (ADR #125)', () => {
-        it('shows no chips when attempt=1 and retry_attempt=0', () => {
-            setup({ tasks: [{ ...mockTasks[0], attempt: 1, retry_attempt: 0 }] });
+        it('shows no chips when restarts=0 and retry_attempt=0', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 1, restarts: 0, retry_attempt: 0 }] });
             render(<AllTasksView {...defaultProps} />);
             expect(screen.queryByLabelText(/manual restart/i)).not.toBeInTheDocument();
             expect(screen.queryByLabelText(/auto-retry/i)).not.toBeInTheDocument();
         });
 
-        it('shows manual restart chip (Repeat2) when attempt > 1', () => {
-            setup({ tasks: [{ ...mockTasks[0], attempt: 2, retry_attempt: 0 }] });
+        it('shows manual restart chip (Repeat2) when restarts > 0', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 1, restarts: 1, retry_attempt: 0 }] });
             render(<AllTasksView {...defaultProps} />);
             expect(screen.getByLabelText('Manual restart 1')).toBeInTheDocument();
             expect(screen.queryByLabelText(/auto-retry/i)).not.toBeInTheDocument();
+        });
+
+        it('counts the restarts, not the runs: a task restarted before it ever ran shows its restart', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 1, restarts: 1 }, { ...mockTasks[1], attempt: 2, restarts: 0 }] });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.getAllByLabelText(/manual restart/i)).toHaveLength(1);
         });
 
         it('shows auto-retry chip (RefreshCw) when retry_attempt > 0', () => {
@@ -268,8 +274,8 @@ describe('AllTasksView', () => {
             expect(screen.getByLabelText('Auto-retry 3')).toBeInTheDocument();
         });
 
-        it('shows both chips when attempt > 1 and retry_attempt > 0', () => {
-            setup({ tasks: [{ ...mockTasks[0], attempt: 2, retry_attempt: 2 }] });
+        it('shows both chips when restarts > 0 and retry_attempt > 0', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 2, restarts: 1, retry_attempt: 2 }] });
             render(<AllTasksView {...defaultProps} />);
             expect(screen.getByLabelText('Manual restart 1')).toBeInTheDocument();
             expect(screen.getByLabelText('Auto-retry 2')).toBeInTheDocument();

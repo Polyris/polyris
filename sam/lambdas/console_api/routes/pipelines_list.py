@@ -322,6 +322,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'task_type': item.get('task_type', 'sfn'),
             'date': item.get('date', date),
             'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
+            'restarts': safe_int(item.get(task_row.RESTARTS), 0),       # the operator's Restarts (↻)
             # retry_attempt (ADR #125) — in-SFN auto-retry index within the task's run_task execution.
             # Distinct from `attempt`, which counts the task's runs across Restarts.
             'retry_attempt': safe_int(item.get('retry_attempt'), 0),

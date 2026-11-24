@@ -349,14 +349,14 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         Restart (↻) apart from an automatic in-SFN retry (⭮). Each
                         appears only when its counter is > 0; aria-label spells both out
                         for screen readers. */}
-                    {((task.attempt != null && task.attempt > 1) ||
+                    {((task.restarts != null && task.restarts > 0) ||
                       (task.retry_attempt != null && task.retry_attempt > 0)) && (
                         <div className="td-duration-stat">
                             <div
                                 className="td-duration-value text-secondary td-attempt-chips"
                                 aria-label={[
-                                    task.attempt != null && task.attempt > 1
-                                        ? `Manual restart ${task.attempt - 1}`
+                                    task.restarts != null && task.restarts > 0
+                                        ? `Manual restart ${task.restarts}`
                                         : null,
                                     task.retry_attempt != null && task.retry_attempt > 0
                                         ? `Auto-retry ${task.retry_attempt}` +
@@ -364,13 +364,13 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         : null,
                                 ].filter(Boolean).join(', ')}
                             >
-                                {task.attempt != null && task.attempt > 1 && (
+                                {task.restarts != null && task.restarts > 0 && (
                                     <span
                                         className="td-attempt-chip"
                                         title="Manual restarts"
-                                        aria-label={`Manual restart ${task.attempt - 1}`}
+                                        aria-label={`Manual restart ${task.restarts}`}
                                     >
-                                        <Repeat2 size={12} aria-hidden={true} /> {task.attempt - 1}
+                                        <Repeat2 size={12} aria-hidden={true} /> {task.restarts}
                                     </span>
                                 )}
                                 {task.retry_attempt != null && task.retry_attempt > 0 && (

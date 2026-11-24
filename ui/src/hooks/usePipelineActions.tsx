@@ -22,7 +22,7 @@ import type { PipelineActionsParams } from '@/types';
 
 export interface TaskDecisionContext {
     error: TaskError | string | null;
-    attempt: number;
+    restarts: number;
     retryAttempt: number;
     maxRetries: number;
     directDownstream: Array<{ name: string; status: string; hasWaitFor: boolean }>;
@@ -253,7 +253,7 @@ export function usePipelineActions({
             });
             taskContext = {
                 error: targetTask.error ?? null,
-                attempt: targetTask.attempt ?? 0,
+                restarts: targetTask.restarts ?? 0,
                 retryAttempt: targetTask.retry_attempt ?? 0,
                 maxRetries: targetTask.max_retries ?? 0,
                 directDownstream,

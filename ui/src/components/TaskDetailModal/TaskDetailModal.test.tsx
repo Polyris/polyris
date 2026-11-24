@@ -1037,15 +1037,15 @@ describe('TaskDetailModal', () => {
     // ─── Retry chips (ADR #125) ──────────────────────────────────────────
 
     describe('retry chips (ADR #125)', () => {
-        it('shows no chips when attempt=1 and retry_attempt=0', () => {
-            const task = createTask({ attempt: 1, retry_attempt: 0 });
+        it('shows no chips when restarts=0 and retry_attempt=0', () => {
+            const task = createTask({ attempt: 2, restarts: 0, retry_attempt: 0 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.queryByTitle('Manual restarts')).not.toBeInTheDocument();
             expect(screen.queryByTitle(/^Auto-retries:/)).not.toBeInTheDocument();
         });
 
-        it('shows manual restart chip (Repeat2) when attempt > 1', () => {
-            const task = createTask({ attempt: 2, retry_attempt: 0 });
+        it('shows manual restart chip (Repeat2) when restarts > 0', () => {
+            const task = createTask({ attempt: 1, restarts: 1, retry_attempt: 0 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByTitle('Manual restarts')).toBeInTheDocument();
             expect(screen.queryByTitle(/^Auto-retries:/)).not.toBeInTheDocument();
@@ -1058,15 +1058,15 @@ describe('TaskDetailModal', () => {
             expect(screen.getByTitle(/^Auto-retries:/)).toBeInTheDocument();
         });
 
-        it('shows both chips when attempt > 1 and retry_attempt > 0', () => {
-            const task = createTask({ attempt: 2, retry_attempt: 2 });
+        it('shows both chips when restarts > 0 and retry_attempt > 0', () => {
+            const task = createTask({ attempt: 2, restarts: 1, retry_attempt: 2 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByTitle('Manual restarts')).toBeInTheDocument();
             expect(screen.getByTitle(/^Auto-retries:/)).toBeInTheDocument();
         });
 
         it('chips container aria-label names both counters for screen readers', () => {
-            const task = createTask({ attempt: 2, retry_attempt: 3 });
+            const task = createTask({ attempt: 2, restarts: 1, retry_attempt: 3 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByLabelText('Manual restart 1, Auto-retry 3')).toBeInTheDocument();
         });
