@@ -104,16 +104,14 @@ Before you `polyris-deploy` a running pipeline:
 
 ## Destroy a pipeline
 
-`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group).
+`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one: a run keeps its execution open until every task of it is final, a paused run forever, and CloudFormation deletes the state machine only once its executions have ended. The engine stops the tasks of each stopped run at its next check of the run. To let a run finish, wait until it has, then destroy.
 
 Does not delete:
 
-- `pipeline-tokens` rows (task execution history) — subject to TTL, ~120 days
-- `task-events` rows — subject to TTL, ~120 days
-- `asset-events` rows produced by this pipeline's tasks — kept indefinitely by default
+- `pipeline-tokens` rows (the runs' tasks) — kept a year and 90 days from their last write
+- `task-events` rows (the tasks' timelines) — kept 90 days
+- `asset-events` rows produced by this pipeline's tasks — kept 365 days
 - `pipeline_registry` row — the pipeline entry (including the "Deployed at" timestamp) stays in DynamoDB. Re-deploy or manually delete the item via the AWS Console / CLI if you want the UI to stop showing it.
-
-In-flight executions abort when the state machine is deleted (CFN calls `DeleteStateMachine`, which stops all running executions). If you need them to finish, stop the schedule first (`is_paused_upon_creation=True` + deploy), wait for in-flight to drain via the Console, then `polyris-destroy`.
 
 ## Related
 

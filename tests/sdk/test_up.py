@@ -16,7 +16,7 @@ import json
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import boto3
 import pytest
@@ -640,6 +640,28 @@ def test_down_with_delete_data_empties_and_deletes(fake_cfn, s3, capsys):
     assert up.count_objects(s3, "acme-dev-polyris-results", owner=ACCOUNT) == 0
     assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION), owner=ACCOUNT) == "missing"
     assert "1 DynamoDB tables" in capsys.readouterr().out
+
+
+def test_down_stops_the_platform_s_running_executions_before_it_empties_and_deletes_anything(fake_cfn, s3, capsys):
+    """A state machine that CloudFormation deletes waits for its running executions (the review of the branch, B-1)."""
+    states = FakeStates()
+    run_task = states.machine("acme-dev-polyris-dep-run-task-helper")
+    states.run("acme-dev-polyris-dep-run-task-helper", "task-run-1", started=datetime(2026, 11, 24, tzinfo=timezone.utc))
+    stack = _stack_with_buckets(s3, results_objects=0)
+    stack["_resources"].append({"LogicalResourceId": "RunTaskStateMachine",
+                                "ResourceType": "AWS::StepFunctions::StateMachine", "PhysicalResourceId": run_task})
+    fake_cfn["cfn"] = FakeCfn([stack])
+    fake_cfn["stepfunctions"] = states.client
+    at_stop: List[Tuple[bool, int]] = []
+    states.on_stop = lambda _: at_stop.append(("delete_stack" in fake_cfn["cfn"].names(),
+                                               up.count_objects(s3, "acme-dev-polyris-console-ui", owner=ACCOUNT)))
+
+    assert up._run(up.run_down, _down_args(yes=True)) == 0
+
+    assert states.stopped == ["task-run-1"]
+    assert at_stop == [(False, 1)], "stopped before the buckets were emptied and the stack deleted"
+    assert states.stops[0]["error"] == up.DOWN_STOP_ERROR
+    assert "Stopped 1 running execution(s) of acme-dev-polyris-dep-run-task-helper" in capsys.readouterr().out
 
 
 def test_down_keeps_artifacts_bucket_while_other_platforms_exist(fake_cfn, s3, capsys):

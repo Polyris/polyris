@@ -29,12 +29,11 @@ import json
 import os
 import sys
 import argparse
-import threading
 import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Set, Tuple
 
 import boto3
 from botocore.exceptions import (
@@ -42,7 +41,6 @@ from botocore.exceptions import (
     ClientError,
     NoCredentialsError,
     ProfileNotFound,
-    WaiterError,
 )
 
 from .generators import (
@@ -60,13 +58,14 @@ from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
     ChangeSetError,
-    _watch_stack_events,
     all_stacks,
     create_change_set,
+    delete_stack,
     describe_stack,
     execute_change_set,
     start_event_watcher,
 )
+from .executions import stack_machines, stop_running
 from .platform import (
     NAMESPACE_STAGE_MAX_LEN,
     PARAM_NAMESPACE,
@@ -654,6 +653,47 @@ def _fail_no_stack_name(stage: str) -> None:
     sys.exit(1)
 
 
+#: What the history of a run that polyris-destroy stopped says.
+DESTROY_STOP_ERROR = "Polyris.Destroy"
+DESTROY_STOP_CAUSE = "polyris-destroy stopped this run to delete its pipeline."
+
+
+def destroy_stack(session, stack_name: str) -> None:
+    """Delete a pipeline's stack, stopping its running runs until the stack is gone (ADR #137 §4).
+
+    A run keeps its execution open until every task of it is final, and CloudFormation deletes the
+    pipeline's state machine only once its executions have ended; until the state machine is
+    deleting, its schedule can still start a run. The engine stops the tasks of each stopped run.
+    Exits 1 when the deletion fails, or when the runs cannot be listed or stopped: before the
+    delete, that changes nothing.
+    """
+    cfn = session.client("cloudformation")
+    sfn = session.client("stepfunctions")
+    seen: Set[str] = set()
+    try:
+        machines = [(machine, None) for machine in stack_machines(cfn, stack_name)]
+    except (ClientError, BotoCoreError) as e:
+        print(f"\n❌ Could not read the resources of {stack_name}: {e}")
+        sys.exit(1)
+
+    def stop_runs() -> None:
+        for _, run in stop_running(sfn, machines, error=DESTROY_STOP_ERROR, cause=DESTROY_STOP_CAUSE, seen=seen):
+            print(f"   Stopped run {_c(run['name'], CYAN)} "
+                  f"(started {run['startDate'].astimezone(timezone.utc):%Y-%m-%d %H:%M} UTC)")
+
+    stop_narration = start_event_watcher(cfn, stack_name)
+    try:
+        delete_stack(cfn, stack_name=stack_name, while_deleting=stop_runs)
+    except (ChangeSetError, ClientError, BotoCoreError) as e:
+        print(f"\n❌ Could not delete {stack_name}: {e}")
+        sys.exit(1)
+    finally:
+        stop_narration()
+    if seen:
+        print("   The engine stops the tasks of each stopped run at its next check of the run.")
+    print(_c(f"✅ Stack deleted: {stack_name}", BOLD_GREEN))
+
+
 # =============================================================================
 # Main deploy function
 # =============================================================================
@@ -855,39 +895,9 @@ def deploy_pipeline(
     if destroy:
         print(f"\nDestroying stack: {_c(stack_name, CYAN)}")
         if not dry_run:
-            cfn = session.client("cloudformation")
-            seen_ids: set = set()
-            try:
-                existing = cfn.describe_stack_events(StackName=stack_name)["StackEvents"]
-                seen_ids.update(e["EventId"] for e in existing)
-            except Exception:
-                pass
-            try:
-                cfn.delete_stack(StackName=stack_name)
-            except ClientError as e:
-                print(f"\n❌ CloudFormation delete failed: {e}")
-                sys.exit(1)
-            stop_watching = threading.Event()
-            watcher_thread = threading.Thread(
-                target=_watch_stack_events,
-                args=(cfn, stack_name, seen_ids, stop_watching),
-                daemon=True,
-            )
-            watcher_thread.start()
-            try:
-                cfn.get_waiter("stack_delete_complete").wait(
-                    StackName=stack_name,
-                    WaiterConfig={"Delay": 5, "MaxAttempts": 120},
-                )
-            except WaiterError as e:
-                print(f"\n❌ CloudFormation delete failed: {e}")
-                sys.exit(1)
-            finally:
-                stop_watching.set()
-                watcher_thread.join(timeout=5)
-            print(_c(f"✅ Stack deleted: {stack_name}", BOLD_GREEN))
+            destroy_stack(session, stack_name)
         else:
-            print(f"[dry-run] Would delete stack: {_c(stack_name, CYAN)}")
+            print(f"[dry-run] Would delete stack: {_c(stack_name, CYAN)}, and stop its running runs")
         return
 
     # Check that referenced AWS resources exist before committing to a deploy.

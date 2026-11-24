@@ -413,6 +413,8 @@ cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 - Every execution under a name in `platform.REMOVED_STANDARD_MACHINES` counts as 1.2's, so no state machine may get such a name back; a new Standard state machine of the engine joins the names in `platform.py` (`tests/sdk/test_platform.py` fails until it does).
 - A check that cannot see what it checks refuses: `upgrade.check` refuses a platform none of whose engine state machines it finds.
 
+**A command that deletes a stack with state machines stops their running executions until the stack is gone** (`cfn_changeset.delete_stack` with `executions.stop_running`). CloudFormation deletes a state machine only once its executions have ended, and a run keeps its execution open until every task of it is final, a paused run forever: `polyris-destroy` waited ten minutes and failed with the stack left deleting (review of the branch, B-1). One stop before the delete is not enough: until the state machine is deleting, its schedule can start a run (`test_destroy_stops_a_paused_run_and_one_its_schedule_starts_while_the_stack_is_deleted`).
+
 **Pre-deploy resource check:** `polyris-deploy` runs two advisory checks before generating the CloudFormation template:
 
 1. **Existence check** — verifies all external AWS resources (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job definitions, Athena workgroups) exist. Aborts deploy if any resource is missing.

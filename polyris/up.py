@@ -34,7 +34,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound, WaiterError
@@ -88,11 +88,13 @@ from .cfn_changeset import (
     ChangeSetError,
     all_stacks,
     create_change_set,
+    delete_stack,
     describe_stack,
     execute_change_set,
     start_event_watcher,
     wait_for_stack,
 )
+from .executions import STATE_MACHINE, stop_running
 
 
 class UpError(Exception):
@@ -948,6 +950,11 @@ def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) 
 
 
 
+#: What the history of an execution that polyris-down stopped says.
+DOWN_STOP_ERROR = "Polyris.Down"
+DOWN_STOP_CAUSE = "polyris-down stopped this execution to delete the platform."
+
+
 def run_down(args: argparse.Namespace) -> None:
     _header("Remove Polyris platform")
     session, region, account = _session(args.profile, args.region)
@@ -966,7 +973,7 @@ def run_down(args: argparse.Namespace) -> None:
         raise UpError(f"Stack {stack_name} is busy ({stack['StackStatus']}). Try again when it finishes.")
 
     resources = cfn.get_paginator("list_stack_resources").paginate(StackName=stack_name)
-    tables, buckets = [], {}
+    tables, buckets, machines = [], {}, []
     for page in resources:
         for r in page["StackResourceSummaries"]:
             physical = r.get("PhysicalResourceId")  # absent when the resource never got created
@@ -976,6 +983,8 @@ def run_down(args: argparse.Namespace) -> None:
                 tables.append(physical)
             elif r["ResourceType"] == "AWS::S3::Bucket":
                 buckets[r["LogicalResourceId"]] = physical
+            elif r["ResourceType"] == STATE_MACHINE:
+                machines.append((physical, None))
 
     pipelines = pipelines_on_platform(session, cfn, stack, stack_name)
     if pipelines and not args.yes:
@@ -999,16 +1008,26 @@ def run_down(args: argparse.Namespace) -> None:
     if not args.yes:
         _confirm_typed(stack_name, "Deleting the platform")
 
+    # A state machine that CloudFormation deletes waits for its running executions: stop them until the
+    # stack is gone, and once before the buckets are emptied, since a running task can still write to them.
+    sfn = session.client("stepfunctions")
+    seen: Set[str] = set()
+
+    def stop_executions() -> None:
+        stopped = stop_running(sfn, machines, error=DOWN_STOP_ERROR, cause=DOWN_STOP_CAUSE, seen=seen)
+        for machine in sorted({m for m, _ in stopped}):
+            count = sum(1 for m, _ in stopped if m == machine)
+            print(f"   Stopped {count} running execution(s) of {machine.rsplit(':', 1)[-1]}")
+
+    stop_executions()
     for logical, bucket in buckets.items():
         if logical != "ResultsBucket" or args.delete_data:
             empty_bucket(s3, bucket, owner=account)
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        cfn.delete_stack(StackName=stack_name)
-        try:
-            wait_for_stack(cfn, stack_name=stack_name, waiter="stack_delete_complete")
-        except WaiterError as e:
-            raise UpError(f"Stack {stack_name} was not deleted: {e}")
+        delete_stack(cfn, stack_name=stack_name, while_deleting=stop_executions)
+    except ChangeSetError as e:
+        raise UpError(str(e))
     finally:
         stop_narration()
     print(_c(f"\n✅ {stack_name} deleted.", BOLD_GREEN))

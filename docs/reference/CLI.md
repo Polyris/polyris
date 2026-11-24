@@ -67,7 +67,7 @@ polyris-down --delete-data      # also delete task results
 | `--stack`, `--profile`, `--region` | As for `polyris-up` |
 | `--yes` | Don't ask for confirmation |
 
-It refuses a stack that isn't a Polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. The artifacts bucket is deleted when no other platform stack is left in the region.
+It refuses a stack that isn't a Polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines and prints how many of each. The artifacts bucket is deleted when no other platform stack is left in the region.
 
 ---
 
@@ -270,7 +270,7 @@ polyris-deploy --only dir1 dir2 --select my-dag-id
 | `--profile` | AWS profile (default: from `config.py` or AWS default) |
 | `--file` | Pipeline file (default: `dag.py`). Not used with `--all`/`--only` |
 | `--dry-run` | Preview CloudFormation changes without deploying |
-| `--destroy` | Remove pipeline stack and clean up DynamoDB |
+| `--destroy` | Remove the pipeline's stack, stopping its running runs until the stack is gone |
 | `--select` | Select DAG by ID (for multi-DAG files); combinable with `--all`/`--only` to filter within each directory |
 | `--all` | Bulk: every folder directly in the current directory, but hidden ones (`.venv`) and caches. Mutually exclusive with `--only` |
 | `--only DIR [DIR ...]` | Bulk: only the listed subdirectories. Mutually exclusive with `--all` |

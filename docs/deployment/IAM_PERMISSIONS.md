@@ -49,7 +49,7 @@ If your org requires enumerated permissions, the installer role needs these serv
 | `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `UpdateAssumeRolePolicy`, `TagRole`, `UntagRole`, `ListRoleTags`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions`, `GetPolicyVersion`, `ListEntitiesForPolicy` | 11 roles + 3 managed policies |
 | `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `ListTagsOfResource`, `UpdateContinuousBackups`, `DescribeContinuousBackups`, `UpdateTimeToLive`, `DescribeTimeToLive`, `DescribeContributorInsights`, `DescribeKinesisStreamingDestination`; `Scan` on the `pipeline-registry` table | 8 tables (pipeline-tokens, pipeline-registry, pipeline-specs, task-events, etc.); `polyris-up` reads the registry to list the pipelines to redeploy, and `polyris-down` to refuse a platform whose pipelines are still deployed |
 | `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `GetPolicy`, `InvokeFunction`, `TagResource`, `UntagResource`, `ListTags`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, start-run, etc.) and the mappings that feed the asset-events stream to asset-fanout and the tasks table's stream to the dispatcher (`polyris-reconcile`) |
-| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource`, `UntagResource`, `ListTagsForResource` | 5 state machines (`run_task`, `bulk_backfill` and three test tasks) |
+| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource`, `UntagResource`, `ListTagsForResource`; `ListExecutions`, `StopExecution` | 5 state machines (`run_task`, `bulk_backfill` and three test tasks); `polyris-down` stops their running executions until the stack is gone |
 | `scheduler` | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule`, `GetSchedule` | The sweeper's 5-minute schedule |
 | `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `UntagResource`, `ListTagsForResource`, `DescribeLogGroups` | 10 log groups |
 | `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutEncryptionConfiguration`, `GetBucketPolicy`, `DeleteBucketPolicy`, `PutBucketTagging`, `GetBucketTagging`, `TagResource`, `UntagResource`, `ListTagsForResource`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket`, `ListBucketVersions`, `DeleteObjectVersion` | Console UI bucket, results bucket, and the artifacts bucket `polyris-up` uploads release code to |
@@ -123,6 +123,8 @@ Minimum permissions for the developer/CI role:
         "states:DeleteStateMachine",
         "states:DescribeStateMachine",
         "states:StartExecution",
+        "states:ListExecutions",
+        "states:StopExecution",
         "states:TagResource",
         "states:UntagResource",
         "states:ListTagsForResource"
@@ -206,6 +208,8 @@ Minimum permissions for the developer/CI role:
 }
 ```
 
+`polyris-destroy` finds the pipeline's state machine among the stack's resources and stops its running executions until the stack is gone (`states:ListExecutions`, `states:StopExecution`): CloudFormation deletes a state machine only once its executions have ended. If it may not, it stops before it deletes anything.
+
 `iam:PassRole` on the orchestration role is the sensitive one — it lets the caller hand that role to Step Functions. Scope the `Resource` to the exact ARN of `${Namespace}-${Stage}-polyris-orchestration-role` in your account, not a wildcard, if your org's IAM policy allows fine-grained ARNs.
 
 ## Operate
@@ -275,7 +279,7 @@ Default coverage (as of 1.0.1): Athena queries + Glue Data Catalog CRUD + basic 
 
 Same permission surface as Install — the CFN operations that created every resource must be able to delete every resource. Plus one extra concern: S3 buckets must be empty before CFN can delete them.
 
-Before deleting, `polyris-down` reads the pipeline registry (`dynamodb:Scan`) and checks each pipeline's state machine (`states:DescribeStateMachine`). It empties the console UI bucket itself, the results bucket only with `--delete-data`, and the artifacts bucket when it deletes it (`s3:ListBucketVersions`, `s3:DeleteObject`, `s3:DeleteObjectVersion`). For a from-source `sam delete`, the stack can ship a `BucketCleanupFunction` Custom Resource (`AutoEmptyBucketsOnDelete=true`) that empties both buckets on stack deletion; the role running `sam delete` needs `lambda:InvokeFunction` on it (already covered by `PowerUserAccess`).
+Before deleting, `polyris-down` reads the pipeline registry (`dynamodb:Scan`) and checks each pipeline's state machine (`states:DescribeStateMachine`). Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines (`states:ListExecutions`, `states:StopExecution`): CloudFormation deletes a state machine only once its executions have ended. It empties the console UI bucket itself, the results bucket only with `--delete-data`, and the artifacts bucket when it deletes it (`s3:ListBucketVersions`, `s3:DeleteObject`, `s3:DeleteObjectVersion`). For a from-source `sam delete`, the stack can ship a `BucketCleanupFunction` Custom Resource (`AutoEmptyBucketsOnDelete=true`) that empties both buckets on stack deletion; the role running `sam delete` needs `lambda:InvokeFunction` on it (already covered by `PowerUserAccess`).
 
 If the cleanup Lambda fails (permission issue, timeout on a very full bucket), you can empty buckets manually before retrying:
 

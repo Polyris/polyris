@@ -321,8 +321,8 @@ sfn.start_execution(register_only=true)  ← fire-and-forget
 polyris-destroy
      │
      ▼
-CloudFormation delete_stack
-     └─ StateMachine deleted (running executions aborted)
+CloudFormation delete_stack ◄── until the stack is gone: stop the pipeline's running runs
+     └─ StateMachine deleted once none of its runs is left
 ```
 
 ### Quick Debug Reference

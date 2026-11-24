@@ -151,6 +151,36 @@ def wait_for_stack(cfn, *, stack_name: str, waiter: str) -> None:
     )
 
 
+def delete_stack(
+    cfn,
+    *,
+    stack_name: str,
+    while_deleting: Callable[[], None],
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Delete a stack and block until it is gone, calling ``while_deleting`` before the delete and on every poll.
+
+    The hook ends what would hold the deletion up: a state machine that CloudFormation deletes waits for
+    its running executions, and until it is deleting a run can still start on it (``polyris.executions``).
+    Its first call comes before the delete, so a denied call of its own changes nothing. Raises
+    ChangeSetError when the deletion fails or still runs after an hour.
+    """
+    while_deleting()
+    cfn.delete_stack(StackName=stack_name)
+    for _ in range(STACK_WAIT_MAX_ATTEMPTS):
+        while_deleting()
+        stack = describe_stack(cfn, stack_name)
+        if stack is None or stack.get("StackStatus") == "DELETE_COMPLETE":
+            return
+        if stack.get("StackStatus") == "DELETE_FAILED":
+            raise ChangeSetError(
+                f"Stack {stack_name} was not deleted: {stack.get('StackStatusReason') or 'DELETE_FAILED'}. "
+                f"The events above (or the CloudFormation console) name the failing resource."
+            )
+        sleep(STACK_WAIT_DELAY_S)
+    raise ChangeSetError(f"Stack {stack_name} is still being deleted after an hour.")
+
+
 def execute_change_set(
     cfn,
     *,

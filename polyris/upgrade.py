@@ -26,6 +26,7 @@ from ._ansi import CYAN, YELLOW
 from ._ansi import c as _c
 from .constants import ACCESS_DENIED_CODES
 from .coordination import run_row, sweep
+from .executions import error_code, stop_running
 from .platform import (
     ADOPTION_SETTLE,
     BULK_BACKFILL_MACHINE,
@@ -58,9 +59,6 @@ STOP_CAUSE = ("polyris-up stopped this execution: the platform runs 1.3 now, whi
               "started. Start the run again after its pipeline's redeploy.")
 #: How long the stop waits before it lists again: ListExecutions shows a new execution only after a moment.
 STOP_SETTLE_S = 2.0
-#: How many executions the stop asks for per listing, the most that ListExecutions gives: on a platform that
-#: runs 1.3, every polyris-up lists what runs on run_task.
-_PAGE = 1000
 #: How often the wait for the index asks DynamoDB, and how many times at most: an hour, as for a stack.
 INDEX_POLL_S = 15.0
 INDEX_POLLS = 240
@@ -116,16 +114,12 @@ def permission(action: str, resource: str) -> Iterator[None]:
     try:
         yield
     except ClientError as e:
-        if _code(e) not in ACCESS_DENIED_CODES:
+        if error_code(e) not in ACCESS_DENIED_CODES:
             raise
         raise Refused(
             f"polyris-up may not call {action} on {resource}, which its checks before the upgrade to 1.3 need.",
             "Grant it to the role that runs polyris-up (docs/deployment/IAM_PERMISSIONS.md), then run it again.",
         ) from e
-
-
-def _code(error: ClientError) -> str:
-    return str(error.response.get("Error", {}).get("Code", ""))
 
 
 def check(*, sfn: Any, dynamodb: Any, target: Target, deployed: Optional[str], override: bool, now: datetime) -> None:
@@ -205,7 +199,7 @@ def _check_drained(sfn: Any, target: Target) -> None:
             with permission("states:ListExecutions", arn):
                 page = sfn.list_executions(stateMachineArn=arn, statusFilter="RUNNING", maxResults=_COUNT_UP_TO)
         except ClientError as e:
-            if _code(e) != "StateMachineDoesNotExist":
+            if error_code(e) != "StateMachineDoesNotExist":
                 raise
             continue                                       # a state machine that is not there runs nothing
         found += 1
@@ -262,7 +256,7 @@ def rows_engine_since(dynamodb: Any, target: Target) -> Optional[datetime]:
     try:
         created = dynamodb.describe_table(TableName=target.specs_table)["Table"].get("CreationDateTime")
     except ClientError as e:
-        if _code(e) != "ResourceNotFoundException":
+        if error_code(e) != "ResourceNotFoundException":
             raise
         return None
     return created if isinstance(created, datetime) else None
@@ -308,50 +302,15 @@ def stop_leftovers(
     seen: Set[str] = set()
     while True:
         before = len(seen)
-        for machine, cutoff in order:
-            for execution in _running(sfn, machine, cutoff):
-                if execution["executionArn"] in seen:
-                    continue                               # stopped already: a listing can lag behind a stop
-                seen.add(execution["executionArn"])
-                if not _stop(sfn, execution["executionArn"]):
-                    continue
-                if machine in starters:
-                    stopped.runs.append(StoppedRun(machine=machine.rsplit(":", 1)[-1], name=execution["name"],
-                                                   started=execution["startDate"]))
-                else:
-                    stopped.engine += 1
+        for machine, execution in stop_running(sfn, order, error=STOP_ERROR, cause=STOP_CAUSE, seen=seen):
+            if machine in starters:
+                stopped.runs.append(StoppedRun(machine=machine.rsplit(":", 1)[-1], name=execution["name"],
+                                               started=execution["startDate"]))
+            else:
+                stopped.engine += 1
         if len(seen) == before:
             return stopped
         sleep(STOP_SETTLE_S)
-
-
-def _running(sfn: Any, machine: str, before: Optional[datetime]) -> List[Dict[str, Any]]:
-    """A state machine's running executions that started before ``before`` (all of them, with None).
-
-    None of a state machine that does not exist: a pipeline destroyed since
-    its registration, or one of 1.2's that CloudFormation has deleted.
-    """
-    executions: List[Dict[str, Any]] = []
-    try:
-        pages = sfn.get_paginator("list_executions").paginate(
-            stateMachineArn=machine, statusFilter="RUNNING", PaginationConfig={"PageSize": _PAGE})
-        for page in pages:
-            executions.extend(e for e in page.get("executions", []) if before is None or e["startDate"] < before)
-    except ClientError as e:
-        if _code(e) != "StateMachineDoesNotExist":
-            raise
-    return executions
-
-
-def _stop(sfn: Any, execution: str) -> bool:
-    """Stop an execution; False when it is gone already."""
-    try:
-        sfn.stop_execution(executionArn=execution, error=STOP_ERROR, cause=STOP_CAUSE)
-    except ClientError as e:
-        if _code(e) != "ExecutionDoesNotExist":
-            raise
-        return False
-    return True
 
 
 # ── The index that 1.3 adds ──────────────────────────────────────────────────
@@ -369,7 +328,7 @@ def left_by_1_2(sfn: Any, target: Target) -> bool:
         try:
             sfn.describe_state_machine(stateMachineArn=target.machine(name))
         except ClientError as e:
-            if _code(e) == "StateMachineDoesNotExist":
+            if error_code(e) == "StateMachineDoesNotExist":
                 continue
             raise
         return True

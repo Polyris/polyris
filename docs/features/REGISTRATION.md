@@ -47,7 +47,8 @@ overwritten by pipeline runs. The Console's "Deployed at X" reflects the last
 actual deploy, not the last run.
 
 **On destroy** (`polyris-destroy`): deletes the CloudFormation stack
-(removes the pipeline StateMachine and EventBridge schedule). DynamoDB entries
+(removes the pipeline StateMachine and EventBridge schedule), stopping the
+pipeline's running runs until the stack is gone. DynamoDB entries
 (`pipeline_registry`, `asset_subscriptions`) are not removed automatically —
 delete the items directly via the AWS Console / CLI if needed.
 

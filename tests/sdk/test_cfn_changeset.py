@@ -340,3 +340,68 @@ def test_change_set_changes_are_read_across_pages():
 
     cs = _create(_Paged())
     assert cs["Changes"] == [{"n": 1}, {"n": 2}, {"n": 3}] and "NextToken" not in cs
+
+
+class _Deleting(FakeCfn):
+    """A stack CloudFormation deletes: after the delete, each describe_stacks gives the next status, then none."""
+
+    def __init__(self, statuses: List[str], reason: str = ""):
+        super().__init__(status="CREATE_COMPLETE")
+        self.after_delete = list(statuses)
+        self.reason = reason
+
+    def delete_stack(self, StackName):
+        self.calls.append(("delete_stack", StackName))
+
+    def describe_stacks(self, StackName):
+        if any(name == "delete_stack" for name, _ in self.calls):
+            self.status = self.after_delete.pop(0) if self.after_delete else None
+        if self.status is None:
+            raise ClientError({"Error": {"Code": "ValidationError",
+                                         "Message": f"Stack with id {StackName} does not exist"}}, "DescribeStacks")
+        return {"Stacks": [{"StackName": StackName, "StackStatus": self.status, "StackStatusReason": self.reason}]}
+
+
+def _delete(cfn: FakeCfn, hook=lambda: None) -> None:
+    C.delete_stack(cfn, stack_name="acme-dev-polyris-sales-etl", while_deleting=hook, sleep=lambda _: None)
+
+
+def test_delete_stack_ends_what_holds_it_up_before_the_delete_and_on_every_poll_until_the_stack_is_gone():
+    cfn = _Deleting(["DELETE_IN_PROGRESS", "DELETE_IN_PROGRESS"])
+    hooks: List[bool] = []
+
+    _delete(cfn, lambda: hooks.append(any(name == "delete_stack" for name, _ in cfn.calls)))
+
+    assert hooks == [False, True, True, True]      # before the delete, then on each of the three polls
+    assert cfn.call("delete_stack") == "acme-dev-polyris-sales-etl"
+
+
+def test_delete_stack_returns_once_the_stack_reads_deleted():
+    cfn = _Deleting(["DELETE_COMPLETE"])
+    _delete(cfn)
+    assert cfn.status == "DELETE_COMPLETE"
+
+
+def test_a_hook_that_fails_before_the_delete_leaves_the_stack_alone():
+    cfn = _Deleting([])
+
+    def denied() -> None:
+        raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "states:ListExecutions"}},
+                          "ListExecutions")
+
+    with pytest.raises(ClientError):
+        _delete(cfn, denied)
+    assert not any(name == "delete_stack" for name, _ in cfn.calls)
+
+
+def test_a_deletion_that_fails_raises_with_its_reason():
+    cfn = _Deleting(["DELETE_FAILED"], reason="The following resource(s) failed to delete: [PipelineStateMachine].")
+    with pytest.raises(C.ChangeSetError, match=r"failed to delete: \[PipelineStateMachine\]"):
+        _delete(cfn)
+
+
+def test_a_deletion_that_never_ends_raises(monkeypatch):
+    monkeypatch.setattr(C, "STACK_WAIT_MAX_ATTEMPTS", 3)
+    cfn = _Deleting(["DELETE_IN_PROGRESS"] * 5)
+    with pytest.raises(C.ChangeSetError, match="still being deleted"):
+        _delete(cfn)
