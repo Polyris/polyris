@@ -213,7 +213,7 @@ The pipelines sidebar keeps its rows still while the pointer or the focus is in 
 
 ## A notification is named by what it is, on every surface
 
-The bell's pop-up called every warning "Pipeline Failed" while its list and the browser notification named it by its kind (1.3 live smoke). `notificationTitle` in `Notifications.tsx` names a notification for the pop-up and the browser notification; a new surface calls it, never a ternary of its own (`names a warning toast by its kind, not as a failed pipeline`).
+The bell's pop-up called every warning "Pipeline Failed" while its list and the browser notification named it by its kind (1.3 live smoke). `notificationTitle` in `Notifications.tsx` names a notification for the pop-up and the browser notification (a task's failure as "Task Failed": the run goes on); a new surface imports it, never a ternary of its own (`names a warning toast by its kind, not as a failed pipeline`).
 
 ## Dead computed values are bugs waiting to happen
 

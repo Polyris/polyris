@@ -77,7 +77,8 @@ class Target:
     """The deployed platform a step acts on: its stack, where its state machines are, and its tables."""
 
     stack_name: str
-    #: What the names of its state machines, and of its pipelines', start with: ``{Namespace}-{Stage}-polyris-``.
+    #: What the names of its own state machines start with: ``{Namespace}-{Stage}-polyris-``. A pipeline's may take a
+    #: namespace and stage of its own; the registry names its ARN.
     name_prefix: str
     #: The ARN of any of its state machines, up to the end of that prefix.
     machine_prefix: str

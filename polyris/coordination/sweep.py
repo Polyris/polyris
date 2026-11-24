@@ -129,7 +129,8 @@ def lost_hint(enabled_at: Optional[datetime], check_time: datetime, *, left_at: 
 def failed_step(passes: int, failed: int) -> bool:
     """Whether a sweep reports a failed step: more than half of its passes failed, and at least two (ADR #137 §7).
 
-    One broken run alone does not turn the System status red; its run's warning shows it.
+    One broken run alone fails no step; its run's warning shows it, and its rows, which stay due, the self-check's
+    oldest overdue row after 40 minutes.
     """
     return failed >= 2 and failed * 2 > passes
 

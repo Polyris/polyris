@@ -291,7 +291,9 @@ def test_a_missing_spec_version_fails_the_pass_with_a_warning(world):
     for raw in world.client.scan(TableName=table("SPECS_TABLE"))["Items"]:
         world.client.delete_item(TableName=table("SPECS_TABLE"), Key={"pk": raw["pk"], "sk": raw["sk"]})
     assert full(world)["action"] == "failed"
-    assert "a pass over the run failed" in item(world, f"_notify_warn_coordination_{RUN_KEY}-pass")["error"]
+    warning = item(world, f"_notify_warn_coordination_{RUN_KEY}-pass")
+    assert "a pass over the run failed" in warning["error"]
+    assert warning["pipeline_name"] == "orders"          # the run row names it for the bell (TR-10, P-2)
 
 
 def test_a_start_whose_spec_text_is_gone_fails_its_task_with_the_cause(world):

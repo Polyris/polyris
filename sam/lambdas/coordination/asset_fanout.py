@@ -216,7 +216,7 @@ class AssetFanout:
         name = run_name(consumer, day, KIND_EVENT if every_event else KIND_AND,
                         f"{asset}|{fact['event_time']}" if every_event else "")
         if not every_event and self._ran_already(name):
-            return 0             # one AND run per consumer and date, at any age
+            return 0             # one AND run per consumer and date, while the first run's history is kept
         run_input = json.dumps({
             "triggered_by": "asset",
             "trigger_assets": [asset] if every_event else sorted(sp.asset_names(schedule)),
@@ -244,7 +244,7 @@ class AssetFanout:
         return 1
 
     def _ran_already(self, name: str) -> bool:
-        """Whether the AND run of this name ran: one run per consumer and date, at any age of the date, and a rerun
+        """Whether the AND run of this name ran: one run per consumer and date while its run row lives, and a rerun
         of the date is the user's (a Run or a backfill), as Airflow's and Dagster's defaults have it.
 
         Step Functions frees an execution's name 90 days after it ends, so past them a start under the same name

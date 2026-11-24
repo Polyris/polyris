@@ -8968,7 +8968,7 @@ earlier than its logical `date`: no row older than T can hide on a date newer th
   `started_at`. Deliberately not answered here. `query_all` already logs `Hit max_items
   limit`, and `query_runs_by_date` cuts on the same condition, so whether this is live is
   measurable rather than arguable.
-- **1.3 update (D139, D140).** The Tasks tab no longer reads task rows by date or by pipeline: it reads the run rows
+- **1.3 update.** The Tasks tab no longer reads task rows by date or by pipeline: it reads the run rows
   the Runs tab reads (`run-start-index`, ADR #137 §5), then the task rows of the runs on its page, and pages on the
   start of its last run. `query_runs_by_pipeline` and its fill loop are gone. Reading a pipeline's task rows by date,
   a page of a pipeline of 2,000 tasks read 101 runs, about 202,000 rows; a rare status read its whole history,

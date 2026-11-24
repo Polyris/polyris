@@ -22,7 +22,7 @@ generated files or duplicate an enum — edit `constants.py` and regenerate
 
 ## State machines
 
-### polyris-run-task-helper
+### polyris-dep-run-task-helper
 
 `run_task` runs one attempt of a task's work (ADR #137 §1). The dispatcher starts it once the task may run:
 

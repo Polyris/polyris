@@ -261,7 +261,7 @@ describe('Notifications', () => {
         it('renders toasts when notifications present and dropdown closed', () => {
             mockQueryData.current = [createNotification({ id: 'n1', pipeline_name: 'acme-daily' })];
             render(<Notifications onNavigate={onNavigate} />);
-            expect(screen.getByText('Pipeline Failed')).toBeInTheDocument();
+            expect(screen.getByText('Task Failed')).toBeInTheDocument();
         });
 
         it('names a warning toast by its kind, not as a failed pipeline', () => {
@@ -271,7 +271,7 @@ describe('Notifications', () => {
             render(<Notifications onNavigate={onNavigate} />);
             expect(screen.getByText('Coordination problem')).toBeInTheDocument();
             expect(screen.getByText('Task coordination • just now')).toBeInTheDocument();
-            expect(screen.queryByText('Pipeline Failed')).not.toBeInTheDocument();
+            expect(screen.queryByText('Task Failed')).not.toBeInTheDocument();
         });
 
         it('limits toasts to 3', () => {
@@ -279,7 +279,7 @@ describe('Notifications', () => {
                 createNotification({ id: `n${i}`, pipeline_name: `pipeline-${i}` })
             );
             render(<Notifications onNavigate={onNavigate} />);
-            const toasts = screen.getAllByText('Pipeline Failed');
+            const toasts = screen.getAllByText('Task Failed');
             expect(toasts.length).toBe(3);
         });
     });

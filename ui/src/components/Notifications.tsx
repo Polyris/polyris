@@ -21,12 +21,13 @@ import type { Notification as NotificationType } from '@/types';
  * Data fetching via React Query (useNotificationsQuery) — polls every 30s
  */
 /** What a notification is, as a toast and a browser notification name it: a warning by its kind, never as a
- *  failure (a warning about a run's own execution showed as "Pipeline Failed", 1.3 live smoke). */
-function notificationTitle(n: NotificationType): string {
+ *  failure (a warning about a run's own execution showed as "Pipeline Failed", 1.3 live smoke), and a task's failure
+ *  as a task's: in 1.3 the run goes on beside it. */
+export function notificationTitle(n: NotificationType): string {
     if (n.type === 'backfill') return `Backfill ${n.backfill_status}`;
     if (n.type === 'decision_required') return 'Needs Decision';
     if (n.type === 'warning') return warningKindLabel(n.kind);
-    return 'Pipeline Failed';
+    return 'Task Failed';
 }
 
 function getInitialShownNotifs(): Set<string> {

@@ -271,7 +271,7 @@ One-line inventory — for what each one does see
 
 | Component | Purpose |
 |-----------|---------|
-| `polyris-run-task-helper` | `run_task`: one attempt of a task's work, its outcome and its facts in one write |
+| `polyris-dep-run-task-helper` | `run_task`: one attempt of a task's work, its outcome and its facts in one write |
 | `polyris-bulk-backfill` | Starts one pipeline execution per date of a range |
 | `polyris-test-quick`, `-test-success`, `-test-failure` | Demo targets for `@task.sfn` |
 | `start-run` | Starts a run's tasks, after its registration: writes the run row, its input, one row per task and the `asset:` pointers |

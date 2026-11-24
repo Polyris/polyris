@@ -49,7 +49,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 
 | Logical name | Purpose |
 |--------------|---------|
-| `polyris-run-task-helper` | `run_task`: started by the dispatcher for one task once it may run (ADR #137 §1). Routes to the right AWS-service integration (StartJobRun for Glue, RunTask for ECS, etc.), retries, and records the outcome and its asset facts in one write |
+| `polyris-dep-run-task-helper` | `run_task`: started by the dispatcher for one task once it may run (ADR #137 §1). Routes to the right AWS-service integration (StartJobRun for Glue, RunTask for ECS, etc.), retries, and records the outcome and its asset facts in one write |
 | `polyris-bulk-backfill` | Starts one pipeline execution per date of a date range |
 
 **Demo state machines** — safe targets to point `@task.sfn(arn=...)` at while learning:

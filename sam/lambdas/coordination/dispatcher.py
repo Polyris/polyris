@@ -920,8 +920,16 @@ class Dispatcher:
                          f"{exc}")
 
     def _failed(self, run_key: str, source: str, exc: BaseException) -> Dict[str, Any]:
-        """A pass that failed for good: a warning for its run; its run row's check comes back to it (§7)."""
+        """A pass that failed for good: a warning for its run, which names the run's pipeline and date when the run
+        row can be read (the bell shows them); its run row's check comes back to it (§7)."""
         run = dispatch.RunView(key=run_key, execution=run_key[len(run_row.KEY_PREFIX):], status="", version=0)
+        try:
+            item = self._get(run_key)
+            if item is not None:
+                run = dispatch.run_view(item)
+        except Exception as read_error:  # noqa: BLE001 — the warning goes out whatever the run row holds
+            log.error("dispatcher", "the run row of a failed pass could not be read; its warning names no pipeline",
+                      run=run_key, error=str(read_error))
         self._warn(run, subject=f"{run_key}-pass", task="", item={},
                    error=f"a pass over the run failed: {type(exc).__name__}: {exc}")
         return {"run": run_key, "source": source, "action": "failed", "error": f"{type(exc).__name__}: {exc}"}

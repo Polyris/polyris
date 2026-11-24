@@ -9,7 +9,6 @@
 | Area | Current behavior |
 |------|------------------|
 | Partitions below a day | A run's partition is its date. Runs more often than daily share their day's partition, and an hourly asset's facts count for the whole day. |
-| Failures of older dates | A task failure shows in the notification bell only while its run's date is within the bell's window: a failed run for an older date shows in that run, not in the bell. |
 | Wake-up after a lost hint | A task normally starts within seconds of its last condition. If its wake-up hint is lost, the sweeper starts it at its next check, at most about 40 minutes later, and the bell shows a `sweeper` warning. |
 
 
@@ -491,7 +490,7 @@ individual task until the asset condition holds.
 | `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | AND of a 7-day run and a fresh fact |
 | `wait_for=[a.consecutive(days=7) \| manual_override]` | a 7-day run, or the override |
 
-A task checks its conditions when it registers and again whenever a fact of one of its assets arrives, so it starts as soon as the last condition holds.
+A task checks its conditions when its own dependencies are met and again whenever a fact of one of its assets arrives, so it starts as soon as the last condition holds.
 
 ### Full example — producer + consumer
 

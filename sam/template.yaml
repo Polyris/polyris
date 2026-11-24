@@ -1580,7 +1580,8 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt AssetSubscriptionsTable.Arn
-              # Push: start a consumer pipeline (deterministic name, so never twice).
+              # Push: start a consumer pipeline (deterministic name, so never twice). Any state machine: a pipeline
+              # may take a namespace and stage of its own (config.py), and only the registry names the one to start.
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -1649,7 +1650,7 @@ Resources:
                   - dynamodb:GetItem
                 Resource:
                   - !GetAtt PipelineRegistryTable.Arn
-              # Push retries and the catch-up start consumer pipelines (deterministic names).
+              # Push retries and the catch-up start consumer pipelines (deterministic names), of any namespace.
               - Effect: Allow
                 Action:
                   - states:StartExecution
