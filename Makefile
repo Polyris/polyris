@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes e2e-health e2e-smoke e2e-coordination e2e-coordination-clean check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes test-cov test-cov-sdk test-cov-scenarios test-cov-backend coverage-reporte2e-health e2e-smoke e2e-coordination e2e-coordination-clean check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -64,9 +64,27 @@ test-cov:
 	python3 -m pytest tests/sdk/ tests/backend/ tests/integration/ \
 		--cov=polyris --cov-report=term-missing
 
+# The same run in three parts, for CI's parallel jobs. Each part keeps its data in
+# .coverage.<part> and checks no floor; coverage-report combines the parts and checks it.
+test-cov-sdk:
+	COVERAGE_FILE=.coverage.sdk python3 -m pytest tests/sdk/ tests/integration/ \
+		--cov=polyris --cov-report= --cov-fail-under=0
+
+test-cov-scenarios:
+	COVERAGE_FILE=.coverage.scenarios python3 -m pytest tests/backend/coordination/test_scenarios.py \
+		--cov=polyris --cov-report= --cov-fail-under=0
+
+test-cov-backend:
+	COVERAGE_FILE=.coverage.backend python3 -m pytest tests/backend/ --ignore=tests/backend/coordination/test_scenarios.py \
+		--cov=polyris --cov-report= --cov-fail-under=0
+
+coverage-report:
+	python3 -m coverage combine
+	python3 -m coverage report
+
 # Mutation probes of the coordination harness: each puts a fixed defect back and expects its
 # scenario to fail. They edit source files while they run (and restore them), so run them alone,
-# never next to another suite. CI runs them last, on its throwaway checkout; `make test` does not.
+# never next to another suite. CI runs them in a job of their own; `make test` does not.
 test-probes:
 	@echo "🧬 Coordination mutation probes..."
 	python3 tests/backend/coordination/run_probes.py
