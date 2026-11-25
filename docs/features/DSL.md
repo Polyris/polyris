@@ -104,7 +104,7 @@ DAG(schedule="cron(0 9 ? * MON-FRI *)")   # 09:00 UTC on weekdays
 DAG(schedule="rate(6 hours)")
 ```
 
-A run that the schedule starts is dated by the UTC day the schedule fired it for, whatever the preset: every `@hourly` run of 25 July is dated `2025-07-25`. A `rate(...)` schedule fires at intervals counted from when `polyris-deploy` created the schedule; to run at a fixed time, use `cron(...)` or a preset. A bare five-field cron such as `"0 9 * * MON-FRI"` is refused: write `cron(0 9 ? * MON-FRI *)`.
+A run that the schedule starts is dated by the UTC day the schedule fired it for, whatever the preset: every `@hourly` run of 25 July is dated `2025-07-25`. The `@daily` run at 00:00 on 25 July is the run of a day that has just begun. To process the day before, take the run's date minus one day in the task, or schedule a later `cron(...)`. A `rate(...)` schedule fires at intervals counted from when `polyris-deploy` created the schedule; to run at a fixed time, use `cron(...)` or a preset. A bare five-field cron such as `"0 9 * * MON-FRI"` is refused: write `cron(0 9 ? * MON-FRI *)`.
 
 ### Asset-based (cross-pipeline triggers)
 

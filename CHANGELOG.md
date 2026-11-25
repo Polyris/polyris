@@ -2,11 +2,11 @@
 
 ### Breaking
 
+- **`@hourly`, `@daily` and `@weekly` fire at the start of their period**: each hour, each day at 00:00 UTC, each ISO week on Monday at 00:00 UTC, as the docs said and as `@monthly` did. They were `rate(...)` expressions, which count from when the schedule was created: `@daily` ran at the time of day of the deploy. A scheduled run is dated by the UTC day it fires on, so a `@daily` run at 00:00 on 25 November is the run of 25 November, a day that has just begun. A task that processes the day before reads the run's date minus one day, or the pipeline schedules a later `cron(...)`. A pipeline takes the new time at its next `polyris-deploy`.
 - `polyris-local --localstack` and `run(dag, localstack=True)` are gone. They deployed the pipeline's state machine alone, and a run of 1.3 needs the platform's engine, so no task could run. Test locally with `polyris-local --mock`, or deploy to a stage. `polyris.local.run` takes its options by keyword.
 
 ### Fixed
 
-- `@hourly`, `@daily` and `@weekly` fire at the start of each hour, of each day at 00:00 UTC and of each ISO week on Monday at 00:00 UTC, as the docs said and as `@monthly` did. They were `rate(...)` expressions, which count from when the schedule was created: `@daily` ran at the time of day of the deploy. A pipeline takes the new time at its next `polyris-deploy`.
 - `polyris-deploy` sets `POLYRIS_STAGE` for the pipeline file to the stage it deploys to — `--stage`, or else the `DEFAULT_STAGE` of `config.py` — in each folder's process of `--all` too. A file that picks its ARNs by `POLYRIS_STAGE`, as the one `polyris-init` writes does, read the shell's stage or its own default, so a deploy to prod carried another stage's ARNs. Without `--stage` and without `config.py` the stage comes from the platform stack after the file has run, and the deploy says so.
 - The console's help lists the task statuses of 1.3: Needs decision is there, Waiting Delay, Pending and Aborted are gone, and a paused task waits for its run's Resume. In the task detail, `H` opens the History tab (it was `T`) and `O` opens Input / Output.
 - After an update, `polyris-up` no longer suggests "a first pipeline" to a platform that runs pipelines.
