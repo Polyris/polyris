@@ -266,8 +266,7 @@ class Dispatcher:
             found = {str(i[task_row.TABLE_KEY]): i for i in self._batch_get([run_key, row_key])}
             run = dispatch.run_view(found[run_key]) if run_key in found else None
             row = found.get(row_key)
-            current = int(row[task_row.GENERATION]) if row is not None and run is not None \
-                and task_row.of_run(row, run.execution, run.run_start) else None
+            current = int(row[task_row.GENERATION]) if row is not None and run is not None else None
         except (ClientError, BotoCoreError) as exc:
             failures.reraise_transient(exc)
             log.error("dispatcher", "the rows of an ended run_task could not be read; its check finds them",
@@ -389,6 +388,10 @@ class Dispatcher:
                     state.run = stopped
                     self._stop_rows(state, judged)
                     self._run_end(state, keys)
+                elif engine_now and not check:
+                    # DescribeExecution is eventually consistent; the run row's own check comes back to it (§7).
+                    log.info("dispatcher", "the end of the run's execution stopped nothing in this pass: it is "
+                             "answered or finished, or DescribeExecution does not show the end yet", run=run_key)
         except _Left:
             state.left = True
         finally:
@@ -600,6 +603,8 @@ class Dispatcher:
                     # the row's own one off: the row keeps the check it had without the event (§7).
                     if state.check or judgment.transition is not None or judgment.start:
                         return judgment
+                    log.info("dispatcher", "the end of a run_task: DescribeExecution does not show it yet; the row "
+                             "keeps its own check", run=state.run.key, task=name)
         upstreams = {d: state.rows.get(d) for d in row.dependencies}
         assets = None
         if dispatch.needs_assets(row, upstreams):
