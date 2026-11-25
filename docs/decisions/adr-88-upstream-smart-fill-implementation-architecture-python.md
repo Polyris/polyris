@@ -4,13 +4,6 @@ accepted: by 2026-05-29
 ---
 # ADR #88 — Upstream smart-fill — implementation architecture (Python-planned, SFN-trusted)
 
-#### Status
-
-Accepted (implementation architecture). Builds on ADR #86 (asset-centric
-UX, unchanged DSL) and ADR #87 (partition-mapping shape, Dagster prior
-art). This ADR fixes *how* upstream smart-fill is built so the phased work
-can proceed without re-architecting. Code not yet written.
-
 #### Context — what the deep code analysis found
 
 A read-through of the existing backfill flow established the constraints
@@ -141,12 +134,3 @@ Phase 1 (warn), implemented in Phase 2 (ADR #87 phasing).
 - The remaining build-time choices (lock semantics, max_parallel value,
   mark-done UX copy) are parameters, not architecture — they will not
   reopen this ADR.
-
-#### CLAUDE.md alignment
-
-#2 (one resolver, reuse scan/resolve/expand/bucket-math; no parallel
-backfill system), #6 (this alignment precedes code), #7 (architectural ADR),
-#9 (extend `start_backfill` behind a flag; not a patch-on-patch), #11 (tests
-each phase), #12 (reuse `_scan_completed_partitions`, `_find_producers_for_
-asset`, `_expand_partitions`, DAG ordering, Map structure; Dagster shape as
-prior art).

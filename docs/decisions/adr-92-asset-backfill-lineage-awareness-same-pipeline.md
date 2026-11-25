@@ -4,12 +4,6 @@ accepted: by 2026-05-29
 ---
 # ADR #92 — Asset backfill lineage-awareness (same-pipeline frontier) + correction of ADR #88
 
-#### Status
-
-Accepted. Phase A of the lineage-aware backfill work. Corrects a stated
-assumption in ADR #88. Backend (this ADR) + UI ship together (v-next). No
-SFN change.
-
 #### Context
 
 ADR #88 claimed "same-pipeline upstream is free — the DAG handles it." That
@@ -103,11 +97,3 @@ Deferred (recorded, not built):
 - Preview must disclose scope (tasks-to-run × partitions, reused,
   skip_on_backfill+TTL warnings) so a one-cell click that expands to a large
   lineage is never a surprise.
-
-#### CLAUDE.md alignment
-
-#2 (one `frontier`, reused for Phase B later) · #6 (this ADR precedes code) ·
-#7 (semantics change + correction of #88 recorded) · #9 (widen subset, skip
-merge untouched) · #12 (reuse `query_by_date`, `_compute_skip_task_ids`,
-preview) · DAL pattern (existence via repo) · #1 (Phase B unbuilt — no dead
-code) · #8 (A+C complete; B is an honest deferred scope with a trigger).

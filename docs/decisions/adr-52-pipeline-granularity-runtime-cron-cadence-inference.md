@@ -241,15 +241,7 @@ as denormalization — easy follow-up.
 
 #### Testing
 
-`tests/sdk/test_granularity.py` (new, ~150 LOC):
-
-- 20+ cases from the edge cases table above
-- Test that inference doesn't crash on malformed input
-- Test that warnings surface correctly in `/api/backfill` response
-- Test fallback to daily for None
-
-No drift test needed — `infer_cron_cadence` is pure function, no shared
-schema with SFN templates.
+Pinned by `tests/sdk/test_granularity.py`: the edge cases above, malformed input, and the fallback to daily for `None` (`infer_cron_cadence` is a pure function, so no drift test is needed).
 
 #### Out of scope
 

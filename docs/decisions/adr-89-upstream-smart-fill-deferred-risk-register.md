@@ -4,16 +4,6 @@ accepted: by 2026-05-29
 ---
 # ADR #89 — Upstream smart-fill — deferred-risk register (no-surprises contract)
 
-#### Status
-
-Accepted (risk register). Companion to ADR #88. Its purpose is explicit:
-enumerate every known risk in the upstream smart-fill design and give each
-a concrete resolution — decided-now, or deferred-with-a-named-trigger-and-
-plan — so that no risk is discovered late as a surprise. "Detailed at build
-time" is not used here; each item states the decision and, critically, what
-data we capture from day one so that a later policy change needs no
-retroactive migration.
-
 #### Principle
 
 The cheapest insurance against a future rework is to **capture the data a
@@ -113,11 +103,3 @@ deferred with a named trigger and zero-migration data capture. This is the
 no-surprises contract: future change lands as additive policy on data we
 are already recording, confined to the resolver + backfill integration —
 never the concept (ADR #86), the mapping shape (#87), or the DSL.
-
-#### CLAUDE.md alignment
-
-#6 (risks aligned before code), #7 (decisions recorded), #9 (deferrals are
-additive, not patch-on-patch), #12 (reuse dag_hash, active guard, cancel
-semantics, StalenessStatus rather than building new). #8 no-stubs is
-honored by the spike: we prove the one unknown mechanic rather than stubbing
-it.

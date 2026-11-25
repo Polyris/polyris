@@ -4,13 +4,6 @@ accepted: by 2026-05-29
 ---
 # ADR #87 — Partition mapping + upstream smart-fill — adopt Dagster's model as prior art
 
-#### Status
-
-Accepted (concept). Fixes the architecture for partition-level upstream
-dependencies and the upstream smart-fill backfill behavior. Detailed
-API/SFN implementation deferred to its own follow-up when the work starts;
-this ADR locks the *shape* so we don't paint ourselves into a corner.
-
 #### Context
 
 ADR #86 made the asset the product's primary lens and named upstream
@@ -113,10 +106,3 @@ and `force` (rebuild all upstream regardless).
   `force` to rebuild), backfill-vs-scheduled conflict policy, future-date
   validation, max_parallel throttle limit, mark-partition-done (lift
   task-level `mark_success` to partition scope).
-
-#### CLAUDE.md alignment
-
-#2 no duplication (one mapping function, not per-case branches), #6
-alignment before implementation (this ADR), #7 ADR for an architectural
-decision, #12 maximize reuse (adopt proven Dagster shape; reuse bucket
-math, skip-completed, producer resolution).

@@ -56,16 +56,6 @@ default for "I just clicked Backfill", not an unconditional ban.
 Order in `skip_task_ids` matches order in the registry's task list
 (stable, deterministic).
 
-#### Implementation
-
-Helper `_compute_skip_task_ids(target_pipeline, task_subset)` in
-`sam/lambdas/console_api/routes/backfill.py`. Returns list of task
-IDs to skip. Called from `start_backfill` after task_subset
-validation, before building the SFN input. The pipeline SFN (built by
-`polyris.generators`) already consumes `$states.input.skip_tasks` via
-`JSONATA_SKIP_TASKS` — the Choice state in each task short-circuits
-if its task_id appears in the list. No SFN-template change needed.
-
 #### Backwards compatibility
 
 Pipelines without `skip_on_backfill=True` on any task: unchanged
@@ -82,14 +72,7 @@ adds task IDs to an existing list field.
 
 #### Tests
 
-Four contract tests in
-`sam/lambdas/console_api/tests/routes/test_backfill.py::TestSkipOnBackfillFlag`:
-
-- `test_flag_skips_scrapers_when_no_task_subset` — canonical case.
-- `test_flag_ignored_for_tasks_in_explicit_subset` — explicit override.
-- `test_flag_with_subset_unions_correctly` — union semantics.
-- `test_no_flagged_tasks_yields_empty_skip_list` — guards against
-  spurious flag enforcement when no task is flagged.
+Pinned by `sam/lambdas/console_api/tests/routes/test_backfill.py`, `test_flag_skips_scrapers_when_no_task_subset`, `test_flag_ignored_for_tasks_in_explicit_subset`, `test_flag_with_subset_unions_correctly`, `test_no_flagged_tasks_yields_empty_skip_list`.
 
 #### Alternatives considered
 

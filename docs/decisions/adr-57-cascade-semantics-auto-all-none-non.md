@@ -247,13 +247,7 @@ Cascade summary:
 
 #### Testing
 
-`tests/integration/test_cascade.py` (new, ~250 LOC):
-- Three modes × at least 5 scenarios each from the edge cases matrix
-- Lineage propagation verified end-to-end via DDB inspection
-- Suppression mode verifies no event in AssetEvents table
-- Force mode verifies bypass of freshness check
-- Multi-producer rejection
-- Preview warnings populated correctly
+Pinned by `tests/integration/test_cascade.py`.
 
 #### Migration
 

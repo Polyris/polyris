@@ -4,11 +4,6 @@ accepted: by 2026-05-29
 ---
 # ADR #91 — Rename backfill `cascade` → `downstream` (with deprecated alias)
 
-#### Status
-
-Accepted. Phase 4 lead item of ADR #88. Pure API-contract rename; no SFN
-change, no behavior change.
-
 #### Context
 
 Phase 2 (ADR #88) added the top-level `upstream` option
@@ -50,10 +45,3 @@ is cosmetic and independent.
 - The backfill API reads symmetrically: `upstream` + `downstream`.
 - Zero behavior change, zero SFN change, no deploy disruption.
 - One transition release where both names are accepted/returned.
-
-#### CLAUDE.md alignment
-
-#5 (version-consistent rename), #6 (this ADR precedes code), #7 (API
-contract change recorded), #9 (alias, not a breaking removal). The internal
-name gap is a deliberate, documented trade-off against a needless SFN deploy,
-not a #2/#5 violation.

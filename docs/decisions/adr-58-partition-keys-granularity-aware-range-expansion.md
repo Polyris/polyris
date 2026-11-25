@@ -234,19 +234,7 @@ source partitions map to it.
 
 #### Testing
 
-`tests/sdk/test_partitions.py` (~350 LOC):
-- Format validation per granularity (positive + negative cases)
-- Range expansion for all 4 granularities including edge cases (year
-  boundaries, ISO week edge weeks, leap day)
-- partition_start clipping
-- Reverse range rejection
-- Translation between granularities (daily→weekly, daily→monthly,
-  hourly→daily, dedup correctness)
-- 1000-partition limit triggers correct error
-- Single-partition cases (start == end)
-
-Coverage target: 100% of `polyris/partitions.py` (small surface, no
-external dependencies, achievable).
+Pinned by `tests/sdk/test_partitions.py`.
 
 #### Migration
 

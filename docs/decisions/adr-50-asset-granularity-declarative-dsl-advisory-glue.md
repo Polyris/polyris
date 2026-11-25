@@ -138,16 +138,3 @@ No SFN template changes. No DDB schema changes. No new tables.
   - `partition_value` ≠ `execution_date` semantics — deferred to v0.79,
     requires SFN template change
   - Quarterly/yearly granularities — YAGNI
-
-#### What the user sees
-
-Hover the warning triangle:
-> "Declared daily, but only 4 materializations in 30 days
-> (expected 30). Check your pipeline or update the asset's
-> granularity declaration."
-
-Hover a cell with re-runs:
-> "acme/orders @ 2026-05-12
->  Materialized at 20:00 UTC
->  Source: acme-daily.extract
->  Runs today: 3✓ (3 total)"

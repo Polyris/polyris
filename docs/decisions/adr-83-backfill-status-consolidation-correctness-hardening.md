@@ -77,19 +77,9 @@ that *can* drift now (see B); this catches it at CI time.
   its open AWS-behavior question, and two candidate fixes are specified in
   STATE.md for a deploy-time validation.
 
-#### Backlog hygiene
+#### One source for the backfill status sets
 
-Two "future enhancement" items were already implemented and were marked
-done (real `skip_completed` pre-flight; `partition_start` from asset
-metadata) — the backlog had drifted from the code.
-
-#### Tests
-
-| Suite | Was | Now | Δ |
-|---|---|---|---|
-| console_api | 356 | **366** | +10 (8 BackfillRecord, 2 child-name) |
-| SDK Python | 912 | **923** | +11 (parity) |
-| **All gates** | green | **green** | parity + sfn-templates + enums + cfn-lint |
+The terminal and active backfill status sets have one canonical source, `polyris/constants.py`, which codegen carries to every consumer as `BACKFILL_TERMINAL_STATUSES` and `BACKFILL_ACTIVE_STATUSES`; `console_api/constants.py` re-exports them, and no hand-kept copy (`BackfillStatus.TERMINAL`, `.ACTIVE`, `.ALL`) remains. The string-value `BackfillStatus` class stays in `console_api` as the readable value namespace, covered by the enum drift check.
 
 #### Why this is a minor version bump
 
@@ -106,35 +96,6 @@ place, every consumer routes through it.* #81 and #82 patched the symptoms
 is now exactly one Python authority, one typed accessor per concept, and a
 CI check that the second runtime (JSONata) stays in parity. Drift is no
 longer possible silently; it fails a test.
-
-#### Post-review SSoT completion (same release)
-
-A quality review of this work found that the consolidation was incomplete:
-`console_api/constants.py` still defined manual class-level
-`BackfillStatus.TERMINAL` / `.ACTIVE` / `.ALL` sets, duplicating the
-codegen-generated `BACKFILL_TERMINAL_STATUSES` / `BACKFILL_ACTIVE_STATUSES`
-(sourced from `polyris/constants.py`). This is the "BackfillStatus 2 copies"
-gap — TaskStatus had migrated to generated sets (ADR #77) but BackfillStatus
-hadn't. The new `BackfillRecord` had (incorrectly) consumed the manual
-duplicate.
-
-Completed the migration:
-- `constants.py` now re-exports `BACKFILL_TERMINAL_STATUSES` /
-  `BACKFILL_ACTIVE_STATUSES` from the generated module.
-- Removed the manual `BackfillStatus.TERMINAL` / `.ACTIVE` / `.ALL`
-  (the last was also dead — zero references).
-- Migrated all 6 consumers (BackfillRecord ×2, routes guard/derive/cancel
-  ×3, plus an inline `(PENDING, RUNNING)` tuple in the guard) to the
-  generated sets. Removed the now-dead `BackfillStatus` import from the DAL.
-
-Result: the terminal/active status sets have one canonical source
-(`polyris/constants.py`) flowing through codegen to every consumer; no
-hand-maintained copy remains. The string-value `BackfillStatus` class
-(PENDING/RUNNING/… with per-value docstrings) is intentionally kept in
-console_api as the readable value namespace — it mirrors the generated
-class and is covered by the existing enum drift check; folding it fully
-into the generated module is the remaining piece of the broader
-enum-SSoT consolidation tracked in STATE.md.
 
 #### DAL placement note
 
@@ -180,15 +141,6 @@ the 8-family enum SSoT effort. Consolidating only the safe families now,
 and documenting the unsafe ones precisely, is the correct bounded scope:
 shipping a re-export that breaks `PipelineStatus.PAUSED` to chase tidiness
 would trade a cosmetic SSoT win for a real regression.
-
-#### Final test counts (v0.80.0, all follow-ups)
-
-| Suite | v0.79.10 | v0.80.0 |
-|---|---|---|
-| console_api | 356 | **366** |
-| SDK Python | 912 | **923** |
-| **Drift checks** | enums, sfn-templates | **+ backfill-parity** |
-| **All gates** | green | **green** |
 
 #### Follow-up 3: TaskStatus / TriggerRule / PipelineStatus consolidation
 

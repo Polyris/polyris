@@ -57,43 +57,6 @@ eligibility check through `_reconcile_backfill_status(parent)` so the
 backend agrees with what the user sees; reconcile also self-heals the
 parent in passing.
 
-#### Audit notes (reviewed, no change needed)
-
-- **SFN sets `is_backfill: true`** on every child execution (both pipeline
-  and asset targets go through bulk_backfill) — the old "asset-backfill
-  missing is_backfill" concern is not present on this path.
-- **No double-count of failures** — the StartChildSFN `Catch` (exception
-  path) and the `ChildSucceededChoice` default (non-exception failed path)
-  are mutually exclusive, so `IncrementFailed` fires at most once.
-- **Canceled finalization** is correct — Finalize honors a `canceled`
-  status regardless of counters.
-- **DAL discriminators** (`record_type='backfill'`, sentinel pipeline_name)
-  are set consistently in put/put_if_new and filtered on read.
-- **No client-side derivation duplicate** — `backfillStatus.ts` was removed
-  in v0.79.1; the UI consumes the backend status (CLAUDE.md #2 clean).
-
-#### Audit notes (logged for backlog, not fixed here)
-
-- **Hourly partition keys in child execution Name** — the SFN builds the
-  child execution name from `partition_key`; if hourly granularity ever
-  produces keys containing characters illegal in SFN execution names
-  (e.g. `:`), StartExecution would fail. Daily/weekly/monthly keys are
-  safe. Verify the hourly partition-key format before enabling hourly.
-- **`.sync:2` Retry name reuse** — StartChildSFN retries reuse the same
-  execution Name+Input; SFN StartExecution is idempotent on name+input, so
-  the Retry block may not produce a genuinely fresh attempt. Pre-existing;
-  warrants a live test before relying on child-level retries.
-- **`force` / `incremental` options** remain accepted-but-unused (API
-  compat, documented). Borderline dead config; kept intentionally.
-
-#### Tests
-
-| Suite | Was | Now | Δ |
-|---|---|---|---|
-| console_api | 355 | **356** | +1 net (rewrote derived-skip test; added retry-zombie-eligible) |
-| SDK Python | 912 | 912 | 0 |
-| **All gates** | green | **green** | — |
-
 #### Lesson
 
 Two helpers (`_compute_derived_backfill_status` and the SFN Finalize

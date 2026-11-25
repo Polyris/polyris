@@ -36,22 +36,6 @@ when present, absent for normal scheduled runs):
 | `force` | `boolean` | `false` | If true → skip `Check_Has_Dependencies` wait (run even if upstream incomplete) |
 | `cascade_all` | `boolean` | `false` | Read by `notify_dependents` helper (separate template), broader notify semantics |
 
-#### Implementation
-
-Three Choice states added to `run_task/sfn.tpl.json` plus one
-modification:
-
-1. **`Check_Should_Skip_Task`** — new entry state. Choice on `skip_tasks`
-   membership. Skip path → `Task_Skipped` Pass state → End.
-2. **`Check_Should_Suppress_Asset_Events`** — inserted before existing
-   `Emit_Asset_Events`. Choice on `_suppress_asset_event`. Skip path
-   → `Notify_Asset_Subscribers` (bypass emit).
-3. **`Check_Has_Dependencies`** — existing state, modified Choice
-   condition to OR with `force=true` to bypass dep wait.
-
-One Choice state added to `notify_dependents/sfn.tpl.json` for
-`cascade_all` semantics.
-
 #### Backwards compatibility
 
 All existing scheduled pipeline runs invoke `run_task` without these
@@ -71,12 +55,7 @@ Negligible. The existing $31/month infra budget unaffected.
 
 #### Tests
 
-- `tests/sdk/test_run_task_template.py` — 4+ contract tests pinning
-  the new states and their default-fall-through behavior
-- Existing 60 ASL snapshot tests — verify no regression in
-  generated pipeline definitions
-- New backend test cases in `TestSfnInputContract` — verify backend
-  passes the right fields through bulk-backfill SFN ItemSelector
+Pinned by `tests/sdk/test_run_task_template.py`.
 
 #### Alternatives considered
 

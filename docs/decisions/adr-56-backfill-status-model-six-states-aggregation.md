@@ -251,12 +251,7 @@ backfill code paths consume the enum starting v0.78.
 
 #### Testing
 
-`tests/sdk/test_backfill_status.py` (new, ~120 LOC):
-- All 6 transitions (PENDING → ..., RUNNING → ..., etc.)
-- Aggregation rules for each combination of counters
-- Cancel preservation (cancel during running → final status canceled)
-- Mapping table for each execution status
-- Retry-failed flow (failed → new Backfill, parent_backfill_id correct)
+Pinned by `tests/sdk/test_backfill_status.py`.
 
 #### Cost
 

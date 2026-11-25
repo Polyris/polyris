@@ -4,13 +4,6 @@ accepted: by 2026-05-29
 ---
 # ADR #90 — Upstream smart-fill Phase 3 — tiered SFN execution (nested Map + tier gate)
 
-#### Status
-
-Accepted. Implements Phase 3 of ADR #88: make the bulk-backfill SFN execute
-a Python-built tiered cross-pipeline plan. Builds on Phases 1–2 (resolver +
-integration, v0.81.0). Touches live orchestration, so it follows the
-JSONata discipline of ADR #85 (jsonata-python proof + `make audit-jsonata`).
-
 #### Context
 
 After Phase 2, `start_backfill` resolves a tiered plan but refuses to
@@ -99,12 +92,3 @@ so `check-backfill-parity` stays green and the canonical
   gate, all proven with jsonata-python and swept by `make audit-jsonata`.
 - Coarse gating is a known, documented limitation with a named trigger for
   3b — no surprise.
-
-#### CLAUDE.md alignment
-
-#2 (unified tiers input, reused inner processor — no dual path), #6 (this
-ADR precedes code), #7 (architectural decision recorded), #8 (no stubs —
-3a is complete and correct, 3b is a separate honest scope, not a stub), #9
-(extends the SFN; the coarse gate is a deliberate safe design, not a
-patch), #11 (template + integration tests, JSONata proof), #12 (reuses the
-child-execution processor, Finalize, cancel-check pattern, the resolver).

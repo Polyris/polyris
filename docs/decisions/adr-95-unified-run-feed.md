@@ -4,17 +4,9 @@ accepted: by 2026-06-01
 ---
 # ADR #95 — Unified Run/Activity feed — Backfills as first-class rows in `/api/runs`
 
-#### Status
-
-Accepted (v0.86.0). Supersedes the Run-redesign discovery
-(`docs/redesign/run/DISCOVERY.md`): the unified "Run" object that discovery
-proposed is not built as a write-side parent record — Backfill already is that
-parent object for the only case that needs one. "Run" is instead realized as a
-read-only projection that merges the two write shapes (bare executions +
-Backfill records) into one feed. Read-side change only: no DDB schema, no SFN,
-no write path.
-
 #### Context
+
+This supersedes the Run-redesign discovery: the unified "Run" object it proposed is not built as a write-side parent record, since a Backfill already is that parent for the only case that needs one. "Run" is a read-only projection that merges the two write shapes (bare executions and Backfill records) into one feed: no DynamoDB schema, state machine or write path changes.
 
 The system has two write shapes that both "produce executions":
 
@@ -104,17 +96,3 @@ a backfill-only filtered view; nothing is removed.
   beyond that shared scan.
 - The write-side split is now load-bearing and on record; a future
   "everything is a Run" change must revisit this ADR, not assume it.
-
-#### CLAUDE.md alignment
-
-- **#1 / #12 (no duplication / maximize reuse):** one canonical Run shape on the
-  server, not re-derived per client; expand reuses existing children endpoints;
-  the backfills page/endpoint are reused, not forked.
-- **#2 (follow existing patterns):** DAL repos (`executions_repo`,
-  `backfills_repo`), `cors_response`, `(ClientError, BotoCoreError)` + `log.error`,
-  the existing row-shaping/sort/limit flow.
-- **#6 / #7 (align before implement / ADR for API+architecture):** this entry
-  precedes code; the four filter behaviors and the boundary rule are decided
-  here, not silently in the handler.
-- **#22 (UI reads DDB; backend assembles):** the merge is server-side; the UI
-  consumes one assembled list.
