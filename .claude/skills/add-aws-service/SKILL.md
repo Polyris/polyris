@@ -51,7 +51,7 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
      register it in the state-generator **dispatch dict**.
    - Add an `elif task.task_type == '<service>':` branch to the `task_config` builder,
      `_build_task_config_and_arn`. Keys are **never bare strings** — declare each as a
-     `polyris.constants.TaskConfigKey` member first (ADR #108); `tests/sdk/test_task_config_contract.py`
+     `polyris.constants.TaskConfigKey` member first (ADR #108, TaskConfigKey); `tests/sdk/test_task_config_contract.py`
      fails on any literal on either side.
    - Add the type to `WRAPPER_STEP_TYPES` if its step should run as a task row, and to
      `TRACKED_STEP_TYPES` if it should appear in DAG visualization.
@@ -91,7 +91,7 @@ materially moves ~$31/month, justify it in the ADR. On-demand / pay-per-use shap
 ## Step 6 — Record the decision (ADR)
 
 Add a standalone `docs/reference/adr-<N>-<slug>.md` (next number after the current ceiling; mirror
-`adr-106`/`adr-107`). Capture: what the service is for, why it vs alternatives, cost delta, and
+`adr-106-task-param-parity.md`/`adr-107-wrapper-retry-loop.md`). Capture: what the service is for, why it vs alternatives, cost delta, and
 orchestration shape.
 
 ## Step 7 — Surfaces that follow

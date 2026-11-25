@@ -199,7 +199,7 @@ UPDATE = {"ChangeSetName": "cs", "ChangeSetType": "UPDATE"}
 
 
 def test_execute_calls_the_hook_once_the_update_has_succeeded_and_its_cleanup_begins():
-    """polyris-up stops there what would hold the cleanup's deletions up (ADR #137, *Migration*)."""
+    """polyris-up stops there what would hold the cleanup's deletions up (ADR #137, *Migration and upgrade*)."""
     cfn = _Updating("UPDATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", C.CLEANUP_STATUS)
     slept: list = []
 

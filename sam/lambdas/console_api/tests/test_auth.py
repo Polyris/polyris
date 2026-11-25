@@ -1,5 +1,5 @@
 """
-Unit tests for auth.py (ADR #65) — the dual-auth gate.
+Unit tests for auth.py (ADR #65, API tokens) — the dual-auth gate.
 
 Mock boundary: the token repo and the cognito client only. Hashing and the
 branch/verification logic run for real (#14).

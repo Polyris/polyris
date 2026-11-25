@@ -375,7 +375,7 @@ def test_every_write_of_the_run_row_renews_its_history_ttl_and_never_makes_a_row
 
 
 def test_a_row_a_12_run_left_without_a_generation_is_stopped_on_its_absence(ddb):
-    """Its stop is conditional on the status read and on no generation, and gives it the first (*Migration*)."""
+    """Its stop is conditional on the status read and on no generation, and gives it the first (*Migration and upgrade*)."""
     put(ddb, {"execution_name": KEY, "status": "waiting"})
     item = {"execution_name": KEY, "task_name": "load", "status": "waiting"}
     legacy = dispatch.stop_view(item)

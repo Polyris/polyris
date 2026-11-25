@@ -315,7 +315,7 @@
 }
 
 /* Recent events scroll container — bounds height so up to 30 rows scroll
-   internally instead of stretching the panel (ADR #106). Sticky header keeps
+   internally instead of stretching the panel (ADR #106, date scope). Sticky header keeps
    the column labels visible while scrolling. */
 .av-events-scroll {
     max-height: 420px;

@@ -729,7 +729,7 @@ export interface TaskFilter {
 export interface RunFilter {
   status: string;
   pipeline: string;
-  /** The Runs workspace's own date filter — '' means every date (ADR #106).
+  /** The Runs workspace's own date filter — '' means every date (ADR #106, date scope).
    *  Not the Pipeline page's `date`: that one scopes a page, this one filters a feed. */
   date: string;
 }

@@ -183,7 +183,7 @@ def test_resolve_s3_pointer_without_scheme():
     assert s3.calls[0] == {"Bucket": "b", "Key": "k"}
 
 
-# ── XComError hierarchy + PullError alias (§2.1 + backward compat) ─────
+# ── XComError hierarchy + PullError alias (backward compat) ─────
 
 
 def test_xcom_error_is_runtime_error():
@@ -400,7 +400,7 @@ def test_xcom_truncated_error_message_mentions_s3_claim_check():
     assert "S3" in msg or "Claim Check" in msg
 
 
-# ── xcom.get() — uniform reader (§2.2) ─────────────────────────────────
+# ── xcom.get() — uniform reader ─────────────────────────────────
 
 
 def _event_with_upstream(**deps):
@@ -573,7 +573,7 @@ def test_get_malformed_upstream_entry_passed_through():
     assert get(event, "raw") == "just a string, not a dict"
 
 
-# ── xcom.push() — writer for service tasks (§2.3) ──────────────────────
+# ── xcom.push() — writer for service tasks ──────────────────────
 
 
 class FakePushDDB:
@@ -638,7 +638,7 @@ def test_push_sets_pushed_by_task_marker(monkeypatch):
     call = ddb.calls[0]
     # Marker written as {"BOOL": True}
     assert call["ExpressionAttributeValues"][":p"] == {"BOOL": True}
-    # ExpressionAttributeNames uses the SDK constant so §2.8 parity holds
+    # ExpressionAttributeNames uses the SDK constant so the parity holds
     assert call["ExpressionAttributeNames"]["#p"] == _PUSH_MARKER_FIELD
     # UpdateExpression sets it
     assert "#p = :p" in call["UpdateExpression"]
@@ -712,7 +712,7 @@ def test_push_too_large_raises_with_s3_hint(monkeypatch):
 
 
 def test_push_missing_task_name_env_gives_actionable_error(monkeypatch):
-    """§2.3: 'run sam deploy' hint when POLYRIS_TASK_NAME missing (old wrapper)."""
+    """The 'run sam deploy' hint when POLYRIS_TASK_NAME missing (old wrapper)."""
     monkeypatch.setenv(ENV_PIPELINE, "p")
     monkeypatch.setenv(ENV_DATE, "d")
     monkeypatch.setenv(ENV_TABLE, "t")

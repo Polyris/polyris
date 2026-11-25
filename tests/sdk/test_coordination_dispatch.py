@@ -473,7 +473,7 @@ def test_a_run_row_reads_back_with_its_pipeline_and_its_start():
     assert dispatch.run_view({run_row.TABLE_KEY: "_run_orders"}).started_at is None
 
 
-# ── the rows that a 1.2 run left in flight (*Migration*, invariant 11) ──────
+# ── the rows that a 1.2 run left in flight (*Migration and upgrade*, invariant 11) ──────
 
 def test_a_row_without_readiness_fields_reads_back_for_its_stop_alone():
     legacy = dispatch.stop_view({task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value})

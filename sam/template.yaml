@@ -532,7 +532,7 @@ Resources:
 
   ApiTokensTable:
     Type: AWS::DynamoDB::Table
-    # Personal Access Tokens (ADR #65). Dedicated table — keeps a security
+    # Personal Access Tokens (ADR #65, API tokens). Dedicated table — keeps a security
     # credential separate from operational data. On-demand: zero idle cost.
     Properties:
       TableName: !Sub "${Namespace}-${Stage}-polyris-api-tokens"
@@ -1370,7 +1370,7 @@ Resources:
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
           API_TOKENS_TABLE: !Ref ApiTokensTable
           SPECS_TABLE: !Ref PipelineSpecsTable
-          # ADR #65/#66: auth enforcement follows EnableCognitoAuth — true when
+          # ADR #65, API tokens, and ADR #66: auth enforcement follows EnableCognitoAuth — true when
           # Cognito is enabled, false otherwise. Public paths: /api/health*,
           # /api/metrics, /api/action/*.
           AUTH_ENABLED: !If [EnableCognitoAuthCondition, "true", "false"]
@@ -1961,7 +1961,7 @@ Resources:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
         # Sign-in for operator tooling (scripts/get-e2e-token.sh, make e2e-coordination). It
-        # needs IAM cognito-idp:AdminInitiateAuth, so it opens no password endpoint (ADR #65).
+        # needs IAM cognito-idp:AdminInitiateAuth, so it opens no password endpoint (ADR #65, API tokens).
         - ALLOW_ADMIN_USER_PASSWORD_AUTH
       CallbackURLs:
         - http://localhost:3000

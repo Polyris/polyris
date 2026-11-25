@@ -23,7 +23,7 @@ _serializer = TypeSerializer()
 #: A task row's write is conditional on what its writer read of it.
 ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"
 #: The same for a row that a 1.2 run left with no generation or with 0 (``ownership.LEGACY``); only its stop writes
-#: such a row (*Migration*).
+#: such a row (*Migration and upgrade*).
 LEGACY_ROW_CONDITION = "#status = :read AND (attribute_not_exists(#g) OR #g = :legacy)"
 
 

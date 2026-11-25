@@ -19,7 +19,7 @@
 ## Context
 
 A pipeline-execution's status is **derived** from the statuses of its constituent
-tasks (DynamoDB is the system of record, ADR #97 / DESIGN_DECISIONS #22; SFN is
+tasks (DynamoDB is the system of record, ADR #97 / ADR #22; SFN is
 consulted only to reconcile executions that still look `running`). That derivation
 was re-implemented by hand in three places that drifted apart:
 

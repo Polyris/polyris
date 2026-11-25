@@ -7,7 +7,7 @@
  * @/generated/enums. This map MUST have an entry for every code in that
  * registry — enforced by backfillErrors.test.ts (keys ⊇ BACKFILL_ERROR_CODES),
  * which replaces the old hand-maintained "critical codes" list that silently
- * fell behind the backend (ADR #94). If a code is somehow missing here, the UI
+ * fell behind the backend (ADR #94, error codes). If a code is somehow missing here, the UI
  * falls back to the backend's raw `message`.
  */
 

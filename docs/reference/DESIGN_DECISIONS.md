@@ -111,7 +111,7 @@ parameter name kept in the config. See `docs/features/notifications.md`.
 - pipeline_registry (DAG metadata)
 - asset_events, asset_subscriptions (asset orchestration)
 - queued_asset_events (AND logic for multi-asset triggers)
-- api_tokens (PATs — ADR #65)
+- api_tokens (PATs — ADR #65, API tokens)
 
 ---
 
@@ -8554,7 +8554,7 @@ lookup). Gated by `AUTH_ENABLED`, **on by default** (the template sets it
   wheels). No per-request Cognito call, no `cognito-idp` IAM permission. (v0.89.2
   swapped `PyJWT[crypto]`→`rsa` to drop the native `cryptography` wheel, which
   failed to load on Lambda when host-built. An earlier lean used `GetUser`; the offline
-  path was implemented instead — see ADR #65 doc.)
+  path was implemented instead — see ADR #65, API tokens doc.)
 - PATs in a dedicated `api-tokens` table (PAY_PER_REQUEST), not the shared
   `pipeline-tokens` table — keep a credential separate from operational data.
   Only the hash is stored; plaintext shown once. `hash-index` GSI for the auth
@@ -8579,7 +8579,7 @@ Cost ≈ $0 (on-demand table, no new always-on resource).
 
 **Decision:** Add an ordered scope level on each PAT — **`read` ⊂ `write` ⊂
 `admin`** — enforced by `auth.authorize()` in the gate after `authenticate()`
-(raises `AuthzError → 403`). Follows ADR #65. Takes effect only when
+(raises `AuthzError → 403`). Follows ADR #65, API tokens. Takes effect only when
 `AUTH_ENABLED=true`.
 
 **Key choices:**
@@ -8893,12 +8893,12 @@ list; a key-based cursor would have to encode both sources, and a composite curs
 buy nothing the sort order doesn't already give.
 
 The **cursor is a filter, not a scope**: it says which rows are eligible, never where they
-come from. Sources stay exactly as ADR #108 left them, and both routes now share all three:
+come from. Sources stay exactly as ADR #108, runs feed left them, and both routes now share all three:
 - explicit `date` → one indexed query (already bounded);
 - `pipeline`, no date → `pipeline-date-index`, no window (bounded by the row TTL);
 - neither → the `Limits.SLA_DAYS` fan-out over `date`, **started at the cursor's date**
   rather than at today. `date` remains the natural shard key for a cross-pipeline time
-  series (ADR #108) — the walk is design, not debt, and paging deeper now costs *fewer*
+  series (ADR #108, runs feed) — the walk is design, not debt, and paging deeper now costs *fewer*
   queries, not more.
 
 Starting the walk at the cursor's date is safe because a row's `started_at` is never

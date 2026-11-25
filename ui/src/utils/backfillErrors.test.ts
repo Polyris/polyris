@@ -68,7 +68,7 @@ describe('formatBackfillError', () => {
         // codes, still listing dead ones) yet stayed green. BACKFILL_ERROR_CODES
         // is generated from polyris/constants.py and pinned to the route's
         // emitted literals by test_backfill_error_registry — so this assertion
-        // fails the moment a new backend code lacks UI text (ADR #94).
+        // fails the moment a new backend code lacks UI text (ADR #94, error codes).
         const unmapped: string[] = [];
         for (const code of BACKFILL_ERROR_CODES) {
             const info = formatBackfillError({ error: code });

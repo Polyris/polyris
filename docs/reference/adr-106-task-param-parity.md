@@ -2,7 +2,7 @@
 
 > **Status:** ACCEPTED — implemented. Hardens the wrapper-routed task model
 > introduced earlier; does not change the SFN *flow* (retries are a separate
-> change, ADR #107). No IAM changes (the SAM template already grants every
+> change, ADR #107, retry loop). No IAM changes (the SAM template already grants every
 > dispatched service + `iam:PassRole`).
 
 ## Context

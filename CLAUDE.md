@@ -113,7 +113,7 @@ After wiring, update `HelpModal::KeyboardShortcutsTab`. Use `useKeyboardShortcut
 
 Before adding a shortcut, check conflicts: `grep -rn "'<key>'" ui/src`. App.tsx's `1`-`5` are global — never re-bind at a non-App surface. A PR that adds a numeric shortcut at a non-App surface is broken and must be rejected.
 
-**20. Top-level view sync across three files (ADR #65)**
+**20. Top-level view sync across three files (ADR #65, view sync)**
 
 Adding a top-level view → update all three in the same PR:
 1. `ui/src/types/index.ts` — `MAIN_VIEWS` and `MainView` type
@@ -314,7 +314,7 @@ The tags are `polyris:namespace`, `polyris:stage` and `polyris:component` (`plat
 
 ---
 
-## Date picker is per-workspace, not global (ADR #106)
+## Date picker is per-workspace, not global (ADR #106, date scope)
 
 `useAppStore.date` is the **pipeline page's scope only**. Never read it from a workspace view (Runs, Tasks). A feed's empty date means "every date"; a page's empty date means nothing at all. Runs and Tasks each own their date filter in their own URL (`runFilter.date`, `taskFilter.date`).
 
@@ -568,9 +568,9 @@ Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `re
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
-**Auth (ADR #65, #66):** `authenticate()` → `authorize()` at top of `handler()`. Accepts Cognito JWT or PAT (`plrs_…`). Scopes: `read` ⊂ `write` ⊂ `admin`. `AUTH_ENABLED` env: the template sets it from `EnableCognitoAuth`, on by default; unset, it is off. Public paths: `/api/health*`, `/api/metrics`, `/api/action/*`.
+**Auth (ADR #65, API tokens; ADR #66):** `authenticate()` → `authorize()` at top of `handler()`. Accepts Cognito JWT or PAT (`plrs_…`). Scopes: `read` ⊂ `write` ⊂ `admin`. `AUTH_ENABLED` env: the template sets it from `EnableCognitoAuth`, on by default; unset, it is off. Public paths: `/api/health*`, `/api/metrics`, `/api/action/*`.
 
-**A public route shows an anonymous caller no error text and no resource name.** Build its body from an allowlist. Until 1.2.0 every check of `/api/health` returned the raw AWS error text, account and role names included, to anyone. It now shows its details only to a verified caller (`auth.optional_principal`, ADR #65 v1.2.0 update). `sam/lambdas/console_api/tests/routes/test_health_detail.py` plants such names in failing checks and asserts that none reaches the anonymous answer. `main.handler`'s catch-all answers a public route's unexpected failure with `INTERNAL_ERROR_MESSAGE`, and the paid overlay's action pages show no error text. `response.html_response` escapes what a page echoes, such as the execution name from the link.
+**A public route shows an anonymous caller no error text and no resource name.** Build its body from an allowlist. Until 1.2.0 every check of `/api/health` returned the raw AWS error text, account and role names included, to anyone. It now shows its details only to a verified caller (`auth.optional_principal`, ADR #65, API tokens v1.2.0 update). `sam/lambdas/console_api/tests/routes/test_health_detail.py` plants such names in failing checks and asserts that none reaches the anonymous answer. `main.handler`'s catch-all answers a public route's unexpected failure with `INTERNAL_ERROR_MESSAGE`, and the paid overlay's action pages show no error text. `response.html_response` escapes what a page echoes, such as the execution name from the link.
 
 When adding an endpoint:
 1. **Decide the tier.** Free → `routes/<mod>.py`. Team → `ee/team/<mod>.py`. OSS must never import `ee`.
@@ -692,7 +692,7 @@ Internal rows are `_`-prefixed (the run row `_run_{execution}` and its input `_r
 - Components never import `api` directly — use hooks
 - Styling: shadcn primitives only, no other UI libraries (mui/chakra/mantine/antd = 0). Tailwind CSS for utilities; BEM-prefixed global CSS for surface-specific bits. No `.module.css`.
 - Icons: Lucide React via `icons.tsx`
-- Runtime config: `window.CONFIG` (set by `/config.js`) is source of truth, `NEXT_PUBLIC_*` is build fallback — `getConfig()` is window-first; use `??` for booleans (ADR #94)
+- Runtime config: `window.CONFIG` (set by `/config.js`) is source of truth, `NEXT_PUBLIC_*` is build fallback — `getConfig()` is window-first; use `??` for booleans (ADR #94, runtime config)
 - **Status constants are for orchestration only.** `TASK_SUCCESS_STATUSES` etc. encode which statuses unblock downstream tasks. Display code (counters, labels, badges) uses explicit checks: `t.status === 'success'`, never `TASK_SUCCESS_STATUSES.includes(t.status)`. See `ui/CLAUDE.md` for details.
 - `ErrorBoundary.tsx` is the only sanctioned class component — React's error boundary API has no hook equivalent. Don't write any other class components.
 - TypeScript strict mode is on (`tsconfig.json`). When you reach for `any`, stop — use `unknown` + narrow, or write the type out.

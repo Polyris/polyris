@@ -386,7 +386,7 @@ class BackfillUpstream:
     Mirrors BackfillCascade on the upstream side. Codegen-generated into
     constants_generated.py (backend) and ui/src/generated/enums.ts (UI) so the
     backend validator and the TS type derive from this one definition rather
-    than hand-maintained copies (ADR #94)."""
+    than hand-maintained copies (ADR #94, error codes)."""
     OFF = "off"      # Default: build only the producer (input assumed present)
     SMART = "smart"  # Build missing same-pipeline ancestors (frontier stops at present output)
     FORCE = "force"  # Rebuild the full same-pipeline lineage regardless of presence
@@ -397,7 +397,7 @@ class BackfillUpstream:
 # error map (utils/backfillErrors.ts) must cover every code here, gated by
 # backfillErrors.test.ts (keys ⊇ codes). The registry itself is pinned to the
 # route's emitted literals by test_backfill_error_registry (registry == emitted)
-# so neither side silently drifts (ADR #94). Unlike the enum value objects of
+# so neither side silently drifts (ADR #94, error codes). Unlike the enum value objects of
 # ADR #93, the code→friendly-text map is hand-authored content and cannot be
 # generated away; it can only be gated — hence a registry rather than a single
 # generated map.
@@ -472,7 +472,7 @@ class AssetOperator:
 
 
 # =============================================================================
-# task_config contract (SDK writer <-> run_task wrapper reader) — ADR #108
+# task_config contract (SDK writer <-> run_task wrapper reader) — ADR #108, TaskConfigKey
 # =============================================================================
 
 class TaskConfigKey(str, Enum):
@@ -516,7 +516,7 @@ class TaskConfigKey(str, Enum):
     JOB_DEFINITION = "job_definition"
     JOB_QUEUE = "job_queue"
     PARAMETERS = "parameters"
-    # retry policy (ADR #107)
+    # retry policy (ADR #107, retry loop)
     RETRIES = "retries"
     RETRY_DELAY = "retry_delay"
     RETRY_BACKOFF = "retry_backoff"
@@ -537,7 +537,7 @@ class TaskSpecKey(str, Enum):
     TASK_ID = "task_id"
     TASK_TYPE = "task_type"
     TASK_ARN = "task_arn"
-    TASK_CONFIG = "task_config"                      # ADR #108, retries included
+    TASK_CONFIG = "task_config"                      # ADR #108, TaskConfigKey, retries included
     CROSS_ACCOUNT_ROLE = "cross_account_role"
     DEPENDENCIES = "dependencies"
     TRIGGER_RULE = "trigger_rule"

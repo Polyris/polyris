@@ -145,7 +145,7 @@ class TestRunTaskAlertingFlow:
         'Run_Task_ECS', 'Run_Task_Athena', 'Run_Task_EMR', 'Run_Task_Batch'
     ])
     def test_every_task_type_fails_into_the_retry_decision(self, task_state):
-        """All Run_Task_* states catch to the retry decision (ADR #106), which on exhausted retries
+        """All Run_Task_* states catch to the retry decision (ADR #106, parameter parity), which on exhausted retries
         converges on the decision of ADR #114."""
         state = self.rt['States'][task_state]
         assert {c['Next'] for c in state['Catch']} == {'Shape_Failure'}
@@ -153,7 +153,7 @@ class TestRunTaskAlertingFlow:
 
 
 class TestRetryLoopComposesWithHumanDecision:
-    """ADR #106/#107: the auto-retry loop and the human-in-the-loop decision compose SEQUENTIALLY and in
+    """ADR #106, parameter parity/#107: the auto-retry loop and the human-in-the-loop decision compose SEQUENTIALLY and in
     ISOLATION. Retries run and exhaust inside one run_task execution; only then does the row wait for a
     decision. An operator's Restart raises the generation and starts a new run_task, whose claim resets
     retry_attempt to 0; the decision flow never touches the counter."""

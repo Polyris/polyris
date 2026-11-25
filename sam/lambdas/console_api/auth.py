@@ -1,5 +1,5 @@
 """
-Auth gate for Console API (ADR #65).
+Auth gate for Console API (ADR #65, API tokens).
 
 Single entry-point authentication for the proxy Lambda. The API is fronted by
 a `/{proxy+}` HTTP API integration, so every request flows through main.handler;
@@ -97,7 +97,7 @@ def is_auth_enabled() -> bool:
 
 # Cognito signing keys (JWKS), fetched once over HTTPS and cached per warm
 # Lambda. Verification itself is offline CPU work (pure-Python RSA, no native
-# crypto and no Cognito API call) after warmup. See ADR #65.
+# crypto and no Cognito API call) after warmup. See ADR #65, API tokens.
 _jwks_keys = None  # dict: kid -> rsa.PublicKey
 
 
@@ -247,7 +247,7 @@ def verify_pat(token: str, repo) -> Principal:
 def verify_cognito_token(token: str) -> Principal:
     """Verify a Cognito access/ID token offline and bind it to this deployment's
     app client. Pure-Python RS256 (rsa.verify against the pool JWKS) — no native
-    crypto, no Cognito API call. See ADR #65."""
+    crypto, no Cognito API call. See ADR #65, API tokens."""
     region = os.environ.get("REGION", "")
     pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
     client_id = os.environ.get("COGNITO_CLIENT_ID", "")

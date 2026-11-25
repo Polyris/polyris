@@ -19,14 +19,14 @@
 > - ADR #120, decisions 2 and 3: the output marker and Mark Successful's asset facts join the action's transaction (§3).
 > - ADR #123: a task takes each upstream's status from its own run, and an output only from an upstream that succeeded or that an operator or the run skipped (§1). Every write to `output#` renews its TTL for a year, and `input#` lives 90 days from each write (§5).
 > - ADR #125: `run_task`'s `attempt` guard goes; the generation and the execution name replace it. The counters the console shows stay, and the denominator of the retries comes from the run's spec: a row carries no `max_retries`, since nothing read it.
-> - ADR #107: the work states no longer retry `States.Timeout` on their own, so a timeout is one failed attempt of the task's retry loop (§1).
+> - ADR #107, retry loop: the work states no longer retry `States.Timeout` on their own, so a timeout is one failed attempt of the task's retry loop (§1).
 > - ADR #108, `TaskConfigKey`: the contract it pins runs from the SDK through the task spec (§8) to `run_task`, whose input the dispatcher builds (§9). Two ADRs carry the number 108, this one and the inline one on the runs feed below; renumbering one of them is a separate docs task.
 > - ADR #22: its one exception goes. The console no longer reconciles a run's status against Step Functions, and `reconcile_execution_status` goes with the statuses `timed_out` and `recovered`; the dispatcher judges an ended execution (§4).
 > - ADR #18: the Express helpers and the wrapper go; `run_task`, `bulk_backfill` and the test state machines stay Standard.
 > - ADR #19: a waiting task costs nothing because it is a row, not because it waits on a token.
 > - ADR #54: `bulk_backfill` waits for each run as long as the run lives, not 24 hours (§5).
 > - ADR #51: a backfill record carries a `date`, and lives while its backfill runs and 90 days after, instead of 30 days from its creation (§5).
-> - ADR #108, *A pipeline's runs are read through an inverted GSI*: the Runs tab, without a filter or with a pipeline filter, reads a sparse index of run rows instead of task rows (§5).
+> - ADR #108, runs feed: the Runs tab, without a filter or with a pipeline filter, reads a sparse index of run rows instead of task rows (§5).
 > - ADR #39: asset data comes from the specs of each pipeline's `spec_id`, not from the registry's `tasks` (§8).
 > - ADR #110: `extend` leaves the execution controls, with its route (§5).
 > - ADR #131: `polyris-up` checks a platform older than 1.3 before it upgrades it, and lists the pipelines to redeploy (*Migration*).
@@ -430,7 +430,7 @@ A hint only says "check again". The dispatcher's writes, its starts and the run'
 
 ### 8. Task specs and pipeline limits
 
-A task's spec is everything needed to run the task and to draw it. That means its type, resource, configuration (`task_config`, ADR #108), dependencies, trigger rule, limits and retries, `wait_before`, outlets, inlets, `wait_for` and `skip_on_backfill`, which include every field the graph view shows. The specs leave the definition for a table of their own, so the size of a pipeline has a limit of ours, not the limits of a Step Functions state or definition.
+A task's spec is everything needed to run the task and to draw it. That means its type, resource, configuration (`task_config`, ADR #108, TaskConfigKey), dependencies, trigger rule, limits and retries, `wait_before`, outlets, inlets, `wait_for` and `skip_on_backfill`, which include every field the graph view shows. The specs leave the definition for a table of their own, so the size of a pipeline has a limit of ours, not the limits of a Step Functions state or definition.
 
 - **What a task row carries.** Only what the dispatcher decides on: the dependencies, the trigger rule, the limits, `wait_before`, `wait_for` and `skip_origin`, with the `spec_id` that names the spec version and the hash of the task's spec text. That is about 1 KB, besides the status fields and the fields that the console reads (§3). The full spec stays in `pipeline-specs`, and the dispatcher reads it once per start of the task (§1).
   - So the cost of a pass does not depend on the size of a spec. Every full pass reads every row of its run, and DynamoDB bills the whole item.

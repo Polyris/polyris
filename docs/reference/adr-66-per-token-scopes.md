@@ -1,14 +1,14 @@
 # ADR #66 — Per-Token Scopes (Granular Authorization)
 
-> **Status:** Accepted — implemented in v0.88.0. Follows ADR #65 (PAT + auth
-> enforcement). Enforcement ships on (`AUTH_ENABLED=true`, ADR #65); scopes are
+> **Status:** Accepted — implemented in v0.88.0. Follows ADR #65, API tokens (PAT + auth
+> enforcement). Enforcement ships on (`AUTH_ENABLED=true`, ADR #65, API tokens); scopes are
 > enforced on every non-public request.
 > Affects API contract (adds 403) + token shape (`scope` field) → per Core
 > Principle #6 this needed alignment before code; this is that alignment.
 
 ## Context
 
-After ADR #65 the API authenticates ("who are you?") but does not authorize
+After ADR #65, API tokens the API authenticates ("who are you?") but does not authorize
 ("what may this key do?"). Any token = full master-key access: a CI token can
 not only read but stop runs, start backfills, **delete assets**, and mint/revoke
 other tokens. For a single internal operator this is acceptable (a PAT only

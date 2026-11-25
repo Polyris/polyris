@@ -1733,7 +1733,7 @@
 }
 
 /* =============================================================================
-   Settings modal (container + section nav) + API Tokens section  (ADR #65/#66)
+   Settings modal (container + section nav) + API Tokens section  (ADR #65, API tokens, and ADR #66)
    ============================================================================= */
 .bm-settings-modal {
     background: var(--bg-secondary);

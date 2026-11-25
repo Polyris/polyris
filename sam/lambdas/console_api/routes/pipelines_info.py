@@ -73,7 +73,7 @@ def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
     1. ``run`` — a run started on 1.3: the specs of the version its run row names, the
        graph it ran with (ADR #137 §8);
        ``snapshot`` — a run from before 1.3, which has no run row: its DAG snapshot. Only
-       1.2 runs have one, and 1.4 removes this reader (ADR #137, *Migration*; D89);
+       1.2 runs have one, and 1.4 removes this reader (ADR #137, *Migration and upgrade*; D89);
     2. ``registry`` — the specs of the version the registry names: the current definition;
     3. ``inferred`` — from the run's task rows, or the latest run of the date's, when no
        specs can be read. No route scans the tasks table (ADR #137 §5).

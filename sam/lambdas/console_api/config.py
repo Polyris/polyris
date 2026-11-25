@@ -201,7 +201,7 @@ ASSET_EVENTS_TABLE = os.environ.get('ASSET_EVENTS_TABLE', 'asset-events')
 # How long an asset fact lives; the same value run_task's fact writes use.
 ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))
 TASK_EVENTS_TABLE = os.environ.get('TASK_EVENTS_TABLE', 'task-events')
-# Personal Access Token store (ADR #65). Dedicated table, not pipeline-tokens.
+# Personal Access Token store (ADR #65, API tokens). Dedicated table, not pipeline-tokens.
 API_TOKENS_TABLE = os.environ.get('API_TOKENS_TABLE', 'api-tokens')
 # Task specs (ADR #137 §8): polyris-deploy writes them; the console reads them (dal.specs_repo).
 SPECS_TABLE = os.environ.get('SPECS_TABLE', 'pipeline-specs')

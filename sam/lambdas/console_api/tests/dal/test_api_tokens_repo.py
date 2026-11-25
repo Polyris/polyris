@@ -1,5 +1,5 @@
 """
-Unit tests for dal.api_tokens_repo.ApiTokensRepo (ADR #65).
+Unit tests for dal.api_tokens_repo.ApiTokensRepo (ADR #65, API tokens).
 
 The .table property is mocked to short-circuit the dynamodb.Table(...)
 lookup. No moto, no AWS calls.

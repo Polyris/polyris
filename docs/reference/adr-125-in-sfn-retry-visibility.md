@@ -7,7 +7,7 @@
 
 ## Context
 
-ADR #107 wired per-task retries into the `run_task` helper SFN: a `Check_Should_Retry`
+ADR #107, retry loop wired per-task retries into the `run_task` helper SFN: a `Check_Should_Retry`
 Choice → `Wait_Before_Retry` → `Increment_Retry` loop that re-dispatches a failed
 task up to `task_config.retries` times. The loop works. But the only artifact a
 user sees in the Console is the end state: either the task eventually succeeds
@@ -33,7 +33,7 @@ Two kinds of "attempt counter" matter and must stay separable:
    `ConditionExpression: attempt = :expectedAttempt`. This is load-bearing — it
    is what makes "Restart" safe during a race.
 2. **In-SFN retry index**. The automatic retry loop runs inside **one** wrapper
-   execution; the deterministic execution `Name` must stay stable (ADR #107
+   execution; the deterministic execution `Name` must stay stable (ADR #107, retry loop
    discusses why).
 
 Reusing the existing `attempt` field for both conflates them: a `attempt=2`

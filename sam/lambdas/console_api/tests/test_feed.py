@@ -62,7 +62,7 @@ class TestIsOlder:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# feed_dates — the cross-pipeline walk (ADR #108: `date` is the shard key)
+# feed_dates — the cross-pipeline walk (ADR #108, runs feed: `date` is the shard key)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFeedDates:

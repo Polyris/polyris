@@ -1,7 +1,7 @@
 # ADR #109 — Unified common parameters for `@task.<type>` decorators (`CommonTaskKwargs`)
 
 > **Status:** ACCEPTED — implemented. Caller-visible behavior is unchanged for
-> every documented usage; typo handling is preserved (ADR #106 D5) with a
+> every documented usage; typo handling is preserved (ADR #106, parameter parity D5) with a
 > clearer error message.
 >
 > **Amended (v0.93.0):** the common set changed — `slack_channel` removed,

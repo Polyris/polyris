@@ -274,7 +274,7 @@ describe('AllRunsView', () => {
         });
 
         it('renders an inline date picker showing the current date (mirrors All Tasks)', () => {
-            // Driven by this workspace's own filter, exactly like All Tasks (ADR #106) —
+            // Driven by this workspace's own filter, exactly like All Tasks (ADR #106, date scope) —
             // it used to read the Pipeline page's global scope instead.
             useAppStore.getState().setRunFilter({ status: '', pipeline: '', date: '2024-01-15' });
             render(<AllRunsView {...defaultProps} />);
@@ -344,7 +344,7 @@ describe('AllRunsView', () => {
     // ──────────────────────────────────────────────────────────────────────
     // The date is this workspace's own filter, not the Pipeline page's scope.
     // Reported: clear the date here, open a pipeline -> bare graph, no banner,
-    // while the run sat right there. One value, two meanings (ADR #106).
+    // while the run sat right there. One value, two meanings (ADR #106, date scope).
     // ──────────────────────────────────────────────────────────────────────
     describe('date filter', () => {
         function clearTheDatePicker() {

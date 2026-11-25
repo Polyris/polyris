@@ -4,7 +4,7 @@
 
 > **Status:** ACCEPTED — implemented (option B). This **does** change the
 > wrapper SFN flow (adds a retry stage at the failure chokepoint), which is why
-> it is its own ADR. Builds on the parameter-parity contract (ADR #106).
+> it is its own ADR. Builds on the parameter-parity contract (ADR #106, parameter parity).
 
 ## Context
 

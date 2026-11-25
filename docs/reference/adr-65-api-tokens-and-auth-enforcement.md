@@ -5,7 +5,7 @@
 > and e2e uses a PAT, so the Principle #4 preconditions are met and the gate is
 > enabled from the initial deploy. Disabling is operator-side
 > (`AUTH_ENABLED=false`).
-> **Indexed** as ADR #65 (summary in `DESIGN_DECISIONS.md`; note its headers
+> **Indexed** as ADR #65, API tokens (summary in `DESIGN_DECISIONS.md`; note its headers
 > top out at #64 while `CLAUDE.md` references higher numbers — reconcile the
 > numbering at your convenience).
 > Affected DDB schema + API contract + auth → per Core Principle #6 this needed

@@ -1,7 +1,7 @@
 """D89: 1.3 reads a 1.2 run's DAG snapshot (``dag_snapshot::``) only for a run with no run row; 1.4 deletes it.
 
 A run of 1.2 lives at most a year, so by 1.4 no such run is left to draw. This guard fails from version 1.4.0
-until the reader goes, so the deletion is not forgotten (ADR #137, *Migration*).
+until the reader goes, so the deletion is not forgotten (ADR #137, *Migration and upgrade*).
 """
 
 from pathlib import Path

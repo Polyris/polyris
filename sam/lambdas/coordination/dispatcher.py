@@ -39,7 +39,7 @@ goes the other way, dependants first (§4).
   as the sweeper's check does, from the rows and DescribeExecution, with at most
   two calls. A stream or narrow pass makes no DescribeExecution call.
 - A row whose run row is missing is stopped with the cause (invariant 11), a row
-  that a 1.2 run left in flight included (*Migration*).
+  that a 1.2 run left in flight included (*Migration and upgrade*).
 
 Entry points: ``handler`` for the tasks table's stream and for the end of an
 execution (``on_execution_end``), ``full_pass`` for the sweeper, ``narrow_pass``
@@ -856,7 +856,7 @@ class Dispatcher:
     def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str,
                      deadline: Optional[float] = None) -> Dict[str, Any]:
         """Each row named, stopped with the cause: its run row is missing (invariant 11). A row that a 1.2 run
-        left in flight has no readiness fields; its stop needs only its status and generation (*Migration*).
+        left in flight has no readiness fields; its stop needs only its status and generation (*Migration and upgrade*).
         Past ``deadline`` the rest wait for a later pass or check, which finds them again."""
         now = self.clock()
         stopped = 0

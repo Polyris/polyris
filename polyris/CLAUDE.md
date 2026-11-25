@@ -15,7 +15,7 @@ polyris-deploy" and is owned by the CLI; `sfn_arn`, `description`,
 `last_execution`, `spec_id` and `task_count` are owned by the runtime.
 `format_version` (`task_spec.REGISTRY_FORMAT_FIELD`) is deploy-owned, written
 with `registered_at`: the console compares it with `task_spec.FORMAT_VERSION`
-to mark a pipeline "redeploy needed" (ADR #137, *Migration*).
+to mark a pipeline "redeploy needed" (ADR #137, *Migration and upgrade*).
 
 Rules:
 1. `_build_registration_chain`'s `Register_Pipeline` state must be a DynamoDB

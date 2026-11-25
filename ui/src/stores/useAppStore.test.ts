@@ -193,7 +193,7 @@ describe('useAppStore', () => {
         });
 
         it('run filter owns its own date, separate from the pipeline page scope', () => {
-            // Two ideas, two values (ADR #106): the feed's '' means "every date", the
+            // Two ideas, two values (ADR #106, date scope): the feed's '' means "every date", the
             // page's date scopes a page. Sharing one value stranded the pipeline page
             // on a day called '' whenever this filter was cleared.
             const { result } = renderHook(() => useAppStore());

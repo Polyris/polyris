@@ -16,7 +16,7 @@ shared ordering attribute is ``started_at`` (executions and Backfills, ADR #95),
 is what both feeds already sort by. A key-based cursor would have to encode both
 sources; a timestamp encodes neither and works for both.
 
-**Where** the rows come from stays per-route (ADR #108): run rows by start day, or the
+**Where** the rows come from stays per-route (ADR #108, runs feed): run rows by start day, or the
 rows of one logical date through ``date-pipeline-index``. Every path pages with a strict
 ``<`` on a start time and never ends a page inside a group that shares one.
 """
@@ -50,7 +50,7 @@ def feed_dates(before: str = '', days: int = Limits.SLA_DAYS) -> List[str]:
     """Dates one page of a cross-pipeline feed fans out over, newest first.
 
     ``date`` is the natural shard key for a time-ordered feed across all pipelines, so
-    the fan-out is the correct access pattern here rather than debt (ADR #108). The
+    the fan-out is the correct access pattern here rather than debt (ADR #108, runs feed). The
     page starts at the cursor's date and walks back to the edge of the window of
     ``days`` days: everything newer than the cursor was already served. A row whose
     ``started_at`` is earlier than its logical ``date`` hides on a newer date: a run

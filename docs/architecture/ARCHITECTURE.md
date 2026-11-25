@@ -68,7 +68,7 @@ These are the load-bearing decisions the rest of the architecture follows from.
    defined once in `polyris/constants.py` and code-generated into every Lambda
    (`constants_generated.py`) and the UI (`ui/src/generated/enums.ts`), with CI
    drift gates. Hand-maintained copies of the same vocabulary are treated as
-   bugs (see DESIGN_DECISIONS #72/#83/#93/#94).
+   bugs (see ADR #72, #83, #93 and #94, error codes).
 
 6. **No silent failures.** A task that fails after its retries waits for an
    operator's decision, with the cause on its row. A failure of the platform
