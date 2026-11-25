@@ -27,7 +27,7 @@
 6. Its success is one transaction: the status, `output#` and the facts of the task's assets. The row's change wakes the dispatcher again, which starts the next tasks.
 7. Once every row is final, the dispatcher answers the run's token, and the pipeline's execution ends.
 
-The sweeper checks what is due every 5 minutes, so a lost wake-up delays a task instead of losing it. `asset-fanout` makes a narrow pass over the tasks that wait for a new fact, and starts the pipelines scheduled on it. `polyris-deploy` writes a pipeline's task specs to `pipeline-specs` and deploys its stack: its state machine, its schedule and its log group. `polyris-up` installs and upgrades the platform. [State Machines and Lambdas](#state-machines-and-lambdas) and [DynamoDB Tables](#dynamodb-tables) list every piece.
+The sweeper checks what is due every 5 minutes, so a lost wake-up delays a task instead of losing it. An execution that ends without a write, such as one stopped in the AWS console, wakes the dispatcher through an EventBridge rule, which runs that check at once. `asset-fanout` makes a narrow pass over the tasks that wait for a new fact, and starts the pipelines scheduled on it. `polyris-deploy` writes a pipeline's task specs to `pipeline-specs` and deploys its stack: its state machine, its schedule and its log group. `polyris-up` installs and upgrades the platform. [State Machines and Lambdas](#state-machines-and-lambdas) and [DynamoDB Tables](#dynamodb-tables) list every piece.
 
 ---
 

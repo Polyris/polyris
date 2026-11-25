@@ -772,11 +772,8 @@ def test_an_end_the_execution_does_not_confirm_decides_nothing(world):
      "no run of this platform"),
     (lambda world: update(world, RUN_KEY, run_execution_arn=PIPELINE_EXECUTION.replace("acme-dev", "other-qa")),
      "another execution than the run's"),
-    (lambda world: update(world, RUN_KEY, stop={"by": "ops", "reason": "done", "at": START}),
-     "a run answered or stopped already"),
-    (lambda world: update(world, RUN_KEY, answered_order=0), "a run answered or stopped already"),
 ])
-def test_an_end_of_no_run_another_execution_or_a_run_ended_costs_one_read(world, change, reason):
+def test_an_end_of_no_run_or_of_another_execution_costs_one_read(world, change, reason):
     start(world, CHAIN)
     full(world)
     execution_is(world, "ABORTED")
@@ -870,19 +867,19 @@ def test_the_end_of_a_run_task_fails_its_row_at_once_with_how_it_ended(world):
     assert world.sfn.described == [run_task_execution("extract")]          # the row's, and not the run's
 
 
-def test_an_end_that_left_out_its_input_reads_it_from_describe_execution(world):
+def test_an_end_without_its_input_is_left_to_the_rows_own_check(world):
+    """Over 248 KiB the event leaves the input out: a lost hint, never a DescribeExecution of its own (§7)."""
     started_running(world)
-    world.sfn.executions[run_task_execution("extract")]["input"] = run_task_input("extract")
-    on_end(world, run_task_ended("extract", input=None, inputDetails={"included": False}))
-    assert item(world, key("extract"))["status"] == "failed"
-    assert world.sfn.described == [run_task_execution("extract")] * 2     # the input, then the judgment: two calls
+    result = on_end(world, run_task_ended("extract", input=None, inputDetails={"included": False}))
+    assert (result["action"], result["reason"]) == ("ignored", "no input that names a row of 1.3")
+    assert item(world, key("extract"))["status"] == "running" and world.sfn.described == []
 
 
 @pytest.mark.parametrize("event,reason", [
-    (run_task_ended("extract", input=run_task_input("extract", generation=None)), "a run_task input that names no row of 1.3"),
-    (run_task_ended("extract", input="not json"), "a run_task input that names no row of 1.3"),
-    (run_task_ended("extract", input=run_task_input("extract", generation=True)), "a run_task input that names no row of 1.3"),
-    (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="")), "a run_task input that names no row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", generation=None)), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input="not json"), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", generation=True)), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="")), "no input that names a row of 1.3"),
     (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="orders-run-2026-11-12-0ther000")),
      "no run of this platform"),
     (run_task_ended("extract", input=run_task_input("transform")), "no row of the run"),
@@ -897,21 +894,31 @@ def test_an_end_of_no_row_of_1_3_or_of_another_generation_changes_nothing(world,
     assert item(world, key("extract"))["status"] == "running" and world.sfn.described == []
 
 
-@pytest.mark.parametrize("fields,reason", [
-    ({"status": "success"}, "a row that waits for no outcome"),
-    ({"status": "waiting"}, "a row that waits for no outcome"),
-])
-def test_an_end_of_a_row_that_waits_for_no_outcome_changes_nothing(world, fields, reason):
+@pytest.mark.parametrize("status,after", [("success", "success"), ("waiting", "deps_ready")])
+def test_an_end_of_a_row_that_waits_for_no_outcome_is_decided_as_any_pass_decides_it(world, status, after):
+    """The event holds no rule of its own (§7): the pass decides the row from its upstreams as any pass does,
+    and judges no execution of a row that waits for none (a waiting extract has no upstream: it is ready)."""
     started_running(world)
-    update(world, key("extract"), **fields)
-    assert on_end(world, run_task_ended("extract"))["reason"] == reason and world.sfn.described == []
+    update(world, key("extract"), status=status)
+    assert on_end(world, run_task_ended("extract"))["source"] == "event"
+    assert item(world, key("extract"))["status"] == after and world.sfn.described == []
 
 
-def test_an_end_of_a_run_stopped_or_answered_changes_nothing(world):
+def test_the_end_of_a_run_task_restarted_after_its_run_answered_fails_its_row_at_once(world):
+    """A Restart of a task of a run that ended failed (the run answered), whose run_task is then stopped in the
+    AWS console: its row fails at once, as the sweeper's check would fail it later (the break review)."""
+    started_running(world)
+    update(world, RUN_KEY, answered_order=0)
+    assert on_end(world, run_task_ended("extract"))["source"] == "event"
+    assert item(world, key("extract"))["status"] == "failed"
+
+
+def test_an_end_of_a_run_whose_stop_is_in_progress_carries_the_stop_on(world):
+    """A run with a stop mark: the event's pass does what any pass does with it, and stops its unfinished rows."""
     started_running(world)
     update(world, RUN_KEY, stop={"by": "ops", "reason": "done", "at": START})
-    assert on_end(world, run_task_ended("extract"))["reason"] == "a run answered or stopped already"
-    assert item(world, key("extract"))["status"] == "running"
+    on_end(world, run_task_ended("extract"))
+    assert item(world, key("extract"))["status"] == "stopped"
 
 
 def test_the_end_of_a_ready_row_whose_start_failed_or_that_a_pause_holds_judges_nothing(world):
@@ -921,22 +928,6 @@ def test_the_end_of_a_ready_row_whose_start_failed_or_that_a_pause_holds_judges_
            start_failed_last=format_utc(NOW))
     on_end(world, run_task_ended("extract"))
     assert item(world, key("extract"))["status"] == "deps_ready" and world.sfn.described == []
-
-
-def test_an_input_that_cannot_be_described_is_dropped_or_tried_again(world):
-    from failures import CoordinationTransient
-
-    started_running(world)
-    event = run_task_ended("extract", input=None)
-    world.sfn.errors["describe_execution"] = client_error("AccessDeniedException", "DescribeExecution")
-    assert on_end(world, event)["action"] == "ignored"
-    # Not transient: the bell shows it (Principle #38); no run is known yet, so it names none.
-    [warning] = warnings(world)
-    assert "AccessDeniedException" in warning["error"] and "pipeline_name" not in warning
-    world.sfn.errors["describe_execution"] = client_error("ThrottlingException", "DescribeExecution")
-    with pytest.raises(CoordinationTransient):
-        on_end(world, event)
-    assert len(warnings(world)) == 1                                     # a transient error warns nothing
 
 
 def test_an_end_that_describe_execution_does_not_show_yet_leaves_the_row_its_own_check(world):

@@ -321,7 +321,7 @@ CODE_WRITERS = {
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
     ("coordination/dispatcher.py", "_drop_pointers"): "another table: a row's pointers once it left its wait",
     ("coordination/dispatcher.py", "_put_pointers"): "another table: a waiting row's pointers (actions.pointer_items)",
-    ("coordination/dispatcher.py", "_put_warning"): "warning rows (records.warning_item)",
+    ("coordination/dispatcher.py", "_warn"): "warning rows (records.warning_item)",
     ("coordination/dispatcher.py", "_timeline"): "another table: a decision's timeline event (records.decision_event)",
     ("coordination/start_run.py", "_start"): "another table: the asset: pointers (start_run.pointer_items)",
     ("coordination/start_run.py", "_write_run_row"): "the run row: start_run.run_row_write",

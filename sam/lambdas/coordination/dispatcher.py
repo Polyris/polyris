@@ -217,16 +217,17 @@ class Dispatcher:
     def on_execution_end(self, detail: Mapping[str, Any], remaining_ms: Callable[[], int]) -> Dict[str, Any]:
         """An execution that ended ABORTED, TIMED_OUT or FAILED, not by the engine's own stop (§7): a hint.
 
-        The event decides nothing. A run whose own execution it names gets one
-        full pass in which the engine's check of the run comes now; the row a
+        The event decides nothing and holds no rule of its own: it only finds
+        whose execution ended. A run whose own execution it names gets one full
+        pass in which the engine's check of the run comes now; the row a
         ``run_task`` execution served, in its current generation, gets one in
         which its liveness check comes now. Each pass decides as the sweeper's
-        check does, from the rows and DescribeExecution. A cheap read comes
-        first: an event of no run of this platform, of another execution than
-        the one the run or the row records, or of a run answered or stopped
-        already, costs one read. An event that cannot be read is logged and
-        dropped, never raised: a lost hint costs the run row's next check, and
-        Lambda retries an asynchronous invocation that fails only twice.
+        check does, from the rows and DescribeExecution, answered, stopped and
+        final runs and rows included. An event of no run of this platform, or of
+        another execution than the one the run or the row records, costs one
+        read. An event that cannot be read is logged and dropped: a lost hint
+        costs the run row's next check. A transient failure is raised, and
+        Lambda retries an asynchronous invocation twice.
         """
         if not isinstance(detail, Mapping):
             return _ignored("an event without a detail", detail=str(detail)[:200])
@@ -252,16 +253,14 @@ class Dispatcher:
             return _ignored("no run of this platform", execution=arn)
         if run.execution_arn != arn:
             return _ignored("another execution than the run's", execution=arn, run=run_key)
-        if run.answered or run.stop is not None:
-            return _ignored("a run answered or stopped already", execution=arn, run=run_key)
         return self._pass(run_key, None, source="event", remaining_ms=remaining_ms, engine_now=True)
 
     def _run_task_ended(self, detail: Mapping[str, Any], arn: str, remaining_ms: Callable[[], int]) -> Dict[str, Any]:
         """The end of a ``run_task`` execution: the row its input names is judged now, if the execution is the one
         of the row's current generation (invariant 4) and the row still waits for its outcome (§7)."""
-        named = self._run_task_input(detail, arn)
+        named = self._run_task_input(detail)
         if named is None:
-            return _ignored("a run_task input that names no row of 1.3", execution=arn)
+            return _ignored("no input that names a row of 1.3", execution=arn)
         row_key, run_key = named
         try:
             found = {str(i[task_row.TABLE_KEY]): i for i in self._batch_get([run_key, row_key])}
@@ -284,29 +283,13 @@ class Dispatcher:
             return _ignored("no row of the run", execution=arn, run=run_key)
         if _execution_arn(self.run_task_arn, row_key, run, current) != arn:
             return _ignored("another execution than the row's run_task", execution=arn, run=run_key)
-        if run.answered or run.stop is not None:
-            return _ignored("a run answered or stopped already", execution=arn, run=run_key)
-        if str(row.get(task_row.STATUS)) not in _STARTED:
-            return _ignored("a row that waits for no outcome", execution=arn, run=run_key)
         return self._pass(run_key, None, source="event", remaining_ms=remaining_ms, judge_now={row_key: current})
 
-    def _run_task_input(self, detail: Mapping[str, Any], arn: str) -> Optional[Tuple[str, str]]:
-        """The row key and the run key a ``run_task`` execution's input names; DescribeExecution gives the input
-        an event left out (over 248 KiB). None for an input that names no row of 1.3, such as a 1.2 execution's,
-        which has no generation, or one that cannot be read."""
+    def _run_task_input(self, detail: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
+        """The row key and the run key a ``run_task`` execution's input names. None for an event without its input
+        (over 248 KiB: a lost hint, which the row's check covers), for one that names no row of 1.3, or for one
+        that cannot be read."""
         text = detail.get("input")
-        if not isinstance(text, str):
-            try:
-                text = self.sfn.describe_execution(executionArn=arn).get("input")
-            except (ClientError, BotoCoreError) as exc:
-                failures.reraise_transient(exc)
-                log.error("dispatcher", "the input of an ended run_task could not be read; its check finds it",
-                          execution=arn, error=str(exc))
-                # Not transient, such as AccessDenied: the bell shows it (Principle #38). No row is known yet,
-                # so the warning names the execution alone.
-                self._warn_unscoped(subject=f"{detail.get('name') or arn}-input",
-                                    error=f"the input of the ended run_task execution {arn} could not be read: {exc}")
-                return None
         try:
             payload = json.loads(text) if isinstance(text, str) else None
         except ValueError:
@@ -1041,17 +1024,6 @@ class Dispatcher:
             pipeline_name=str(item.get(task_row.PIPELINE) or run.pipeline), pipeline_execution=run.execution,
             task_date=run.date, error=error, now=self.clock())
         log.error("dispatcher", "warning", run=run.key, subject=subject, error=error)
-        self._put_warning(warning, subject)
-
-    def _warn_unscoped(self, *, subject: str, error: str) -> None:
-        """A warning before any run is known; ``warning_item`` leaves the unknown context out."""
-        warning = records.warning_item(
-            kind=WarningKind.COORDINATION, execution_name=subject, task_name="", pipeline_name="",
-            pipeline_execution="", task_date="", error=error, now=self.clock())
-        log.error("dispatcher", "warning", subject=subject, error=error)
-        self._put_warning(warning, subject)
-
-    def _put_warning(self, warning: Mapping[str, Any], subject: str) -> None:
         try:
             self.client.put_item(TableName=self.tokens_table,
                                  Item={k: _serializer.serialize(v) for k, v in warning.items()})

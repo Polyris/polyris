@@ -61,7 +61,7 @@ def test_an_end_that_comes_twice_or_from_another_platform_changes_nothing(world)
     world.stop_run_externally(run)
     [end] = world.execution_ends(run)
     rows = {task: world.row(run, task) for task in ("extract", "load")}
-    assert world.send_execution_end(end)["action"] == "ignored"                   # the run is stopped already
+    assert world.send_execution_end(end)["source"] == "event"      # a pass, which finds the run stopped already
     assert world.send_execution_end(another_platforms(end, run))["action"] == "ignored"
     assert {task: world.row(run, task) for task in ("extract", "load")} == rows
 
@@ -88,15 +88,17 @@ def test_the_engines_own_stop_of_a_run_makes_no_event(world):
 
 
 def test_a_failed_run_ends_with_an_event_that_finds_it_answered(world):
-    """A failed run's execution ends FAILED with Polyris.RunFailed after the engine's answer: its event costs one
-    read of the run row and wakes no pass."""
+    """A failed run's execution ends FAILED with Polyris.RunFailed after the engine's answer: its event wakes one
+    pass, which finds the run answered and changes nothing (the event holds no rule of its own)."""
     run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
     world.complete(run, "extract", status="failed")
     world.fail_task(run, "extract")                      # the operator's decision on the failed task
     assert world.pipeline_status(run) == "FAILED"
     [end] = world.execution_ends(run)
     assert end["detail"]["error"] == "Polyris.RunFailed"
-    assert world.send_execution_end(end)["reason"] == "a run answered or stopped already"
+    before = world.row(run, "extract")
+    assert world.send_execution_end(end)["source"] == "event"
+    assert world.pipeline_status(run) == "FAILED" and world.row(run, "extract") == before
 
 
 @defect("R-V1")
@@ -128,7 +130,7 @@ def test_an_end_of_a_1_2_run_task_or_of_an_old_generation_changes_nothing(world)
     old = json.loads(end["detail"]["input"])
     del old["generation"]
     older = {**end, "detail": {**end["detail"], "input": json.dumps(old)}}
-    assert world.send_execution_end(older)["reason"] == "a run_task input that names no row of 1.3"
+    assert world.send_execution_end(older)["reason"] == "no input that names a row of 1.3"
     assert world.status(run, "extract") == "running"
     assert world.send_execution_end(end)["source"] == "event"                     # it comes late, then
     assert world.status(run, "extract") == "failed"

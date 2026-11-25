@@ -69,7 +69,7 @@ GET /api/pipelines?stats=true
 `recent_runs`, `sla`, `waiting_on` and `failed_tasks` are filled only with `stats=true`, from the runs started in the last 14 days.
 
 - `recent_runs`: the last 10 of those runs whose date is within the 14 days, newest first.
-- `status`: the latest run's status, `idle` when there is none. It is `running` until every task of the run has finished, then `success`, `failed` or `aborted`. A run stopped in the AWS console is stopped within seconds; if that event is lost, it shows `running` until polyris next checks it, up to about 35 minutes. A run that is still starting is stopped only after its start's retry window.
+- `status`: the latest run's status, `idle` when there is none. It is `running` until every task of the run has finished, then `success`, `failed` or `aborted`. A run stopped in the AWS console is stopped within seconds, when the end of its execution reaches polyris through EventBridge; if that event is lost, it shows `running` until polyris next checks it, up to about 35 minutes. A run that is still starting is stopped only after its start's retry window.
 - `waiting_on`: `waiting_decision` or `waiting_paused` when the latest run waits for an operator, else `null`.
 - `needs_redeploy`: `true` when the pipeline was deployed by an older polyris; its runs fail until you run `polyris-deploy` for it again.
 - `stats_incomplete`: `true` when some runs could not be read, so some statuses may be out of date.
