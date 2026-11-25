@@ -4,11 +4,11 @@ accepted: by 2026-02-24
 ---
 # ADR #11 — Backfill Failure: Wait for Decision (not auto-fail)
 
-**Decision:** When a task fails during backfill, suppress Slack/PagerDuty but still wait for user decision via UI.
+**Decision:** When a task fails during backfill, suppress its alert notifications but still wait for user decision via UI.
 
 **Rationale:**
 - Auto-fail gave no way to restart/skip from UI
-- Slack/PD noise during backfill is unwanted (dozens of dates)
+- Alert noise during backfill is unwanted (dozens of dates)
 - User still needs control over failed tasks
 - 5h timeout same as normal runs — consistent behavior
 

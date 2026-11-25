@@ -25,7 +25,7 @@ Create files lazily: only when you have something to write. `GLOSSARY.md` is cre
 
 ### Challenge against existing docs first
 
-Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md`, and the ADRs in `docs/decisions/`. A decision already settled there is a constraint, not a question.
+Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md` and `docs/decisions/README.md`, the ADR index; then the ADRs of the area under discussion, section by section (find one with `grep -n '^#\+ k\.'`). A decision already settled there is a constraint, not a question.
 
 ### Challenge against the glossary
 
@@ -77,21 +77,32 @@ If any of the three is missing, skip it.
 
 ## ADR format
 
-File: `docs/decisions/adr-N-slug.md`
+The rules are in `docs/CLAUDE.md`, *Design decisions*: one file, `docs/decisions/adr-N-<slug>.md`, N the highest number + 1. A decision that governs only the paid overlay is written in `polyris-ee/docs/decisions/`, numbered from 1001, never here.
 
 ```md
-# ADR #NNN — Short title of the decision
+---
+area: engine
+accepted: 2026-11-25
+---
+# ADR #N — The decision, stated in at most 120 characters
 
-{1-3 sentences: context, what was decided, why.}
+## Context
 
-## Considered options
+{Short: what forced the decision.}
 
-- Option A — chosen because X
-- Option B — rejected because Y
+## Decision
+
+### 1. {A rule}
+
+{The rule as it holds, with the test that pins it.}
 
 ## Consequences
 
-{Non-obvious downstream effects, if any.}
+{Non-obvious downstream effects.}
+
+## Alternatives
+
+- Option B — rejected because Y
 ```
 
 After adding: run `python scripts/adr_index.py` (Principle #29).

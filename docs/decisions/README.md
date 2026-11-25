@@ -157,8 +157,14 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#101](adr-101-multi-tenant-readiness.md) | Multi-tenant readiness (entitlement is tenant-source-agnostic; tenancy deferred) | by 2026-08-17 |
 | [#102](adr-102-repo-split-dagster-model.md) | Repo split (Dagster model): public core repo + private paid repo | by 2026-08-17 |
 | [#104](adr-104-open-core-cli-split-backfill-nav.md) | Open-core CLI split, backfill nav-tab slot, and contract-drift cleanup | by 2026-08-17 |
-| [#105](adr-105-asset-console-gated-team-open-core.md) | Asset console gated to Team with an open-core "coming soon" page; engine stays free | by 2026-08-17 |
+| [#105](adr-105-asset-console-gated-team-open-core.md) | Asset console gated to Team; the asset engine stays free | by 2026-08-17 |
 | [#110](adr-110-intervention-tier-flip.md) | Task & execution intervention moved from Team to free; config mutation stays paid | by 2026-08-17 |
+
+## Docs
+
+| ADR | Decision | Accepted |
+|---|---|---|
+| [#141](adr-141-one-file-per-adr-in-force-only.md) | Decision records: one file per ADR, in force only, each section citable | 2026-11-25 |
 
 ## Process
 

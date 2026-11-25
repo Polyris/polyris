@@ -7,8 +7,10 @@ description: Use when integrating a new AWS service into the Polyris stack beyon
 
 Polyris compiles a Python DSL → Amazon States Language → Step Functions. "Adding a service" is
 usually **a library change first** (a new task type the DSL emits), then infra (SAM/IAM). Every
-service is standing cost + operational surface — read the cost and SFN-direction ADRs in
-`docs/decisions/` first. The stack is deliberately small (~$31/month).
+service is standing cost + operational surface — read the SFN-direction ADRs first: #18 (Standard
+vs Express), #19 (zero-cost waiting), #20 (Step Functions over EventBridge), #137 §1 and its *Cost*
+(how a task runs and what it costs). Find a section with `grep -n '^#\+ k\.' docs/decisions/adr-N-*.md`
+and read only it. The stack is deliberately small (~$31/month).
 
 ## Step 1 — Fit + pick the integration shape
 
@@ -90,8 +92,8 @@ materially moves ~$31/month, justify it in the ADR. On-demand / pay-per-use shap
 
 ## Step 6 — Record the decision (ADR)
 
-Add a standalone `docs/decisions/adr-<N>-<slug>.md` (next number after the current ceiling; mirror
-`adr-106-task-param-parity.md`/`adr-107-wrapper-retry-loop.md`). Capture: what the service is for, why it vs alternatives, cost delta, and
+Add `docs/decisions/adr-<N>-<slug>.md` (the highest number + 1), written as `docs/CLAUDE.md`,
+*Design decisions*, says, then run `python scripts/adr_index.py`. Capture: what the service is for, why it vs alternatives, cost delta, and
 orchestration shape.
 
 ## Step 7 — Surfaces that follow

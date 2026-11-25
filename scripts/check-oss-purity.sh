@@ -13,11 +13,12 @@
 #         docs/features/  docs/getting-started/  docs/deployment/
 #         docs/architecture/  docs/operations/
 #         README.md  examples/
+#         docs/decisions/ (the ADRs, except the seam ADRs below)
 #
 #   2. SEAM-DEFINING PATHS — legitimately reference the OSS/paid seam because
 #      they describe the mechanism, not the feature. Skipped by this check
 #      (see CLAUDE.md #24 seam-defining exception).
-#         docs/decisions/adr-*.md
+#         docs/decisions/adr-{97,98,99,100,101,102,104,105,110}-*.md (the seam ADRs)
 #         docs/design/SPIKE_*.md
 #         docs/reference/alerting-master-plan.md
 #         CLAUDE.md  docs/CLAUDE.md
@@ -56,7 +57,7 @@ FORBIDDEN_PATTERNS=(
 )
 
 # Paths that must be OSS-pure. Kept explicit rather than "everything under
-# docs/" so the seam-defining ADRs in docs/reference/ and the notes in docs/design/ don't trip it.
+# docs/" so the seam ADRs and the notes in docs/design/ don't trip it.
 USER_FACING_PATHS=(
   docs/features
   docs/getting-started
@@ -69,12 +70,18 @@ USER_FACING_PATHS=(
   README.md
   GLOSSARY.md
   examples
+  docs/decisions
 )
+
+# The seam ADRs describe the free/paid boundary itself (Principle #24's exception).
+SEAM_ADRS=(97 98 99 100 101 102 104 105 110)
+SEAM_EXCLUDES=()
+for n in "${SEAM_ADRS[@]}"; do SEAM_EXCLUDES+=(--exclude="adr-$n-*.md"); done
 
 echo "── OSS purity: forbidden comparison phrases ─────────────────────────"
 for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
   hits=$(grep -rEnI "$pattern" "${USER_FACING_PATHS[@]}" 2>/dev/null \
-    --include='*.md' --include='*.py' --include='*.tsx' --include='*.ts' \
+    --include='*.md' --include='*.py' --include='*.tsx' --include='*.ts' "${SEAM_EXCLUDES[@]}" \
     --exclude-dir=node_modules --exclude-dir=__pycache__ --exclude-dir=.next || true)
   if [ -n "$hits" ]; then
     echo -e "${RED}✗${NC} pattern: $pattern"

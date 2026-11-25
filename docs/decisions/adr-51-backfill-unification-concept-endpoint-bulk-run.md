@@ -74,7 +74,7 @@ causes:
   weekly ones — 86% wasted SFN transitions.
 - **Naming collision in DDB.** Existing task records use a field named
   `run_id` whose value is the parent `pipeline_execution`. This was named
-  for PagerDuty event grouping but semantically conflicts with the new
+  for alert grouping but semantically conflicts with the new
   "Backfill record ID" concept introduced here.
 - **No cost preview.** User clicks "Backfill 90 days" and discovers
   post-factum what the AWS bill looks like. Competitors (Dagster) also
@@ -202,7 +202,7 @@ New GSI on `pipeline-tokens`: **`backfill-id-index`** (PK: `backfill_id`).
 Sparse — legacy/cron executions with null `backfill_id` are not indexed.
 
 Existing `run_id` attribute (currently equal to `pipeline_execution`, used
-for PagerDuty grouping) is **renamed to `parent_execution_id`** across SFN
+for alert grouping) is **renamed to `parent_execution_id`** across SFN
 templates, `utils.py`, and DDB writes. This frees the semantic space for
 `backfill_id` and removes the naming collision. Since no production exists,
 the rename is a clean atomic change with no migration path needed.

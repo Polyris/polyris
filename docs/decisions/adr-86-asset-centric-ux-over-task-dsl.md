@@ -32,7 +32,7 @@ real in the implementation, not aspirational:
   `_find_producers_for_asset`) down to the same pipeline + `bulk_backfill`
   SFN. Asset backfill already collapses into pipeline backfill internally.
 - The operational layer (dependency_wrapper SFN, run_task helper,
-  step-actions, rerun/from-to, deps-signaling, PagerDuty) operates on a
+  step-actions, rerun/from-to, deps-signaling, alerting) operates on a
   unit of execution and is model-agnostic.
 
 So the divergence the team felt is in **UX/terminology**, not in the

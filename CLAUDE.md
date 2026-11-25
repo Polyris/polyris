@@ -34,7 +34,7 @@ Every operation must be safe to repeat. DynamoDB conditional updates, `_sfn_stop
 If the solution is unclear — ask first. A minute of discussion beats an hour of fixing the wrong approach.
 
 **6. Align on architectural decisions**
-DynamoDB schema, SFN flow, API contract, file structure, deployment approach — requires explicit approval. After alignment, document in ADR (`docs/decisions/`).
+DynamoDB schema, SFN flow, API contract, file structure, deployment approach — requires explicit approval. After alignment, record it as an ADR (`docs/CLAUDE.md`, *Design decisions*).
 
 **7. Finish what you start**
 Every task: code, tests, documentation, CHANGELOG. If something can't be finished — document exactly what remains and why.
@@ -143,7 +143,7 @@ End with a **completeness report** — mandatory:
 Test: *would a user reading only this repo be able to use this?* If no, don't mention it — not as "coming soon", "available in paid", "greyed out in OSS", or any comparison. The paid overlay owns its own docs.
 
 - Editing something? Ask "does OSS ship this?" If no, remove the reference.
-- CHANGELOG, ADR, or design note discussing a non-OSS feature → write it in `polyris-ee`.
+- CHANGELOG or design note discussing a non-OSS feature → write it in `polyris-ee`. An ADR lives in the repository that ships what it governs: one governing only the paid overlay is written in `polyris-ee/docs/decisions/`, numbered from 1001, never stored or indexed here; one governing code here stays here and describes only what this repository ships.
 - Comparison phrases are the common violation: "X is not yet in OSS", "compared to the full Z" — the comparison itself is the violation, not just specific feature names.
 - Exception: ADRs documenting how the OSS/paid boundary mechanism itself works may discuss both sides — that's the topic.
 
@@ -173,7 +173,7 @@ Any string written in one artifact and read verbatim in another must have a pari
 Examples: `_PUSH_MARKER_FIELD` written by `xcom.push()`, read by SFN template — parity in `test_xcom_coupled_constants_parity.py`. The upstreams whose output a task reads — `run_task`'s `Items` and `xcom._readable` — `test_the_set_run_task_reads_is_the_set_xcom_reads`: an allowlist on both sides, never a list of refusals on one (`_readable` refused only failures and rule skips, and read an older run's output of the date for an upstream that still ran; the review of TR-5). Marker fields `_manually_resolved`/`_resolution`/`_reason`/`_operator` — same test. `SCHEDULE_PRESETS` ↔ `infer_cron_cadence` — `TestSchedulePresetsParity` in `test_granularity.py`. Generated enums covered by `codegen --check`.
 
 **29. Every ADR number resolves, and a cited section exists**
-`docs/decisions/README.md` is the index: its table of ADRs in force is generated from each file's front matter (`python scripts/adr_index.py`); a retired number keeps a row naming its successor and the command that prints its old text. `tests/docs/test_adr_refs.py`, `test_adr_sections.py` and `test_adr_index.py` check every citation, cited section and row. Never renumber or reuse a number, and never drop or renumber a section something cites: leave a one-line pointer.
+`docs/decisions/README.md` is the index: its table of ADRs in force is generated from each file's front matter (`python scripts/adr_index.py`); a retired number keeps a row naming its successor and the command that prints its old text. `tests/docs/test_adr_*.py` check every citation, cited section, row and limit. Never renumber or reuse a number, and never drop or renumber a section something cites: leave a one-line pointer.
 
 **30. Date-scoped DDB rows are shared across same-date runs — gate UI reads on settled state**
 Rows keyed by `(pipeline, task, DATE)` — `output#*`, `input#*`, manual-resolution markers — are shared across every same-date run. A UI that renders such a row unconditionally shows a prior run's content when the current task isn't settled yet.
@@ -802,17 +802,7 @@ Releases are cut from git tags. CE tag `vX.Y.Z` builds PyPI + self-hosted bundle
 
 ---
 
-## Key ADRs (read before touching these areas)
+## Design decisions (ADRs)
 
-| # | Topic | Decision |
-|---|-------|---------|
-| 22 | Data source | UI reads DynamoDB only, never SFN API |
-| 26 | Testing | pytest-mock (`mocker`) everywhere |
-| 28 | Exceptions | `(ClientError, BotoCoreError)` for AWS calls; route-level catch-all OK |
-| 34 | Infrastructure | AWS SAM (not Terraform/OpenTofu/Pulumi) |
-| 37 | SFN definitions | `DefinitionUri` + `AWS::Serverless::StateMachine` |
-| 38 | Error visibility | `_notify_warn_` records + always log `error=str(e)` |
-| 39 | Assets | pipeline_registry is source of truth, asset_registry removed |
-| 40 | Responsive layout | Flex chains, no viewport magic numbers; mobile rules in `_mobile.css` or per-component `@media` |
-| 41 | URL routing | CloudFront Function rewrites + `window.history` for per-route deep state |
-| 94 | Runtime config | `window.CONFIG` (from `/config.js`) wins over baked `NEXT_PUBLIC_*`; `getConfig` is window-first, `??` for booleans |
+`ADR #N` is `docs/decisions/adr-N-<slug>.md`; `§k` is its heading `k.` (`grep -n '^#\+ k\.' docs/decisions/adr-N-*.md`) and *Name* its heading `## Name`. Read the cited section, not the whole file. No file: its row in `docs/decisions/README.md` names the successor and prints the old text. 65, 94, 106, 107 and 108 name two decisions each: cite the slug word ("ADR #65, view sync"). A cited section is a rule in force; changing it is Principle #6.
+Read before you change: the engine — #137, #130 *Rules for the code*, #138; install and upgrade — #131; the open-core seam — #97–#100, #110; console auth — #65, API tokens; top-level views — #65, view sync; runtime config — #94, runtime config.

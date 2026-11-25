@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Changed
+
+- **The design decisions (ADRs) moved to `docs/decisions/`, one file each, with a generated index (ADR #141).** `docs/reference/DESIGN_DECISIONS.md` and `adr-index.md` are gone: every ADR in force is `docs/decisions/adr-N-<slug>.md` with front matter, and `docs/decisions/README.md` lists them by area. Superseded ADRs and change records (#2, #3, #9, #23, #24, #32, #33, #35, #62, #71, #75–#78, #84, #85, #93, #116, #117, #122, #128) have no file any more; the index's *Retired* table names what replaced each and prints its text from the `v1.3.2` tag. ADR #103 (alert config in the registry, the notify Lambda, the decision timeout) has a text for the first time. ADRs #137, #130 and #138 keep every cited section and lose their revision logs, review records and probe logs. `docs/CLAUDE.md`, *Design decisions*, is the writing rule, and the tests in `tests/docs/test_adr_*.py` check every citation of an ADR or of its section across the repository, the index, and the size limits.
+
 ## v1.3.2 - 2026-11-25
 
 ### Added

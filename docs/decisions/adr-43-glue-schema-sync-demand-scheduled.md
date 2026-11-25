@@ -42,7 +42,7 @@ We chose (2). Reasoning:
 - **Competitor parity.** Dagster's `build_column_schema_change_checks`
   compares one materialization against the previous one (its own
   pipeline output across runs), not declared-vs-external-catalog.
-  Drift-vs-Glue alerts are a Dagster Cloud paid feature, not core. There
+  Dagster offers drift-vs-Glue alerts only in its hosted product, not in its core. There
   is no parity gap to close with (1).
 
 The on-demand pattern is also a precedent for any future "asset health
@@ -97,7 +97,7 @@ explicitly → one Glue call. No polling, ever.
 **Out of scope (deferred):**
 
 - Schema drift alerts (Slack/email when drift detected). Add in a later
-  phase if a real user asks for it; in Dagster this is a paid feature.
+  phase if a real user asks for it; Dagster offers it only in its hosted product.
 - Drift detection across pipeline materializations
   (Dagster `build_column_schema_change_checks` style). Different concern;
   requires producer-side metadata emission.
@@ -111,6 +111,6 @@ explicitly → one Glue call. No polling, ever.
 
 **Why not also offer a "scheduled" mode behind a feature flag?** Two code
 paths is twice the maintenance for the same outcome. If a user with strong
-real-time alerting needs shows up, the right answer is to add Slack
+real-time alerting needs shows up, the right answer is to add
 notifications to the on-demand result (one action, one place) rather than
 to add a parallel cron infrastructure.

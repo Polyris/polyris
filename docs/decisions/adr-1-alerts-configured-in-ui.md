@@ -4,7 +4,7 @@ accepted: by 2026-02-24
 ---
 # ADR #1 — Alerts Configured in the UI, Not the DSL
 
-**Decision:** Failure-alert delivery (Slack, PagerDuty) is configured per pipeline
+**Decision:** Failure-alert delivery is configured per pipeline
 in the Settings → Alerts UI and stored in the pipeline registry (`alert_config`),
 not declared in the DAG. The old `alerts=` DAG parameter has been **removed**.
 

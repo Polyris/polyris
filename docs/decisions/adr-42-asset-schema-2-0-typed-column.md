@@ -85,7 +85,7 @@ Previously this was silent last-writer-wins.
   SFN to emit actual schema in materialization events).
 - Convenience constructors `Asset.from_pyarrow()`, `Asset.from_pydantic()`,
   `Asset.from_glue_table()` (separate phase, requires optional dependencies).
-- Column-level lineage (Dagster+ paid feature; complex; not on near-term roadmap).
+- Column-level lineage (complex; not on near-term roadmap).
 - UI features: copy as DDL, schema diff between materializations, search/filter
   columns (separate phase).
 

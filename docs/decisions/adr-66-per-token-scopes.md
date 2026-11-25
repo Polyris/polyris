@@ -68,8 +68,8 @@ fails **loudly** (clear 403, fixed in seconds); a too-broad token fails
 
 ### Slack callbacks (`/api/action/*`) — a conscious cut
 
-The four Slack button endpoints (`skip`/`fail`/`success`/`restart`) are plain
-**link-buttons** opened from Slack with **no token and no signature**, and were
+The four action endpoints (`skip`/`fail`/`success`/`restart`) are plain
+**link-buttons** opened from a notification with **no token and no signature**, and were
 already open before auth existed. They are added to the gate's public allowlist
 (one line) so enabling enforcement doesn't break them. This is a documented,
 deliberate cut, **not** an oversight:
@@ -84,7 +84,7 @@ deliberate cut, **not** an oversight:
   public. Do this when Slack access widens / multiple users / audit matters.
 
 This was also a **rollout prerequisite** independent of scopes: without the
-allowlist, flipping `AUTH_ENABLED=true` would 401 every Slack button click.
+allowlist, flipping `AUTH_ENABLED=true` would 401 every action-link click.
 
 ## Non-goals (v1)
 

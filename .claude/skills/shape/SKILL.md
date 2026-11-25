@@ -11,7 +11,7 @@ Turn a fuzzy intention into settled decisions. **You do not write code here.** Y
 
 **One question at a time.** Ask, wait, record, ask the next. Never dump a questionnaire. (This differs from `/grilling` which batches a frontier of questions per round — `shape` is slower and more deliberate because scope decisions have hard sequential dependencies: B only makes sense once A is settled.)
 
-**Answer your own question first.** Before asking anything, check whether the codebase answers it — `grep`, read the ADR index, read the tests. Only ask what the repo genuinely cannot tell you.
+**Answer your own question first.** Before asking anything, check whether the codebase answers it — `grep`, read the ADR index (`docs/decisions/README.md`) and the sections of the ADRs it routes you to, read the tests. Only ask what the repo genuinely cannot tell you.
 
 **Always offer a recommendation.** Never "what would you like?" — always "I'd do X, because Y. Agree?" A bare menu is a failure of this stage.
 
@@ -45,7 +45,7 @@ Status: shaping | settled
 - <thing> — because <reason>
 ```
 
-For genuinely one-way decisions, draft the ADR now under `docs/reference/` and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 97+; most shaping sessions should add zero.
+For genuinely one-way decisions, draft the ADR now in `docs/decisions/` (the rules: `docs/CLAUDE.md`, *Design decisions*; one that governs only the paid overlay goes to `polyris-ee/docs/decisions/`) and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 97+; most shaping sessions should add zero.
 
 ## Done when
 

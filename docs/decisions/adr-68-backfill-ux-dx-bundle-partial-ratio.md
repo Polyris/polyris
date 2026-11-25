@@ -85,7 +85,7 @@ changed. This is a small surface-only rename with no schema impact.
 - Per-partition retry/cancel/skip — that's still in BACKLOG for the
   v0.79.x extension of existing endpoints. Out of scope here.
 - Cost-preview before launch — separate concern, separate release.
-- Slack notification integration — Mike explicitly said UI-only
+- Chat notification integration: the UI alone was asked for
   (bell + dropdown), no Slack.
 
 #### Lesson

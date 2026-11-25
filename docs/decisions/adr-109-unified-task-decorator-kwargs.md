@@ -93,5 +93,4 @@ enforce the pattern structurally, so a future task type cannot silently drop it:
 `test_every_task_decorator_accepts_common_kwargs` fails if any `@task.*` decorator
 omits `**common`, and `test_all_task_types_wire_assets` proves every type lands
 `outlets`/`inlets`/`wait_for` on the resulting `Task`. Assets themselves remain
-experimental at the API-surface level — see
-[`EXPERIMENTAL_ASSETS.md`](EXPERIMENTAL_ASSETS.md).
+experimental at the API-surface level ([ASSETS.md](../features/ASSETS.md)).

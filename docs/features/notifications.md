@@ -61,4 +61,4 @@ Response: `{"notifications": [{id, type, pipeline_name, task_name, pipeline_exec
 
 - [DSL.md#trigger-rules](DSL.md#trigger-rules) — how `waiting_decision` and `all_done` interact with a manual action
 - [DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics](DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics) — downstream visibility of a manual action
-- [Why a failed task waits for a decision](../decisions/adr-114-intervention-first-failure-model.md) instead of failing its dependants at once
+- A failed task waits for a decision instead of failing its dependants at once, so a person can retry it, mark it successful or skip it before anything downstream is decided.
