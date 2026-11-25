@@ -953,6 +953,35 @@ Resources:
               - dynamodb:Query
               - dynamodb:Scan
             Resource: "*"
+          # AllowDirectSteps reaches any table and bucket. The platform's own data that this role
+          # never uses stays out of a step's reach: a DynamoDBTask could write the console an admin
+          # token, an S3Task the console's files or the release's artifacts (ADR #140).
+          - Sid: DenyDirectStepsOnPlatformData
+            Effect: Deny
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - !GetAtt ApiTokensTable.Arn
+              - !Sub "${ApiTokensTable.Arn}/index/*"
+              - !GetAtt PipelineSpecsTable.Arn
+              - !Sub "${PipelineSpecsTable.Arn}/index/*"
+              - !GetAtt DependencySubscriptionsTable.Arn
+              - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
+          - Sid: DenyDirectStepsOnPlatformFiles
+            Effect: Deny
+            Action:
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub "${ConsoleUiBucket.Arn}/*"
+              - !If [HasUiArtifacts, !Sub "arn:aws:s3:::${ArtifactsBucket}/*", !Ref AWS::NoValue]
 
   # ---------------------------------------------------------------------------
   # CloudWatch Log Groups — Step Functions

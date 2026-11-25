@@ -93,7 +93,7 @@ nodes into one, making one task disappear from the execution graph.
 
 ## A stage the command names is the stage the pipeline file reads
 
-`polyris-deploy --stage` picks the stage's config, and a pipeline file reads its own stage from `POLYRIS_STAGE` (`config.stage`, or `os.environ` as the file `polyris-init` writes does). The command sets it before it runs a file (`config.use_stage`), and the request of each folder's process of `--all` carries it (`folder_process.main`); never the inherited environment. Until 1.3.1 a deploy to prod ran the file under the shell's stage and carried its ARNs (`TestStageReachesThePipelineFile`, `test_a_folders_files_run_under_the_stage_of_its_request`).
+`polyris-deploy` deploys to `--stage`, or else to `config.py`'s `DEFAULT_STAGE`, and a pipeline file reads its own stage from `POLYRIS_STAGE` (`config.stage`, or `os.environ` as the file `polyris-init` writes does). The command sets it to the stage of the deploy before it runs a file (`config.use_stage`), and the request of each folder's process of `--all` carries it (`folder_process.main`); never the inherited environment. Until 1.3.1 a deploy to prod ran the file under the shell's stage and carried its ARNs (`TestStageReachesThePipelineFile`, `test_a_folders_files_run_under_the_stage_of_its_request`).
 
 ## A config the user names is used, or the command stops (ADR #134)
 

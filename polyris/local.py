@@ -247,8 +247,12 @@ def run(
 
     A mock run is the only local run: a run of 1.3 needs the platform's engine, so the
     LocalStack mode, which deployed the pipeline's state machine alone, could run no task and
-    is gone. ``mock`` stays for the calls that pass it.
+    is gone. ``mock`` stays for the calls that pass it; ``mock=False`` is refused rather than
+    quietly mocked.
     """
+    if not mock:
+        raise ValueError("polyris.local.run() gives every task a mock result; to run the pipeline "
+                         "for real, deploy it with polyris-deploy and start it in the console.")
     return _run_mock(dag, task_mocks or {}, on_task_start, on_task_complete)
 
 

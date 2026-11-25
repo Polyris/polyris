@@ -6,6 +6,7 @@ file, and a file with zero DAGs (a shared config.py, a utils module) is a
 no-op, not an error. One DAG failing must not stop the rest of the batch.
 """
 import sys
+import os
 import textwrap
 
 import pytest
@@ -636,6 +637,42 @@ class TestStageReachesThePipelineFile:
         deploy.main()
         assert deployed.call_args.kwargs["dag"].dag_id == "etl-prod"
         assert deployed.call_args.kwargs["stage"] == "prod"
+
+    def test_the_default_stage_of_the_config_without_stage(self, tmp_path, mocker, monkeypatch):
+        """No --stage: the deploy goes to config.py's DEFAULT_STAGE, and the file read its own
+        default, dev (the break review of the docs audit)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "x")
+        monkeypatch.delenv("POLYRIS_STAGE")  # unset now, and unset again after the test
+        (tmp_path / "config.py").write_text(
+            'ENVIRONMENTS = {"dev": {"stack_name": "acme-dev"}, "prod": {"stack_name": "acme-prod"}}\n'
+            'DEFAULT_STAGE = "prod"\n')
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            import os
+            from polyris import DAG, task
+
+            with DAG(f"etl-{os.environ.get('POLYRIS_STAGE', 'dev')}", schedule="@daily") as dag:
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def go():
+                    pass
+                go()
+        """))
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-deploy"])
+        deploy.polyris_config.reset()
+        try:
+            deploy.main()
+        finally:
+            deploy.polyris_config.reset()
+        assert deployed.call_args.kwargs["dag"].dag_id == "etl-prod"
+
+    def test_no_config_and_no_stage_leave_it_to_the_platform(self, tmp_path, monkeypatch):
+        from polyris.config import use_stage
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "x")
+        monkeypatch.delenv("POLYRIS_STAGE")
+        use_stage(None)
+        assert "POLYRIS_STAGE" not in os.environ
 
     def test_every_folders_process_of_all(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)

@@ -789,7 +789,13 @@ def deploy_pipeline(
             print(f"\n❌ --stage {cli_stage}, but platform {sam_stack_name} is stage {platform_stage}.")
             print("   Install that stage first (polyris-up --stage ...), or name its platform with --stack.")
             sys.exit(1)
+        file_stage = os.environ.get("POLYRIS_STAGE")
         new_namespace, new_stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
+        if not cli_stage and not file_stage and new_stage:
+            # No --stage and no config.py: the stage is the platform's, known only now, after the
+            # pipeline file ran without POLYRIS_STAGE (config.use_stage). Say so.
+            print(f"   stage {_c(new_stage, CYAN)} comes from the platform stack; the pipeline file ran "
+                  f"without POLYRIS_STAGE. If it reads its stage, deploy with --stage {new_stage}.")
         adopted = f"{new_namespace}-{new_stage}-polyris-{dag.dag_id}"
         if adopted != pipeline_stack and _keep_existing_pipeline_stack(session, pipeline_stack, adopted):
             print(f"Keeping pipeline stack {_c(pipeline_stack, CYAN)}: it was deployed before polyris named "

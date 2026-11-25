@@ -44,7 +44,7 @@ When one platform team serves several data teams, each team keeps a repository o
 
 ## A pipeline file
 
-A `dag.py` can pick its resources by stage. `polyris-deploy --stage prod` sets `POLYRIS_STAGE=prod` before it runs the file:
+A `dag.py` can pick its resources by stage. Before it runs the file, `polyris-deploy` sets `POLYRIS_STAGE` to the stage it deploys to: `--stage`, or else `DEFAULT_STAGE` from `config.py`.
 
 ```python
 import os

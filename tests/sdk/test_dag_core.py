@@ -104,6 +104,11 @@ class TestScheduling:
         with pytest.raises(ValueError, match=r"cron\(0 9 \? \* MON-FRI \*\)"):
             DAG("weekdays", schedule="0 9 * * MON-FRI")
 
+    def test_a_schedule_is_kept_without_its_spaces(self):
+        """" cron(...)" passed the check and failed the deploy (the break review of the docs audit)."""
+        dag = DAG("p", schedule=" cron(0 9 ? * MON-FRI *) ")
+        assert dag.schedule == dag._eventbridge_schedule == "cron(0 9 ? * MON-FRI *)"
+
     def test_eventbridge_expressions_pass_as_written(self):
         for expression in ("cron(0 9 ? * MON-FRI *)", "rate(6 hours)", "at(2026-12-01T09:00:00)"):
             assert DAG("p", schedule=expression)._eventbridge_schedule == expression

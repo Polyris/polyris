@@ -104,3 +104,20 @@ def test_every_direct_step_class_is_checked():
     services = {cls.__name__ for cls in vars(steps_module).values()
                 if isinstance(cls, type) and issubclass(cls, Step) and cls.__name__.endswith("Task")}
     assert services == {type(step).__name__ for step in STEPS}
+
+
+def test_the_direct_steps_never_reach_the_platforms_own_data():
+    """AllowDirectSteps reaches any table and bucket. The console's tokens, the task specs, the
+    dependency pointers, the console's files and the release's artifacts stay out of reach: a
+    DynamoDBTask could write the console an admin token, an S3Task the console's files or the
+    artifacts the next platform update deploys (the break review of ADR #140). The role uses none."""
+    statements = {s.get("Sid"): s for s in
+                  _template()["Resources"]["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]["Statement"]}
+    tables, files = statements["DenyDirectStepsOnPlatformData"], statements["DenyDirectStepsOnPlatformFiles"]
+    assert tables["Effect"] == files["Effect"] == "Deny"
+    assert {a for a in statements["AllowDirectSteps"]["Action"] if a.startswith("dynamodb:")} <= set(tables["Action"])
+    assert {"s3:PutObject", "s3:DeleteObject"} <= set(files["Action"])
+    for table in ("ApiTokensTable", "PipelineSpecsTable", "DependencySubscriptionsTable"):
+        assert sum(table in str(r) for r in tables["Resource"]) == 2, f"{table} and its indexes"
+    assert any("ConsoleUiBucket" in str(r) for r in files["Resource"])
+    assert any("ArtifactsBucket" in str(r) for r in files["Resource"])

@@ -425,6 +425,13 @@ class TestRun:
         assert result.status == 'success'
         assert len(result.task_results) == 2
 
+    def test_a_run_for_real_is_refused_not_mocked(self, tmp_path):
+        """run(dag, mock=False) ran a mock anyway once the LocalStack mode was gone (the break
+        review of the docs audit): the caller believed it had run for real."""
+        dag = _load_dag_from_file(_make_dag_file(tmp_path, arns_real=True))
+        with pytest.raises(ValueError, match="polyris-deploy"):
+            run(dag, mock=False)
+
 
 # ─── _run_mock() ──────────────────────────────────────────────────────────────
 
