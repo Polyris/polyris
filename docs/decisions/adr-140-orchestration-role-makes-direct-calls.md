@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-11-25
+---
 # ADR #140 — The orchestration role makes the direct steps' calls
 
 **Context.** A pipeline's direct steps (`polyris.steps`: `SNSTask`, `SQSTask`, `S3Task`, `DynamoDBTask`, `EventBridgeTask`, `BedrockTask`, `HttpTask`) run in its state machine under the platform's orchestration role, on resources the pipeline names. The role allowed the task services (Lambda, Step Functions, ECS, Batch, Glue, Athena, EMR) on any resource, but no `sns:Publish`, `sqs:SendMessage` or `bedrock:InvokeModel`, and S3 and DynamoDB only on the platform's own bucket and tables: those steps failed with AccessDenied on a user's resources (the docs audit after 1.3). Principle #45 kept `sns:Publish` and `sqs:SendMessage` out of the template, so that the platform sends no message of its own.

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-03
+---
 # ADR #43 — Glue Schema Sync: On-Demand, Not Scheduled
 
 **Decision:** When a user opens an asset's Schema tab, the UI fetches the

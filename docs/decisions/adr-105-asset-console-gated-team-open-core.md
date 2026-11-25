@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #105 — Asset console gated to Team with an open-core "coming soon" page; engine stays free
 
 **Context.** The open-core boundary (ADR #99/#104) is "backfill/ops/governance =

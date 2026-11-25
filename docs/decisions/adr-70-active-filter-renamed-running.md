@@ -1,4 +1,8 @@
-# ADR #70 — "Active" filter renamed to "Running"; narrowed to running-only (v0.78.13)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #70 — "Active" filter renamed to "Running"; narrowed to running-only
 
 #### Context
 

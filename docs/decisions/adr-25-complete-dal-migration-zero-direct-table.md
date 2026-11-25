@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-02-24
+---
 # ADR #25 — Complete DAL Migration — Zero Direct Table Access in Routes
 
 **Decision:** All 55 direct `boto3.Table()` operations in route files migrated to repository methods. Routes never call `table.get_item()`, `table.query()`, etc. directly.

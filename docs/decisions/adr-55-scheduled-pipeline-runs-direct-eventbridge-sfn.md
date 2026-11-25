@@ -1,4 +1,8 @@
-# ADR #55 — Scheduled Pipeline Runs — direct EventBridge → SFN, not routed through bulk-backfill (v0.78.0)
+---
+area: engine
+accepted: 2026-05-20
+---
+# ADR #55 — Scheduled Pipeline Runs — direct EventBridge → SFN, not routed through bulk-backfill
 
 #### Context
 

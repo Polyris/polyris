@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-08-17
+---
 # ADR #118 — `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories
 
 *Amended by ADR #139: which files and folders `--all` loads, a process per folder, and a `dag_id` two files make refused.*

@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-08-17
+---
 # ADR #116 — Cleanup via scoped de-abort
 
 > **Superseded by [ADR #138](adr-138-trigger-rules-after-run-end-change.md) (1.3).** No de-abort is needed: a final failure no longer cancels the run's other tasks (ADR #137), and `all_done` runs after it as one of the nine rules.

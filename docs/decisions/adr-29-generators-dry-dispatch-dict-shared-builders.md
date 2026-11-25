@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-02-24
+---
 # ADR #29 — Generators DRY: Dispatch Dict, Shared Builders, Centralized Constants
 
 **Context:** `generators.py` grew to 1545 lines with several DRY violations: `_generate_step_state` was a 238-line if/elif chain across 14 step types, wrapper input dicts were duplicated between Task and Step branches (15 identical fields), asset serialization used 3 different inline patterns (7 occurrences), and the same JSONata expressions and type lists appeared 2-5 times each.

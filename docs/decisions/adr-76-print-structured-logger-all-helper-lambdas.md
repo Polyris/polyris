@@ -1,4 +1,8 @@
-# ADR #76 — print() → structured logger in all helper Lambdas (v0.79.4)
+---
+area: engine
+accepted: 2026-05-27
+---
+# ADR #76 — print() → structured logger in all helper Lambdas
 
 #### Context
 

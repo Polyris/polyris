@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #19 — Zero-Cost Waiting (waitForTaskToken + .sync)
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** A waiting task costs nothing because it is a row, not because it waits on a token.

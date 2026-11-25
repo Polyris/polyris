@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #99 — UI open-core exclusion (generated active module)
 
 > **Status:** Accepted — mechanism proven by spike on the project's own stack

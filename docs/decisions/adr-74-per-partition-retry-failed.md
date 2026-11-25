@@ -1,4 +1,8 @@
-# ADR #74 — Per-partition retry-failed (v0.79.2)
+---
+area: console-api
+accepted: 2026-05-27
+---
+# ADR #74 — Per-partition retry-failed
 
 #### Context
 

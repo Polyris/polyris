@@ -157,13 +157,15 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 | console_api Lambda | `sam/lambdas/console_api/tests/` | `make test-lambdas` | API routes, query/scan pagination, validation |
 | UI hooks | `ui/src/hooks/*.test.{ts,tsx}` | `npm test` | React hooks, state management |
 
+The design decisions behind the code, and how to find the one a comment cites, are in [docs/decisions/](docs/decisions/README.md).
+
 **Note:** `pip install -e ".[dev]"` installs pytest, pytest-cov, pytest-mock, pytest-xdist, moto, ruff, mypy and the boto3 type stubs; the Lambda suites need nothing more.
 
 ---
 
 ## Common Tasks
 
-> **Open-core & skills.** polyris is open-core with **three tiers**: free (open-source), **Team** and **Enterprise** (both paid). Proprietary code lives per tier under `ui/src/ee/{team,enterprise}/` and `console_api/ee/{team,enterprise}/`; everything else is public and the public build ships without `ee/`. Two boundaries: **free↔paid** is a physical strip; **Team↔Enterprise** is a runtime entitlement (`POLYRIS_TIER` + `can()`). Before adding a feature, decide the tier (authoring, basic read, running and live-run intervention = free; operations and observability = Team; governance/cost/SSO = Enterprise). The checklists below cover the free (public) surface. The **`add-aws-service`** skill in [`.claude/skills/`](.claude/skills) walks adding a new AWS service to the DSL. See ADR #97 (plugin route registration), #98 (open-core split structure), and #99 (UI open-core exclusion) in `docs/reference/` for the mechanism behind the open-core UI surface and API route registration.
+> **Open-core & skills.** polyris is open-core with **three tiers**: free (open-source), **Team** and **Enterprise** (both paid). Proprietary code lives per tier under `ui/src/ee/{team,enterprise}/` and `console_api/ee/{team,enterprise}/`; everything else is public and the public build ships without `ee/`. Two boundaries: **free↔paid** is a physical strip; **Team↔Enterprise** is a runtime entitlement (`POLYRIS_TIER` + `can()`). Before adding a feature, decide the tier (authoring, basic read, running and live-run intervention = free; operations and observability = Team; governance/cost/SSO = Enterprise). The checklists below cover the free (public) surface. The **`add-aws-service`** skill in [`.claude/skills/`](.claude/skills) walks adding a new AWS service to the DSL. See ADR #97 (plugin route registration), #98 (open-core split structure), and #99 (UI open-core exclusion) in `docs/decisions/` for the mechanism behind the open-core UI surface and API route registration.
 
 ### Adding a New Task Status
 

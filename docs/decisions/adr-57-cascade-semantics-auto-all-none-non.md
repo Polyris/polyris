@@ -1,4 +1,8 @@
-# ADR #57 — Cascade Semantics — auto / all / none with non-transitive propagation (v0.78.0)
+---
+area: engine
+accepted: 2026-05-20
+---
+# ADR #57 — Cascade Semantics — auto / all / none with non-transitive propagation
 
 #### Context
 

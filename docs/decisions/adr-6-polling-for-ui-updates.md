@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-02-24
+---
 # ADR #6 — Polling for UI Updates (simple and reliable)
 
 **Decision:** Use polling (3s active / 30s idle) for UI updates.

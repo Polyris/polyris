@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-11-14
+---
 # ADR #135 — A run is told how its task ended by whoever ends it
 
 > **Superseded in part by [ADR #137](adr-137-tasks-as-rows.md) §4 (1.3.0).** Decision 1 and its table go: the dispatcher answers a run once every row is final, and no template answers one. Decisions 2–4 carry over to that one place, and a `stopped` row now counts as finished.

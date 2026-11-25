@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #20 — Transparency: Step Functions over EventBridge for Orchestration
 
 > **Superseded in part by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** A waiting task leaves Step Functions, and the console shows why it waits.

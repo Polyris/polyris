@@ -1,4 +1,8 @@
-# ADR #120 — Manual task actions: recorded input, synthetic output markers, asset events on Mark Successful, safe direct Restart from `waiting_decision`
+---
+area: engine
+accepted: by 2026-08-17
+---
+# ADR #120 — Manual task actions: recorded input, output markers, asset events on Mark Successful, direct Restart
 
 **Context.** Skip / Mark Successful / Mark Failed / Stop all resolve a task's orchestration
 token directly from `console_api`, bypassing every state in the `run_task` wrapper a normal

@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-11-12
+---
 # ADR #126 — Pre-deploy resource existence check in `polyris-deploy`
 
 **Context.** `polyris-deploy` compiles a DAG into a CloudFormation template and deploys it. If a referenced AWS resource — an SFN state machine ARN, a Lambda function name, a Glue job, an ECS cluster or task definition, a Batch job queue or job definition, an Athena workgroup — does not exist, CloudFormation succeeds but every pipeline execution fails at runtime with a confusing AWS error that is hard to trace back to the missing resource. The problem is diagnosed hours or days after the deploy, not at deploy time.

@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #8 — JSONata for Step Functions (not JSONPath)
 
 **Decision:** Use JSONata (QueryLanguage: "JSONata") throughout.

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-08-17
+---
 # ADR #106 — Parameter parity for `@task` decorators (the `task_config` ↔ `Run_Task_<X>` contract)
 
 > **Status:** ACCEPTED — implemented. Hardens the wrapper-routed task model

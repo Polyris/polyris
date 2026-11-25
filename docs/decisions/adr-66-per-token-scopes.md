@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-05-27
+---
 # ADR #66 — Per-Token Scopes (Granular Authorization)
 
 > **Status:** Accepted — implemented in v0.88.0. Follows ADR #65, API tokens (PAT + auth

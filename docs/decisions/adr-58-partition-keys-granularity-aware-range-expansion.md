@@ -1,4 +1,8 @@
-# ADR #58 — Partition Keys & Granularity-Aware Range Expansion (v0.78.0)
+---
+area: engine
+accepted: 2026-05-20
+---
+# ADR #58 — Partition Keys & Granularity-Aware Range Expansion
 
 #### Context
 

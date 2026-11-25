@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-05-08
+---
 # ADR #47 — Asset Lineage `last_updated` Enrichment — Two Endpoints, Two Scopes
 
 **Status:** Adopted in v0.75.5.

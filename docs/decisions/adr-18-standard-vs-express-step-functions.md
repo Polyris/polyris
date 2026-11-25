@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #18 — Standard vs Express Step Functions
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The Express helpers and the wrapper go; `run_task`, `bulk_backfill` and the test state machines stay Standard.

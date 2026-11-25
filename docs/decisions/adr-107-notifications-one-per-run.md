@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-08-17
+---
 # ADR #107 — Notifications: one per run, two attention states (failure vs decision-required)
 
 **Context.** The header notification feed scanned task-instance records for

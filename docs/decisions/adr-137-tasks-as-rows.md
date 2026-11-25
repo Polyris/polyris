@@ -1,3 +1,9 @@
+---
+area: engine
+accepted: 2026-11-17
+supersedes: "#2, #3, #23, #135 §1, and in part #20, #112, #120, #121, #130, #136"
+amends: "#18, #19, #22, #39, #51, #54, #107, #108, #110, #112, #114, #120, #123, #125, #131"
+---
 # ADR #137 — Tasks as rows: one dispatcher starts the tasks, one token per run
 
 > **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 13 (2026-11-25, release 1.3.2: an execution that ends without a write wakes its run through an EventBridge rule, the alternative this ADR deferred (§1, §5, §7, *Alternatives*, *To verify*)); revision 12 (2026-11-24, after the first test deploy and its reviews: the sweeper shares its execution checks between runs (§1), four limits the scale estimate found (§1, §8), `restarts` counts an operator's Restarts (§3), the Tasks tab reads run rows (§5), the grants on executions cover a pipeline of any namespace (*Migration*), and the estimate's numbers (*Cost*, *To verify*)); revision 11 (2026-11-24, after a review of the branch: a deletion of a pipeline or of the platform stops their running executions (§4); an action whose stop of `run_task` fails warns (§3); a pass that failed for good marks the run row, and the sweeper waits for its backoff (§3, §7); what a Restart with dependants resets and what its nine months cover (§3); Rule 49 for `run_task`'s input; revision 10, 2026-11-23: what building it settled — the operator actions and the requests a pass carries out (§3, §4), a Restart taken for about nine months with no renewal of the run's rows (§3, §5), a Stop after a done stop, a run's `stale` status, the removal of `fact_version` from facts and of ADR #125's row-level `max_retries`, the public status sets kept as they were, and the upgrade steps of `polyris-up` (*Migration*); revision 9, 2026-11-18: the results of TR-0's probes; revision 8, 2026-11-17: the plan review's decisions). Target release: 1.3.0.

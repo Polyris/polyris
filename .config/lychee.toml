@@ -12,7 +12,7 @@ include_fragments = "full"
 
 # Skip historical archives and vendor trees.
 # `exclude_path` values are regular expressions (matched against relative
-# paths). adr-index.md stays audited — only numbered ADR files are exempt.
+# paths). The ADR index (docs/decisions/README.md) stays audited — only numbered ADR files are exempt.
 exclude_path = [
     "^docs/decisions/adr-[0-9]+.*\\.md$",
     "^docs/design/SPIKE_.*\\.md$",

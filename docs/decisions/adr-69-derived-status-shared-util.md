@@ -1,4 +1,8 @@
-# ADR #69 — derivedStatus lifted to shared util + inline Cancel on list (v0.78.12)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #69 — derivedStatus lifted to shared util + inline Cancel on list
 
 #### Context
 

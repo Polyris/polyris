@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-06-15
+---
 # ADR #96 — CloudFront security response headers (static export)
 
 **Decision:** Security response headers (`X-Content-Type-Options: nosniff`,

@@ -1,4 +1,8 @@
-# ADR #72 — SSoT enums codegen — single canonical source for status/rule enums (v0.79.0)
+---
+area: sdk
+accepted: 2026-05-27
+---
+# ADR #72 — SSoT enums codegen — single canonical source for status/rule enums
 
 #### Context
 

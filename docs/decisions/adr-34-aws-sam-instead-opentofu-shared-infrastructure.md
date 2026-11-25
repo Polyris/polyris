@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #34 — AWS SAM instead of OpenTofu for Shared Infrastructure
 
 **Context:** OpenTofu required an external state backend (S3 bucket), DynamoDB or S3 locking, and a separate CLI tool.

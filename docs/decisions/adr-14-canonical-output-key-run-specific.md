@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #14 — Canonical Output Key (not run-specific)
 
 **Decision:** Store task output under stable key `output#pipeline#task#date` instead of run-specific `task-date-executionShort`.

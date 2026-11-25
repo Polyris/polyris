@@ -1,4 +1,8 @@
-# ADR #61 — Task-subset selection in backfill UI (v0.78.1)
+---
+area: ui
+accepted: 2026-05-22
+---
+# ADR #61 — Task-subset selection in backfill UI
 
 #### Context
 

@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #37 — `DefinitionUri` + `AWS::Serverless::StateMachine` for SFN Definitions
 
 **Context:** SFN definitions were originally inline in `template.yaml` as `DefinitionString`. This led to a problem: editing `sfn_templates/*.tpl.json` files had no effect — `sam deploy` did not see changes because it compared the hash of `template.yaml` (which was unchanged).

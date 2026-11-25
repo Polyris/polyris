@@ -1,4 +1,8 @@
-# ADR #73 — Computation moved to backend — derived status + per-partition aggregation (v0.79.1)
+---
+area: console-api
+accepted: 2026-05-27
+---
+# ADR #73 — Computation moved to backend — derived status + per-partition aggregation
 
 #### Context
 

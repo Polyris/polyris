@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: 2026-08-17
+---
 # ADR #103 — Alert delivery is runtime config in the registry, read by one notify Lambda
 
 ## Context

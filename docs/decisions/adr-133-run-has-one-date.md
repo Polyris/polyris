@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-11-14
+---
 # ADR #133 — A run has one date: the date it was started or scheduled for
 
 **Context.** A run's date (`current_date`) keys its task rows, its asset facts and every `wait_for` decision (ADR #130). A run started from the console carries it in its input, and one started by an asset trigger carried it only under `variables`. A scheduled run did not carry it at all: EventBridge Scheduler passed only `triggered_by` and `schedule`, and each task took the day from `$now()` when the pipeline built its input. A run scheduled at 23:59 that started at 00:01 got the next day, and the tasks of a run crossing midnight could get two dates. For a pipeline with `variables=`, `Define_Inputs` passed the missing date on as `null`, which `$exists` counts as present: every task got a `null` date and the run failed. It also dropped `triggered_by`.

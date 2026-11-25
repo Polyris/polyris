@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-08-17
+---
 # ADR #121 — Restart correctness: two-level wrapper stop, `task_config`/`outlets` reconstruction, `restart-` name prefix
 
 **Context.** Live testing of ADR #120's direct-Restart-from-`waiting_decision` surfaced

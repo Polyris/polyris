@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #100 — Tier entitlement (team↔enterprise gated at runtime, not by strip)
 
 > **Status:** Accepted — mechanism proven by spike against the project's own

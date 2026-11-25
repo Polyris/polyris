@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #32 — OpenTofu instead of Terraform + native S3 locking
 
 **Context:** Terraform state locking required a DynamoDB table as an additional resource.

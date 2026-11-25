@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-02-24
+---
 # ADR #27 — Unified Version String Across All Packages
 
 **Decision:** `pyproject.toml`, `polyris/__init__.py`, and `ui/package.json` share the same version string. CI fails on mismatch.

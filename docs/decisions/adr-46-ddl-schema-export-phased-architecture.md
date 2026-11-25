@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-08
+---
 # ADR #46 — DDL/Schema Export — Phased Architecture
 
 **Status:** Phase 1 in v0.75.4. Phase 2 deferred until trigger fires.

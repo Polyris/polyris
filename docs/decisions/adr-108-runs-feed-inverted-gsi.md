@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-08-17
+---
 # ADR #108 — A pipeline's runs are read through an inverted GSI; the cross-pipeline feed keeps its per-date fan-out
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** The Runs tab, without a filter or with a pipeline filter, reads run rows from `run-start-index`: the start days of the last 90 days, newest first, until its page is full, each run's status from its run row's summary. A date filter still reads the task rows of its date. The Tasks tab keeps the reads below.

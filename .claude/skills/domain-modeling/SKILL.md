@@ -14,7 +14,7 @@ Actively build and sharpen the project's domain model as you design. This is the
 ├── GLOSSARY.md                          ← project-wide terms
 ├── docs/
 │   └── decisions/
-│       ├── adr-index.md                 ← ADR index (Principle #29)
+│       ├── README.md                    ← ADR index (Principle #29)
 │       └── adr-N-slug.md                ← one file per ADR
 └── polyris/CLAUDE.md                    ← SDK-specific rules
 ```
@@ -94,4 +94,4 @@ File: `docs/decisions/adr-N-slug.md`
 {Non-obvious downstream effects, if any.}
 ```
 
-After adding: update `docs/decisions/adr-index.md` count and table (Principle #29).
+After adding: run `python scripts/adr_index.py` (Principle #29).

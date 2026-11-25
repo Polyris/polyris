@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-08-17
+---
 # ADR #106 — Assets are a current-state surface; per-date history lives only on the matrix
 
 **Context.** The asset console read the global date picker (`useAppStore.date`):

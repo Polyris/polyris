@@ -69,7 +69,7 @@ SECTION_TAIL_RE = re.compile(
 )
 BARE_SECTION_RE = re.compile(
     rf"§§[ \t]*(?P<multi>{_SEC}(?:{_SEP}§?[ \t]*{_SEC})*)"
-    rf"|§[ \t]*(?P<one>{_SEC})"
+    rf"|§[ \t]*(?P<one>{_SEC})(?!\w)"  # `§7c` is another document's label
 )
 # A document named right before a bare `§`: `PLAN §2`, `SPIKE_X.md §9.5`,
 # `Apache 2.0 §6`. That `§` is the document's, not an ADR's.
@@ -182,7 +182,10 @@ def load_adrs() -> dict[int, list[Adr]]:
     for p in sorted(ADR_DIR.glob("adr-[0-9]*.md")):
         m = re.match(r"adr-(\d+)-(.+)\.md$", p.name)
         if m:
-            adrs.append(Adr(int(m.group(1)), m.group(2), p, p.read_text().splitlines()))
+            lines = p.read_text().splitlines()
+            if lines[:1] == ["---"] and "---" in lines[1:]:
+                lines = lines[lines.index("---", 1) + 1:]  # the front matter is no section
+            adrs.append(Adr(int(m.group(1)), m.group(2), p, lines))
     found: dict[int, list[Adr]] = {}
     for adr in adrs:
         _index_sections(adr)

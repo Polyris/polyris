@@ -1,4 +1,8 @@
-# ADR #80 — Backfill modal viewport overflow + dead CSS cleanup (v0.79.8)
+---
+area: ui
+accepted: 2026-05-28
+---
+# ADR #80 — Backfill modal viewport overflow + dead CSS cleanup
 
 #### Context
 

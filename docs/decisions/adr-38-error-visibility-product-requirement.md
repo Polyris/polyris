@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-05-02
+---
 # ADR #38 — Error Visibility — Product Requirement
 
 **Context:** During development we found that errors in various layers of the system were silently lost.

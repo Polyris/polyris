@@ -1,3 +1,7 @@
+---
+area: process
+accepted: by 2026-02-24
+---
 # ADR #26 — pytest-mock as Standard Test Mocking Library
 
 **Decision:** All test files use `pytest-mock` (`mocker` fixture) for patching and mocking. `unittest.mock` is not used directly in tests.

@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-05-29
+---
 # ADR #87 — Partition mapping + upstream smart-fill — adopt Dagster's model as prior art
 
 #### Status

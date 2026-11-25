@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-11-14
+---
 # ADR #134 — A config the user names is used, or the command stops
 
 **Context.** `polyris-deploy` takes its stage settings, the AWS profile among them, from `config.py`: the file `POLYRIS_CONFIG` names, or the first `config.py` with `ENVIRONMENTS` from the working directory up to the project root. Every way of failing to use that file ended in "no config": a `POLYRIS_CONFIG` naming a missing file, a file without `ENVIRONMENTS`, one that did not parse or failed when run. Without a config the deploy uses the default AWS credentials and the platform it finds by tag, so it can act in another account. The 1.2.0 rehearsal hit the class twice (Principle #42): the stage view read the environments before anything had loaded them (F5), and a `POLYRIS_CONFIG` left pointing at a deleted file was dropped without a word (F17). Both times the deploy went to the default account and stopped only because that account refused it.

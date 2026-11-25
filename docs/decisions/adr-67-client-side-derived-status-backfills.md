@@ -1,4 +1,8 @@
-# ADR #67 — Client-side derived status for backfills (v0.78.8)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #67 — Client-side derived status for backfills
 
 #### Context
 

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-02
+---
 # ADR #39 — Asset Enrichment: Schema Declaration + asset_registry Removal
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** Asset data comes from the specs of each pipeline's `spec_id`, not from the registry's `tasks`.

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-02-24
+---
 # ADR #12 — Explicit `skip_on_backfill` Parameter (not heuristic)
 
 **Decision:** Tasks declare `skip_on_backfill=True` explicitly instead of UI guessing from inlets/outlets.

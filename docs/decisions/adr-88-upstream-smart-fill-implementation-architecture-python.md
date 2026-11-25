@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-05-29
+---
 # ADR #88 — Upstream smart-fill — implementation architecture (Python-planned, SFN-trusted)
 
 #### Status

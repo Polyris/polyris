@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #3 — Separate Helpers (not monolithic wrapper)
 
 > **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The helpers the wrapper was split into go with the wrapper: `run_task` runs one attempt of a task's work, and the dispatcher decides the rest.

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-29
+---
 # ADR #91 — Rename backfill `cascade` → `downstream` (with deprecated alias)
 
 #### Status

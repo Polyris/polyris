@@ -1,4 +1,8 @@
-# ADR #83 — Backfill status consolidation + correctness hardening (v0.80.0)
+---
+area: engine
+accepted: 2026-05-28
+---
+# ADR #83 — Backfill status consolidation + correctness hardening
 
 #### Context
 

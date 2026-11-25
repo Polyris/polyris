@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-05-27
+---
 # ADR #66 — Per-Token Scopes (Granular Authorization)
 
 > Full record: [`adr-66-per-token-scopes.md`](./adr-66-per-token-scopes.md).

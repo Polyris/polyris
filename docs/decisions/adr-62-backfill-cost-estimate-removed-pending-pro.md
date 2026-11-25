@@ -1,4 +1,8 @@
-# ADR #62 — Backfill cost estimate removed pending Pro tier (v0.78.2)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #62 — Backfill cost estimate removed pending Pro tier
 
 #### Context
 

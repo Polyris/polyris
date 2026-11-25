@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #36 — SSM as a Cross-Stack Bridge (instead of `Fn::ImportValue`)
 
 **Context:** Shared infra (SAM) and pipeline stacks need a way to pass ARNs between each other.

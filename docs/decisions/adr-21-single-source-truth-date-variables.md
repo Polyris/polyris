@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #21 — Single Source of Truth for Date Variables
 
 **Decision:** JSONata in `Prepare_Task_Input` is the single source for all date-derived variables. Python (backfill.py) only provides `current_date` and non-derivable extras.

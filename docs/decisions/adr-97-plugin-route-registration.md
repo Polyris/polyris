@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #97 — Explicit plugin route registration (open-core seam)
 
 > **Status:** Accepted — implemented in v0.91.x (console_api). All route modules

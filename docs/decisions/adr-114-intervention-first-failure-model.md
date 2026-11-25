@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-08-17
+---
 # ADR #114 — Intervention-first failure model
 
 > **Amended by [ADR #138](adr-138-trigger-rules-after-run-end-change.md) (1.3):** its statement that failure-reactive trigger rules cannot be supported no longer holds. The decision stands: a failure is final only after the human decision or its timeout.

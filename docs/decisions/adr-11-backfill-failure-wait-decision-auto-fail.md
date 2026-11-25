@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #11 — Backfill Failure: Wait for Decision (not auto-fail)
 
 **Decision:** When a task fails during backfill, suppress Slack/PagerDuty but still wait for user decision via UI.

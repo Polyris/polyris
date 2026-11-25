@@ -1,4 +1,8 @@
-# ADR #79 — Backfill icon single source of truth (v0.79.7)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #79 — Backfill icon single source of truth
 
 #### Context
 

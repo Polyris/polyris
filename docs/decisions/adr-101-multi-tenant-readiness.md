@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #101 — Multi-tenant readiness (entitlement is tenant-source-agnostic; tenancy deferred)
 
 > **Status:** Accepted — direction recorded, mechanism proven by spike. **No code

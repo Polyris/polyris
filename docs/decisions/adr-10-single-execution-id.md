@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #10 — Single Execution ID Pattern + `pipeline_execution_short`
 
 **Decision:** Use deterministic execution names (task-date-short). Keep `pipeline_execution_short` as a core identifier.

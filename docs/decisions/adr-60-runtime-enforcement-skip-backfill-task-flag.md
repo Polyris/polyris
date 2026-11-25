@@ -1,4 +1,8 @@
-# ADR #60 — Runtime enforcement of `skip_on_backfill` task flag (v0.78.1)
+---
+area: engine
+accepted: 2026-05-22
+---
+# ADR #60 — Runtime enforcement of `skip_on_backfill` task flag
 
 #### Context
 

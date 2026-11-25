@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-03
+---
 # ADR #41 — URL Routing: CloudFront Function + window.history for Deep State
 
 **Decision (v0.71.8):** Use a CloudFront Function for SPA URL rewriting at the edge, Next.js file-system routes for top-level navigation, and `window.history.pushState/replaceState` directly for deep state in URL search params.

@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-29
+---
 # ADR #86 — Product concept: asset-centric UX over an unchanged task-based DSL
 
 #### Status

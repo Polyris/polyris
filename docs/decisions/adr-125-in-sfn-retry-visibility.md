@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-11-12
+---
 # ADR #125 — In-SFN retry visibility (`retry_attempt` field + `TASK_RETRY_STARTED` event)
 
 > **Status:** ACCEPTED — extends ADR #107's in-place retry loop with the user-facing

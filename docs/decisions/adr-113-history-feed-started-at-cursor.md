@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-08-17
+---
 # ADR #113 — The History feed pages on a `started_at` cursor; `next` is the only end-of-feed signal
 
 **Context.** ADR #108 removed the *window* dialects from the runs feed but left the

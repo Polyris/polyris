@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-05-27
+---
 # ADR #65 — API Tokens (PAT) & Auth Enforcement
 
 > **Status:** Accepted — implemented in v0.87.0 (backend, UI, docs). Enforcement

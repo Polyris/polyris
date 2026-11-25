@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-02-24
+---
 # ADR #13 — Decorator Parameter Duplication (for IDE autocomplete)
 
 **Decision:** Duplicate common parameters (`retries`, `retry_delay`, `trigger_rule`, `wait_before`, `skip_on_backfill`) across all 7 task decorator methods.

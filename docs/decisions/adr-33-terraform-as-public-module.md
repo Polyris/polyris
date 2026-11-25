@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #33 — Terraform as a Public Module
 
 **Context:** `terraform/shared/` was an internal directory not intended for direct use.

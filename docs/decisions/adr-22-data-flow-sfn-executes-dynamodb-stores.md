@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #22 — Data Flow: SFN Executes → DynamoDB Stores → UI Reads
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §4, §5 (1.3.0).** Its one exception goes: no console route asks Step Functions about a run, neither to reconcile a running one nor to mark the tasks of an ended one. The engine keeps the run row true, and a run's status comes from its run row's summary.

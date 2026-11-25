@@ -1,4 +1,8 @@
-# ADR #65 — Top-level view registration — three-place sync (v0.78.6)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #65 — Top-level view registration — three-place sync
 
 #### Context
 

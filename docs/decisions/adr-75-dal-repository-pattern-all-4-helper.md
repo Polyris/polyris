@@ -1,4 +1,8 @@
-# ADR #75 — DAL repository pattern for all 4 helper Lambdas (v0.79.3)
+---
+area: engine
+accepted: 2026-05-27
+---
+# ADR #75 — DAL repository pattern for all 4 helper Lambdas
 
 #### Context
 

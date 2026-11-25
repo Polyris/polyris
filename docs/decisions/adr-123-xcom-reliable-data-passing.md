@@ -1,4 +1,8 @@
-# ADR-123: XCom reliable data passing — separate input record, `xcom.push()` for service tasks
+---
+area: engine
+accepted: 2026-09-11
+---
+# ADR #123 — XCom reliable data passing — separate input record, `xcom.push()` for service tasks
 
 Date: 2026-09-11
 Status: Accepted

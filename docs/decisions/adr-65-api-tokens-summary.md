@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-05-27
+---
 # ADR #65 — API Tokens (PAT) & Auth Enforcement
 
 > Full record: [`adr-65-api-tokens-and-auth-enforcement.md`](./adr-65-api-tokens-and-auth-enforcement.md).

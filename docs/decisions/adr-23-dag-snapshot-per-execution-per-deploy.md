@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #23 — DAG Snapshot Per Execution (not per deploy)
 
 **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** A run's graph comes from the spec version its run row names, which never changes; new runs write no snapshot. The console reads the snapshots of runs started before 1.3 until 1.4. Lookup: the run's spec version (a 1.2 run's snapshot) → the registry's version → inferred.

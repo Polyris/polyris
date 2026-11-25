@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-08-17
+---
 # ADR #117 — Trigger rules trimmed from 11 to 5
 
 > **Superseded by [ADR #138](adr-138-trigger-rules-after-run-end-change.md) (1.3).** Its premise, that a confirmed failure cancels the run, is gone (ADR #137), so its groups of names and its hints no longer hold. Kept as the record of the five-rule design.

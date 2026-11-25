@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-05-29
+---
 # ADR #89 — Upstream smart-fill — deferred-risk register (no-surprises contract)
 
 #### Status

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-31
+---
 # ADR #94 — BackfillUpstream + backfill error-code registry onto the generated SSoT
 
 #### Status

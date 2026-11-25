@@ -1,3 +1,8 @@
+---
+area: engine
+accepted: 2026-11-12
+supersedes: "#122, #128"
+---
 # ADR #130 — Coordination layer: one reconciler, facts as state, stream-driven hints
 
 > **Status:** ACCEPTED (2026-11-12), revision 9 (2026-11-13: one owner per task row, by generation, §2.1; 2026-11-14: the Lambdas import the coordination package from the SDK, §10; 2026-11-14, after an external review: a push is judged as of its fact, §4, §6.1, Rule 55; a zombie's run is told, §3 step 3, ADR #135; invariant 10; 2026-11-14: engine health is a System pill with findings, not a banner, and `/api/health` shows its details only to a verified caller, §9). Implemented on `feat/coordination-reconciler` for v1.2.0.

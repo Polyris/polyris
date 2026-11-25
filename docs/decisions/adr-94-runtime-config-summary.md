@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-31
+---
 # ADR #94 — Runtime config precedence (window-first)
 
 > Full record: [`adr-94-runtime-config-precedence.md`](./adr-94-runtime-config-precedence.md).

@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-02-24
+---
 # ADR #24 — Pulumi Dynamic Provider for Pipeline Lifecycle (not EventBridge)
 
 **Superseded — the Pulumi Dynamic Provider was replaced by `polyris-deploy` (SAM/CFN + direct DynamoDB `UpdateItem`) in the current release. See [REGISTRATION.md](../features/REGISTRATION.md) for the current mechanism.**

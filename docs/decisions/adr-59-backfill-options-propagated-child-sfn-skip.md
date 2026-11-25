@@ -1,4 +1,8 @@
-# ADR #59 — Backfill options propagated to child SFN — skip_tasks, force, cascade_all, suppress_asset_event (v0.78.0)
+---
+area: engine
+accepted: 2026-05-20
+---
+# ADR #59 — Backfill options propagated to child SFN — skip_tasks, force, cascade_all, suppress_asset_event
 
 #### Context
 

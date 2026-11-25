@@ -1,4 +1,8 @@
-# ADR #53 — Cost Preview Methodology — formula, sources, accuracy disclaimer (v0.78.0)
+---
+area: console-api
+accepted: 2026-05-20
+---
+# ADR #53 — Cost Preview Methodology — formula, sources, accuracy disclaimer
 
 #### Context
 

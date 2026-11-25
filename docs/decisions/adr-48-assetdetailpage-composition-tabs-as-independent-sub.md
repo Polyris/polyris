@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-08
+---
 # ADR #48 — AssetDetailPage Composition — Tabs as Independent Sub-Components
 
 **Status:** Adopted in v0.75.8.

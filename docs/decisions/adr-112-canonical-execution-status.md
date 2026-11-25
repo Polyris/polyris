@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-08-17
+---
 # ADR #112 — Canonical execution-status derivation and reconciliation
 
 > **Status:** ACCEPTED — implementation in progress. Establishes a single canonical

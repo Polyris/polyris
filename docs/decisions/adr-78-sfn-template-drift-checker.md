@@ -1,4 +1,8 @@
-# ADR #78 — SFN template drift checker (v0.79.6)
+---
+area: process
+accepted: 2026-05-27
+---
+# ADR #78 — SFN template drift checker
 
 #### Context
 

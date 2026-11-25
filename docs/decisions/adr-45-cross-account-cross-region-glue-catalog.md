@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-04
+---
 # ADR #45 — Cross-Account / Cross-Region Glue Catalog Support
 
 **Status:** Adopted in v0.75.1.

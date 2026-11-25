@@ -1,4 +1,8 @@
-# ADR #63 — Backfill detail → pipeline DAG navigation (v0.78.2)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #63 — Backfill detail → pipeline DAG navigation
 
 #### Context
 

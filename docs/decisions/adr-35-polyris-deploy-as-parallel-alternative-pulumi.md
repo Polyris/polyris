@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #35 — `polyris-deploy` as a Parallel Alternative to Pulumi
 
 **Context:** Pulumi requires a separate CLI, account, and state backend. For new users this is an additional barrier.

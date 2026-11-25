@@ -1,3 +1,9 @@
+---
+area: engine
+accepted: 2026-11-17
+supersedes: "#116, #117, and in part #114, #115"
+amends: "#115"
+---
 # ADR #138 — Trigger rules after the run-end change: nine rules over final outcomes
 
 > **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 7 (2026-11-23: the public `FAILURE_STATUSES` keeps its members, and the engine counts `stopped` as a final failure through its own set; revision 6, 2026-11-17, together with revision 7 of ADR #137: an action on a stopped task counts until a dependant is decided, through the run row's `run_version`). Target release: 1.3.0.

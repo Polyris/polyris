@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #4 — Asset-Based Orchestration (not ExternalTaskSensor)
 
 **Decision:** Implement asset triggers.

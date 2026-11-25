@@ -1,4 +1,8 @@
-# ADR #51 — Backfill Unification — one concept, one endpoint, one bulk-run SFN (v0.78.0)
+---
+area: engine
+accepted: 2026-05-20
+---
+# ADR #51 — Backfill Unification — one concept, one endpoint, one bulk-run SFN
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** A backfill record carries a `date`, and lives while its backfill runs and 90 days after, instead of 30 days from its creation.
 

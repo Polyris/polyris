@@ -172,11 +172,8 @@ Any string written in one artifact and read verbatim in another must have a pari
 
 Examples: `_PUSH_MARKER_FIELD` written by `xcom.push()`, read by SFN template — parity in `test_xcom_coupled_constants_parity.py`. The upstreams whose output a task reads — `run_task`'s `Items` and `xcom._readable` — `test_the_set_run_task_reads_is_the_set_xcom_reads`: an allowlist on both sides, never a list of refusals on one (`_readable` refused only failures and rule skips, and read an older run's output of the date for an upstream that still ran; the review of TR-5). Marker fields `_manually_resolved`/`_resolution`/`_reason`/`_operator` — same test. `SCHEDULE_PRESETS` ↔ `infer_cron_cadence` — `TestSchedulePresetsParity` in `test_granularity.py`. Generated enums covered by `codegen --check`.
 
-**29. adr-index.md count must match its row count**
-`docs/decisions/adr-index.md` opens with "_N rows indexed_". When you add or remove an ADR, update the count in the same commit:
-```bash
-grep -Ec "^\| [0-9]+ \| " docs/decisions/adr-index.md
-```
+**29. Every ADR number resolves, and a cited section exists**
+`docs/decisions/README.md` is the index: its table of ADRs in force is generated from each file's front matter (`python scripts/adr_index.py`); a retired number keeps a row naming its successor and the command that prints its old text. `tests/docs/test_adr_refs.py`, `test_adr_sections.py` and `test_adr_index.py` check every citation, cited section and row. Never renumber or reuse a number, and never drop or renumber a section something cites: leave a one-line pointer.
 
 **30. Date-scoped DDB rows are shared across same-date runs — gate UI reads on settled state**
 Rows keyed by `(pipeline, task, DATE)` — `output#*`, `input#*`, manual-resolution markers — are shared across every same-date run. A UI that renders such a row unconditionally shows a prior run's content when the current task isn't settled yet.

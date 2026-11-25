@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #17 — Task Output: Truncate vs S3 Claim Check
 
 **Decision:** Truncate large outputs (200KB limit per task) instead of implementing S3 claim check pattern.

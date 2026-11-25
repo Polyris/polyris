@@ -1,4 +1,8 @@
-# ADR #52 — Pipeline Granularity — runtime cron cadence inference, no DSL change (v0.78.0)
+---
+area: sdk
+accepted: 2026-05-20
+---
+# ADR #52 — Pipeline Granularity — runtime cron cadence inference, no DSL change
 
 #### Context
 

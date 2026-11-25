@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #15 — Upstream Read-Time Truncation (25KB per dependency)
 
 **Decision:** Truncate each dependency output to 25KB when reading for downstream, not when writing.

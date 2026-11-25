@@ -21,7 +21,7 @@ DOCS_DIR = REPO_ROOT / "docs"
 
 # Historical / frozen docs — allowed to reference removed symbols, dead
 # paths, obsolete flags. `adr-[0-9]*.md` matches only numbered ADR files;
-# `adr-index.md` is the live index (Principle #29) and must stay audited.
+# `docs/decisions/README.md` is the live index (Principle #29) and must stay audited.
 DEFAULT_SKIP_GLOBS = (
     "docs/decisions/adr-[0-9]*.md",
     "docs/design/SPIKE_*.md",

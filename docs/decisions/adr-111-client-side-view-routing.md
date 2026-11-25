@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-08-17
+---
 # ADR #111 — Client-side view routing via the History API
 
 > **Status:** ACCEPTED — implemented. Navigation between top-level views is now

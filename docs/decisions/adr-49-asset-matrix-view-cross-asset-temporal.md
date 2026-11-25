@@ -1,4 +1,8 @@
-# ADR #49 — Asset Matrix View — Cross-asset temporal grid (v0.76.0)
+---
+area: ui
+accepted: 2026-05-12
+---
+# ADR #49 — Asset Matrix View — Cross-asset temporal grid
 
 **Context.** Recurring operator feedback (per tech-lead interviews from
 Feb 2026) asks for a "global picture of assets across time" — answer to

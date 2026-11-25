@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-02-24
+---
 # ADR #1 — Alerts Configured in the UI, Not the DSL
 
 **Decision:** Failure-alert delivery (Slack, PagerDuty) is configured per pipeline

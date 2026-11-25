@@ -1,4 +1,8 @@
-# ADR #71 — ExecutionStatus case normalization (v0.78.14)
+---
+area: sdk
+accepted: 2026-05-27
+---
+# ADR #71 — ExecutionStatus case normalization
 
 #### Context
 

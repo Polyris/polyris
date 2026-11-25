@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-02
+---
 # ADR #31 — Removal of `config.arn()` and `[tool.polyris.accounts]`
 
 **Context:** `config.arn()` constructed Step Function ARNs from account IDs in `pyproject.toml`.

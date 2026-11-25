@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-05-02
+---
 # ADR #30 — SSM Parameter Store instead of Terraform Remote State for Pipeline Configuration
 
 **Context:** Pulumi pipelines require ARNs of shared infrastructure (wrapper SFN, DynamoDB tables, IAM role).

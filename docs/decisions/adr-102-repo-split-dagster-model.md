@@ -1,3 +1,8 @@
+---
+area: open-core
+accepted: by 2026-08-17
+amends: "#98"
+---
 # ADR #102 — Repo split (Dagster model): public core repo + private paid repo
 
 > **Status:** ACCEPTED — aligned. Timing: split **now**, before first public

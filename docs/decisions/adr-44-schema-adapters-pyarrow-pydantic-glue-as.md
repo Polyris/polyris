@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-03
+---
 # ADR #44 — Schema Adapters: pyarrow / pydantic / Glue as `Asset.from_*` Constructors
 
 **Decision:** Three classmethod constructors on `Asset` accept external

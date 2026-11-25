@@ -1,4 +1,8 @@
-# ADR #84 — SDK / shared-constants delivery to Lambdas — guarded copy now, PyPI later (v0.80.0)
+---
+area: deploy
+accepted: 2026-05-28
+---
+# ADR #84 — SDK / shared-constants delivery to Lambdas — guarded copy now, PyPI later
 
 #### Status
 

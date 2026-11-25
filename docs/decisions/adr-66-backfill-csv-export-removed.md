@@ -1,4 +1,8 @@
-# ADR #66 — Export CSV removed from BackfillDetailPage (v0.78.7)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #66 — Export CSV removed from BackfillDetailPage
 
 #### Context
 

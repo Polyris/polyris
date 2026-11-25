@@ -1,4 +1,8 @@
-# ADR #81 — Zombie-backfill reconciliation unblocks the concurrency guard (v0.79.9)
+---
+area: engine
+accepted: 2026-05-28
+---
+# ADR #81 — Zombie-backfill reconciliation unblocks the concurrency guard
 
 #### Context
 

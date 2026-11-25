@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-02
+---
 # ADR #40 — Responsive Layout: Flex Chains, No Viewport Magic Numbers
 
 **Decision:** UI layout uses flex/grid chains for height inheritance. Mobile responsiveness is mandatory across all views via `_mobile.css` overrides or per-component `@media` queries.

@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-31
+---
 # ADR #94 — Runtime config precedence (window.CONFIG over baked NEXT_PUBLIC_*)
 
 > **Status:** Accepted — implemented in v0.89.5. Fixes the auth-header bug behind

@@ -1,4 +1,8 @@
-# ADR #68 — Backfill UX/DX bundle — partial ratio, retry chain, notification source (v0.78.11)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #68 — Backfill UX/DX bundle — partial ratio, retry chain, notification source
 
 #### Context
 

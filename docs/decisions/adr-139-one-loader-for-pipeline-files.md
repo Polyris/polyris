@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-11-18
+---
 # ADR #139 — One loader runs a pipeline file for every command
 
 **Context.** Until 1.2.2, `polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` each ran a pipeline file with a loader of their own and found its DAGs by a rule of their own, so a file could pass validate and then fail to deploy — `with DAG("x"):` without `as` (backlog F18) was the first of several such files. `--all` also had two rules for which files to load: validate searched every folder and matched files by name, deploy loaded every `.py` one folder down, Glue scripts included. Patching each case failed review after review (Principle #42), so every rule below rests on a fact of the code or of Python, not on a guess.

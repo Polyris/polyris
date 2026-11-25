@@ -1,4 +1,8 @@
-# ADR #54 — Bulk-Backfill SFN — Standard, Map-based, fire-and-wait architecture (v0.78.0)
+---
+area: engine
+accepted: 2026-05-20
+---
+# ADR #54 — Bulk-Backfill SFN — Standard, Map-based, fire-and-wait architecture
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** `bulk_backfill` waits for each run as long as the run lives, not 24 hours.
 

@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-11-12
+---
 # ADR #124 — `polyris-build-lambda`: stamp XCom helpers into Lambda handler directories
 
 **Context.** Lambda functions that participate in xcom (`xcom.push`, `xcom.get`, `xcom.pull`) need the `polyris.xcom` module available at runtime. The standard path is `pip install polyris` via a `requirements.txt` in the Lambda directory, which works but requires a network-accessible PyPI or a VPC endpoint. Teams building Lambda zip packages in air-gapped or locked-down environments, or that want to minimise the zip size to the absolute minimum (xcom.py is self-contained — only stdlib + boto3, which is already in the Lambda runtime), prefer to vendor just the helper.

@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #98 — Open-core split structure (proprietary roots, no symlink)
 
 > **Status:** Accepted — fully implemented. SDK split (`polyris/ai/` →

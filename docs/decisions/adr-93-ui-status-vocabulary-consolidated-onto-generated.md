@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-05-29
+---
 # ADR #93 — UI status vocabulary consolidated onto generated enums (single source)
 
 #### Status

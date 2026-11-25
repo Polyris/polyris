@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-05-03
+---
 # ADR #42 — Asset Schema 2.0: Typed `Column` Class with Platform-Agnostic Type System
 
 **Decision:** Asset schemas are declared with a typed `Column` class and

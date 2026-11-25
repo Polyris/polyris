@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-11-12
+---
 # ADR #128 — `mark_success` wakes `wait_for` subscribers via direct Lambda invoke
 
 > **Superseded by [ADR #130](adr-130-coordination-reconciler.md).** `mark_success` now only writes the asset fact; the asset-events stream wakes every consumer, so no writer invokes a notifier directly. Do not use as reference. Kept for git-history readability only.

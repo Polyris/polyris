@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #104 — Open-core CLI split, backfill nav-tab slot, and contract-drift cleanup
 
 **Context.** The open-source build advertised and partially wired Team-tier

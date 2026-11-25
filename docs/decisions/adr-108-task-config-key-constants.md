@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-08-17
+---
 # ADR #108 — `TaskConfigKey`: shared constants for the SDK↔wrapper `task_config` contract
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §8, §9 (1.3.0).** The contract runs from the SDK through the task spec to `run_task`, whose input the dispatcher builds.

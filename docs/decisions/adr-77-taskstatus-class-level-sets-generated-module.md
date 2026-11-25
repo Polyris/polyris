@@ -1,4 +1,8 @@
-# ADR #77 — TaskStatus class-level sets → generated module-level (v0.79.5)
+---
+area: sdk
+accepted: 2026-05-27
+---
+# ADR #77 — TaskStatus class-level sets → generated module-level
 
 #### Context
 

@@ -1,3 +1,7 @@
+---
+area: open-core
+accepted: by 2026-08-17
+---
 # ADR #110 — Task & execution intervention moved from Team to free; config mutation stays paid
 
 > **Status:** ACCEPTED — implemented. Re-classifies existing routes/handlers

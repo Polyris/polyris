@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-08-17
+---
 # ADR #109 — Unified common parameters for `@task.<type>` decorators (`CommonTaskKwargs`)
 
 > **Status:** ACCEPTED — implemented. Caller-visible behavior is unchanged for

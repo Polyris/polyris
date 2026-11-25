@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-02-24
+---
 # ADR #28 — Specific Exception Types in Route Handlers
 
 **Decision:** Route handlers use `except (ClientError, BotoCoreError)` instead of `except Exception`. Broad `except Exception` only at route-level top-level handlers.

@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-05-29
+---
 # ADR #90 — Upstream smart-fill Phase 3 — tiered SFN execution (nested Map + tier gate)
 
 #### Status

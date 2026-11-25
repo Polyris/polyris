@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-11-12
+---
 # ADR #127 — Pre-deploy resource override check in `polyris-deploy`
 
 **Context.** The existence check (ADR #126) verifies that referenced AWS resources exist. A second class of deploy-time problem exists: a task may reference a resource that exists but whose current default configuration silently differs from the values declared in the DAG. For example, a Glue job's default `WorkerType` may be `G.1X` while the DAG declares `G.2X`; a Batch job definition may list an argument in `NonOverridableArguments` that the DAG passes, causing Glue to silently ignore it at runtime. These divergences produce no error — they are silent runtime overrides that are only discovered during execution.

@@ -1,4 +1,8 @@
-# ADR #85 — Fix skip-task JSONata (`$contains` on array) + evaluate template JSONata in CI (v0.80.1)
+---
+area: engine
+accepted: 2026-05-28
+---
+# ADR #85 — Fix skip-task JSONata (`$contains` on array) + evaluate template JSONata in CI
 
 #### Symptom
 

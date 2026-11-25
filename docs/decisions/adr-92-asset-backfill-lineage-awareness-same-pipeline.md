@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-05-29
+---
 # ADR #92 — Asset backfill lineage-awareness (same-pipeline frontier) + correction of ADR #88
 
 #### Status

@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-02-24
+---
 # ADR #9 — Pulumi for Pipelines, Terraform for Shared
 
 > **SUPERSEDED — Pulumi removed.** Pipelines now deploy via `polyris-deploy`

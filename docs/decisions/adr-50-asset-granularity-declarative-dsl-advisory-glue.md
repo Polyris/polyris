@@ -1,4 +1,8 @@
-# ADR #50 — Asset Granularity — declarative DSL + advisory Glue auto-detect + drift detection (v0.77.0)
+---
+area: sdk
+accepted: 2026-05-18
+---
+# ADR #50 — Asset Granularity — declarative DSL + advisory Glue auto-detect + drift detection
 
 **Status:** Accepted.
 **Date:** May 2026.

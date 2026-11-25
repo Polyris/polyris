@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #2 — SFN-Based Dependency Notification (not polling, not EventBridge)
 
 > **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §1, §7 (1.3.0).** Dependencies are no longer resolved through `notify_dependents` and task tokens: the dispatcher decides each task row from its upstreams' rows, woken by the tasks table's stream.

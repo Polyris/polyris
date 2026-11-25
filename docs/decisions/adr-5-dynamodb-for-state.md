@@ -1,3 +1,7 @@
+---
+area: engine
+accepted: by 2026-02-24
+---
 # ADR #5 — DynamoDB for State (not Step Functions native, not CloudWatch metrics)
 
 **Decision:** Track task state in DynamoDB, not rely on SFN execution state or CloudWatch metrics.

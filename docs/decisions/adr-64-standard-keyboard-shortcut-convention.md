@@ -1,4 +1,8 @@
-# ADR #64 — Standard keyboard shortcut convention (v0.78.3)
+---
+area: ui
+accepted: 2026-05-27
+---
+# ADR #64 — Standard keyboard shortcut convention
 
 #### Context
 

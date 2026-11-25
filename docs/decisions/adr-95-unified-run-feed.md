@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-06-01
+---
 # ADR #95 — Unified Run/Activity feed — Backfills as first-class rows in `/api/runs`
 
 #### Status

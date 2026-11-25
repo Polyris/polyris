@@ -1,4 +1,8 @@
-# ADR #82 — Derived-status premature-terminal fix + backfill audit (v0.79.10)
+---
+area: engine
+accepted: 2026-05-28
+---
+# ADR #82 — Derived-status premature-terminal fix + backfill audit
 
 #### Context
 

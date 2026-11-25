@@ -1,3 +1,7 @@
+---
+area: console-api
+accepted: by 2026-11-17
+---
 # ADR #136 — The pipelines list says what its statuses rest on, and groups only what a DAG names
 
 > **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** Decisions 3 and 5 are superseded: the list reads the run rows of the last 14 start days from `run-start-index`, each run's status and `waiting_on` from its run row's summary, and asks Step Functions nothing about a run; the engine keeps the run row true. `stats_incomplete` now means a start day that could not be read, and `index_building` says that DynamoDB is still building the index after an upgrade. A running latest run carries the count of its failed tasks (`failed_tasks`), and such a pipeline is pinned under **Needs attention** too. The API is otherwise unchanged.

@@ -1,3 +1,7 @@
+---
+area: deploy
+accepted: by 2026-11-14
+---
 # ADR #132 — Billing tags: one `polyris:` set on every resource AWS can tag
 
 **Context.** Each kind of resource had its own tags. The Lambda functions had five (`Environment`, `Stack`, `Stage`, `Namespace`, `ManagedBy`), the tables and buckets three to five, and the 13 state machines, 17 log groups and most IAM roles none. A pipeline's resources had `Pipeline`, `Stage`, `Namespace`, `ManagedBy` and `Name`, its scheduler role only two of them. Nothing checked them, so a cost report filtered by tag missed most of the platform, and an IAM condition on `aws:ResourceTag/Namespace` matched only some resources.

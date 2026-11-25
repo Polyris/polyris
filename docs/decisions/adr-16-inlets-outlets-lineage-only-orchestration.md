@@ -1,3 +1,7 @@
+---
+area: sdk
+accepted: by 2026-02-24
+---
 # ADR #16 — Inlets/Outlets for Lineage Only (not orchestration)
 
 **Decision:** `inlets` and `outlets` are metadata for lineage tracking. They do not affect task execution, skipping, or scheduling.

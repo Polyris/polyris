@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-02-24
+---
 # ADR #7 — Code Splitting for UI Bundle
 
 **Decision:** Split vendor chunks (React, ReactFlow).

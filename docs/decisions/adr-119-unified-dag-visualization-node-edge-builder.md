@@ -1,3 +1,7 @@
+---
+area: ui
+accepted: by 2026-08-17
+---
 # ADR #119 — Unified DAG visualization node/edge builder
 
 **Context.** Two independent implementations built (nodes, edges) for DAG visualization:
