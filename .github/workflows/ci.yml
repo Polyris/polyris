@@ -11,7 +11,7 @@ jobs:
   # Python Tests & Linting
   # ============================================
   python:
-    name: Python ${{ matrix.python-version }}
+    name: ${{ matrix.python-version == '3.12' && 'Checks and tests' || 'Checks' }} (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -127,6 +127,7 @@ jobs:
           path: .coverage.${{ matrix.part }}
           include-hidden-files: true
           if-no-files-found: error
+          overwrite: true
 
   coverage:
     name: Core coverage floor
@@ -141,10 +142,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      # Combining and reporting read the parts, the sources and pyproject.toml; no package install.
+      - name: Install coverage
+        run: pip install "coverage[toml]"
 
       - uses: actions/download-artifact@v4
         with:

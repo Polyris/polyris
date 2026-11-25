@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes test-cov test-cov-sdk test-cov-scenarios test-cov-backend coverage-reporte2e-health e2e-smoke e2e-coordination e2e-coordination-clean check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes test-cov test-cov-sdk test-cov-scenarios test-cov-backend coverage-report e2e-health e2e-smoke e2e-coordination e2e-coordination-clean check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
