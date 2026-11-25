@@ -286,7 +286,6 @@ def test_the_end_of_an_execution_wakes_the_dispatcher_through_its_rule(resources
     """ADR #137 §7: an abnormal end of run_task or of a pipeline, not by the engine's own stop, on the default bus;
     the dispatcher, through a permission scoped to the rule. No queue, DLQ or retry policy (Principle #45)."""
     import dispatcher
-    from coordination_testkit import RUN_TASK_ARN
 
     rule = resources["ExecutionEndRule"]["Properties"]
     assert rule["Name"] == {"!Sub": "${Namespace}-${Stage}-polyris-execution-end"}
@@ -298,8 +297,7 @@ def test_the_end_of_an_execution_wakes_the_dispatcher_through_its_rule(resources
         "detail": {
             "status": ["ABORTED", "FAILED", "TIMED_OUT"],
             "error": [None, {"anything-but": dispatcher.STOPPED_ERROR}],
-            "stateMachineArn": [RUN_TASK_ARN["!Sub"],
-                                {"wildcard": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"}],
+            "stateMachineArn": [{"wildcard": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"}],
         },
     }
     assert resources["ExecutionEndPermission"]["Properties"] == {
@@ -312,7 +310,9 @@ def test_the_rule_names_the_run_task_the_dispatcher_tells_apart(resources):
     from coordination_testkit import RUN_TASK_ARN
 
     assert resources["ReconcileFunction"]["Properties"]["Environment"]["Variables"]["RUN_TASK_ARN"] == RUN_TASK_ARN
-    assert RUN_TASK_ARN["!Sub"] in _rule_pattern(resources)["detail"]["stateMachineArn"]
+    # One wildcard takes the pipelines and the run_task machine alike: its name has "-polyris-" in it.
+    [wildcard] = _rule_pattern(resources)["detail"]["stateMachineArn"]
+    assert wildcard["wildcard"].endswith(":stateMachine:*-polyris-*") and "-polyris-" in RUN_TASK_ARN["!Sub"]
 
 
 def test_the_dispatcher_starts_the_run_task_machine_by_its_name(resources):

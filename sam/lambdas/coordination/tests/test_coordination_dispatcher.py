@@ -930,9 +930,26 @@ def test_an_input_that_cannot_be_described_is_dropped_or_tried_again(world):
     event = run_task_ended("extract", input=None)
     world.sfn.errors["describe_execution"] = client_error("AccessDeniedException", "DescribeExecution")
     assert on_end(world, event)["action"] == "ignored"
+    # Not transient: the bell shows it (Principle #38); no run is known yet, so it names none.
+    [warning] = warnings(world)
+    assert "AccessDeniedException" in warning["error"] and "pipeline_name" not in warning
     world.sfn.errors["describe_execution"] = client_error("ThrottlingException", "DescribeExecution")
     with pytest.raises(CoordinationTransient):
         on_end(world, event)
+    assert len(warnings(world)) == 1                                     # a transient error warns nothing
+
+
+def test_an_end_that_describe_execution_does_not_show_yet_leaves_the_row_its_own_check(world):
+    """DescribeExecution is eventually consistent: right after the end it may still say RUNNING. The event's
+    check then writes nothing, so the row's check comes as it would without the event (§7)."""
+    started_running(world)
+    world.sfn.executions[run_task_execution("extract")] = {"status": "RUNNING"}
+    before = item(world, key("extract"))
+    on_end(world, run_task_ended("extract"))
+    after = item(world, key("extract"))
+    assert after["status"] == "running" and world.sfn.described == [run_task_execution("extract")]
+    assert {k: after.get(k) for k in ("last_check", "checks", "due")} == \
+        {k: before.get(k) for k in ("last_check", "checks", "due")}
 
 
 def test_rows_of_an_ended_run_task_that_cannot_be_read_are_left_to_their_check(world, monkeypatch):

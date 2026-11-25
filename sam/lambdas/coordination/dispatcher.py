@@ -302,6 +302,10 @@ class Dispatcher:
                 failures.reraise_transient(exc)
                 log.error("dispatcher", "the input of an ended run_task could not be read; its check finds it",
                           execution=arn, error=str(exc))
+                # Not transient, such as AccessDenied: the bell shows it (Principle #38). No row is known yet,
+                # so the warning names the execution alone.
+                self._warn_unscoped(subject=f"{detail.get('name') or arn}-input",
+                                    error=f"the input of the ended run_task execution {arn} could not be read: {exc}")
                 return None
         try:
             payload = json.loads(text) if isinstance(text, str) else None
@@ -607,7 +611,12 @@ class Dispatcher:
                 execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
                                            state.run, subject=row.key)
                 if execution is not None:              # an unknown state judges nothing (invariant 10)
-                    return dispatch.liveness(row, state.run, now=state.now, execution=execution)
+                    judgment = dispatch.liveness(row, state.run, now=state.now, execution=execution)
+                    # DescribeExecution is eventually consistent: right after the end it may still say RUNNING.
+                    # A check the event alone brought writes only an end or a start, never a check that backs
+                    # the row's own one off: the row keeps the check it had without the event (§7).
+                    if state.check or judgment.transition is not None or judgment.start:
+                        return judgment
         upstreams = {d: state.rows.get(d) for d in row.dependencies}
         assets = None
         if dispatch.needs_assets(row, upstreams):
@@ -1032,6 +1041,17 @@ class Dispatcher:
             pipeline_name=str(item.get(task_row.PIPELINE) or run.pipeline), pipeline_execution=run.execution,
             task_date=run.date, error=error, now=self.clock())
         log.error("dispatcher", "warning", run=run.key, subject=subject, error=error)
+        self._put_warning(warning, subject)
+
+    def _warn_unscoped(self, *, subject: str, error: str) -> None:
+        """A warning before any run is known; ``warning_item`` leaves the unknown context out."""
+        warning = records.warning_item(
+            kind=WarningKind.COORDINATION, execution_name=subject, task_name="", pipeline_name="",
+            pipeline_execution="", task_date="", error=error, now=self.clock())
+        log.error("dispatcher", "warning", subject=subject, error=error)
+        self._put_warning(warning, subject)
+
+    def _put_warning(self, warning: Mapping[str, Any], subject: str) -> None:
         try:
             self.client.put_item(TableName=self.tokens_table,
                                  Item={k: _serializer.serialize(v) for k, v in warning.items()})

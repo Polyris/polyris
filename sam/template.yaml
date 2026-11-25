@@ -1270,7 +1270,7 @@ Resources:
   # check. The engine's own stops end with Polyris.Stopped (dispatcher.STOPPED_ERROR) and make no event; an
   # execution stopped without an error has "error": null, which the pattern names, since the docs leave
   # anything-but on null unstated. Pipelines by wildcard: a pipeline takes the namespace and stage of its own
-  # config.py (D137). A JSON string: CloudFormation refuses null in YAML. No queue, DLQ or failure destination
+  # config.py (D137), and the run_task machine's name matches too. A JSON string: CloudFormation refuses null in YAML. No queue, DLQ or failure destination
   # (Principle #45).
   ExecutionEndRule:
     Type: AWS::Events::Rule
@@ -1278,7 +1278,7 @@ Resources:
       Name: !Sub "${Namespace}-${Stage}-polyris-execution-end"
       Description: Wakes the polyris dispatcher when a run_task or pipeline execution ends without a write
       State: ENABLED
-      EventPattern: !Sub '{"source": ["aws.states"], "detail-type": ["Step Functions Execution Status Change"], "detail": {"status": ["ABORTED", "FAILED", "TIMED_OUT"], "error": [null, {"anything-but": "Polyris.Stopped"}], "stateMachineArn": ["arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper", {"wildcard": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"}]}}'
+      EventPattern: !Sub '{"source": ["aws.states"], "detail-type": ["Step Functions Execution Status Change"], "detail": {"status": ["ABORTED", "FAILED", "TIMED_OUT"], "error": [null, {"anything-but": "Polyris.Stopped"}], "stateMachineArn": [{"wildcard": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"}]}}'
       Targets:
         - Id: dispatcher
           Arn: !GetAtt ReconcileFunction.Arn
