@@ -168,7 +168,8 @@ def _generate_cfn_template(
         "DependsOn": "PipelineLogGroup",
     }
 
-    # EventBridge schedule (time-based) — via EventBridge Scheduler
+    # EventBridge schedule (time-based) — via EventBridge Scheduler, which starts the
+    # pipeline's state machine directly (ADR #55)
     # (AWS::Scheduler::Schedule), not the classic AWS::Events::Rule, which
     # AWS's own console now labels "legacy" in favor of Scheduler.
     if dag.schedule and not dag.is_asset_triggered:

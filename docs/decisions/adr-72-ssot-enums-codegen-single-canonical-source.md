@@ -25,7 +25,7 @@ checked backend↔backend; frontend drift was not caught. Real bugs from
 this shape:
 - ExecutionStatus mixed-case mess (closed by ADR #71 v0.78.14)
 - "Active" → "Running" rename had to be coordinated in three places
-  (closed by ADR #70 v0.78.13)
+  (closed in v0.78.13)
 - A new enum value required editing 4 files and praying nothing was
   missed
 

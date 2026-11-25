@@ -33,8 +33,6 @@ COLLIDING: dict[int, tuple[str, ...]] = {
     107: ("retry loop", "notifications"),
     108: ("TaskConfigKey", "runs feed"),
 }
-# Collisions that end when the inline copies leave this repository.
-LEAVING_COLLISIONS = {66}
 # How far after a colliding number its slug word may stand.
 SLUG_WINDOW = 80
 

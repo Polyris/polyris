@@ -132,17 +132,12 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#7](adr-7-code-splitting-ui-bundle.md) | Code Splitting for UI Bundle | by 2026-02-24 |
 | [#40](adr-40-responsive-layout-flex-chains-no-viewport.md) | Responsive Layout: Flex Chains, No Viewport Magic Numbers | by 2026-05-02 |
 | [#41](adr-41-url-routing-cloudfront-function-window-history.md) | URL Routing: CloudFront Function + window.history for Deep State | by 2026-05-03 |
-| [#48](adr-48-assetdetailpage-composition-tabs-as-independent-sub.md) | AssetDetailPage Composition — Tabs as Independent Sub-Components | by 2026-05-08 |
 | [#49](adr-49-asset-matrix-view-cross-asset-temporal.md) | Asset Matrix View — Cross-asset temporal grid | 2026-05-12 |
 | [#61](adr-61-task-subset-selection-backfill-ui.md) | Task-subset selection in backfill UI | 2026-05-22 |
 | [#63](adr-63-backfill-detail-pipeline-dag-navigation.md) | Backfill detail → pipeline DAG navigation | 2026-05-27 |
 | [#64](adr-64-standard-keyboard-shortcut-convention.md) | Standard keyboard shortcut convention | 2026-05-27 |
 | [#65](adr-65-view-sync.md) | Top-level view registration — three-place sync | 2026-05-27 |
-| [#66](adr-66-backfill-csv-export-removed.md) | Export CSV removed from BackfillDetailPage | 2026-05-27 |
-| [#67](adr-67-client-side-derived-status-backfills.md) | Client-side derived status for backfills | 2026-05-27 |
 | [#68](adr-68-backfill-ux-dx-bundle-partial-ratio.md) | Backfill UX/DX bundle — partial ratio, retry chain, notification source | 2026-05-27 |
-| [#69](adr-69-derived-status-shared-util.md) | derivedStatus lifted to shared util + inline Cancel on list | 2026-05-27 |
-| [#70](adr-70-active-filter-renamed-running.md) | "Active" filter renamed to "Running"; narrowed to running-only | 2026-05-27 |
 | [#79](adr-79-backfill-icon-single-source-truth.md) | Backfill icon single source of truth | 2026-05-27 |
 | [#80](adr-80-backfill-modal-viewport-overflow-dead-css.md) | Backfill modal viewport overflow + dead CSS cleanup | 2026-05-28 |
 | [#86](adr-86-asset-centric-ux-over-task-dsl.md) | Product concept: asset-centric UX over an unchanged task-based DSL | by 2026-05-29 |

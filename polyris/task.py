@@ -290,7 +290,7 @@ class Task:
     doc_md: str = ""
     
     # Backfill behavior
-    skip_on_backfill: bool = False  # Skip this task during backfill runs
+    skip_on_backfill: bool = False  # Skip this task during backfill runs (ADR #12, ADR #60)
     
     # SFN-specific
     wait_before: Union[int, timedelta] = 0  # Wait before starting (seconds or timedelta)

@@ -53,7 +53,7 @@ def test_instructions_cite_no_retired_adr() -> None:
 
 def test_only_the_known_numbers_name_two_decisions() -> None:
     colliding = {n for n, adrs in _adr.load_adrs().items() if len(adrs) > 1}
-    allowed = set(_adr.COLLIDING) | _adr.LEAVING_COLLISIONS
+    allowed = set(_adr.COLLIDING)
     assert colliding <= allowed, (
         f"ADR numbers {sorted(colliding - allowed)} name two decisions; "
         "a new ADR takes the highest number + 1"
