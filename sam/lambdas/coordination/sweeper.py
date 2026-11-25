@@ -6,9 +6,11 @@ lease; a run that cannot take it exits. Within its budget it:
       attention index, run rows included, earliest first, and makes one full
       pass of the dispatcher over each of their runs, in its own process. The
       pass judges every row of the run from the row itself; the sweeper's
-      passes alone also judge the executions of the started rows and of the
-      run, and the engine stops a run whose execution ended before its answer
-      or that never became active (§4). The rows of a run whose run row is
+      passes also judge the executions of the started rows and of the run,
+      and the engine stops a run whose execution ended before its answer or
+      that never became active (§4). An execution's end on EventBridge makes
+      that check come at once for its own execution; a lost event leaves it
+      to this one (§7). The rows of a run whose run row is
       missing, such as those a 1.2 run left in flight, are stopped
       (invariant 11);
     * after each check moves the run row's due time on by the backoff (at most

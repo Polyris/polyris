@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Added
+
+- **A run whose execution ends without a write is stopped within seconds (ADR #137 §7).** A new EventBridge rule on the account's default bus, `polyris-execution-end`, sends the dispatcher the end of a pipeline or `run_task` execution that ended `ABORTED`, `TIMED_OUT` or `FAILED`, unless the engine stopped it itself. A run stopped in the AWS console, timed out, or failed before its answer is stopped with the cause at once, where it showed `running` until the sweeper's check, up to 35 minutes later. The event is a hint: the pass decides from the rows and `DescribeExecution`, and a lost event waits for that check. The dispatcher's role gains `states:DescribeExecution` on the executions of polyris state machines; a least-privilege installer role needs the `events` actions in [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md).
+
 ### Changed
 
 - CI runs the Python tests once per version instead of twice, each run in parallel processes (pytest-xdist, now in the `dev` extra): Python 3.11 runs them without coverage, Python 3.12 under coverage (measured through `sys.monitoring`, `COVERAGE_CORE=sysmon`), the mutation probes have a job of their own, and pip's downloads are cached between runs. `make test` and `make test-cov` still run the tests one after another locally.

@@ -21,6 +21,7 @@ from botocore.exceptions import ClientError
 
 from bindings import Bindings
 from boundary import Boundary, acting_as, as_component
+from event_bus import EventBus
 from platform_stack import Stack
 from row_invariants import CHECKS, STAGE_OF, liveness
 import rows_view
@@ -135,6 +136,9 @@ class World:
         #: The tasks table's stream, which wakes the dispatcher (ADR #137 §7); scenarios deliver it.
         self._tasks_stream = StreamAdapter.for_mapping(self.stack, "TasksDispatchMapping",
                                                        table="PipelineTokensTable", key="execution_name")
+        #: The end of an execution, which the template's rule sends to the dispatcher (ADR #137 §7). Its events
+        #: are delivered whenever the stack settles, as EventBridge delivers them within seconds.
+        self._execution_ends = EventBus.for_rule(self.stack, "ExecutionEndRule")
         #: The rows a pass may decide before its budget runs out (shrink_pass_budget); None: no limit.
         self._pass_rows: Optional[int] = None
         #: What ADR #137's invariants read that no table keeps (rows_view.py), and what they found.
@@ -211,6 +215,7 @@ class World:
         (row_invariants.py, stages.py) and that no template expression failed (D107). ADR #130's
         invariants retired with its engine (D115)."""
         self.runtime.run()
+        self._deliver_execution_ends()
         if self.tasks_stream_runs:
             self.deliver_task_hints()
         for violation in self.check_invariants():
@@ -341,10 +346,62 @@ class World:
         self.runtime.stop_execution(executionArn=found[0].arn, error="Console", cause="stopped by hand")
         self.settle()
 
-    def stop_run_externally(self, run: Run) -> None:
-        """Someone stops the run's own execution in the AWS console; the engine stops the run at its next check."""
-        self.runtime.stop_execution(executionArn=run.arn, error="Console", cause="stopped by hand")
+    def stop_run_externally(self, run: Run, *, error: str = "Console") -> None:
+        """Someone stops the run's own execution in the AWS console, with `error` or none (""); its end wakes the
+        engine, which stops the run, or its next check does when the event is lost."""
+        self.runtime.stop_execution(executionArn=run.arn, error=error, cause="stopped by hand" if error else "")
         self.settle()
+
+    # ── the end of an execution on EventBridge (ADR #137 §7) ───────────
+
+    def _deliver_execution_ends(self) -> None:
+        for _ in range(10_000):
+            if not self._execution_ends.deliver():
+                return
+            self.runtime.run()
+        raise AssertionError("the executions' ends never ran dry")
+
+    def _run_task_of(self, run: Run, task: str) -> Callable[[Dict[str, Any]], bool]:
+        name, helper = run.execution_name(task), self.stack.machine_arn("RunTaskHelperSfn")
+        execution = self.runtime.executions
+
+        def of_task(event: Dict[str, Any]) -> bool:
+            found = execution.get(event["detail"]["executionArn"])
+            return (found is not None and found.machine.arn == helper and isinstance(found.input, dict)
+                    and found.input.get("execution_name") == name)
+        return of_task
+
+    def lose_execution_end(self, run: Run, task: Optional[str] = None) -> None:
+        """The next end of `run`'s execution, or of `task`'s run_task, never reaches the dispatcher: EventBridge
+        delivers on a best-effort basis."""
+        if task is None:
+            self._execution_ends.drop(lambda event: event["detail"]["executionArn"] == run.arn)
+        else:
+            self._execution_ends.drop(self._run_task_of(run, task))
+
+    def execution_ends(self, run: Run, task: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The ends of `run`'s execution, or of `task`'s run_task executions, that reached the dispatcher."""
+        of = (lambda event: event["detail"]["executionArn"] == run.arn) if task is None else self._run_task_of(run, task)
+        return [event for event in self._execution_ends.delivered if of(event)]
+
+    def executions_ended(self, run: Run, task: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Every end of `run`'s execution, or of `task`'s run_task executions, that Step Functions sent to the
+        bus, whether the rule let it through or not."""
+        of = (lambda event: event["detail"]["executionArn"] == run.arn) if task is None else self._run_task_of(run, task)
+        return [event for event in self.runtime.events if of(event)]
+
+    def send_execution_end(self, event: Dict[str, Any]) -> Any:
+        """An end of an execution on the bus, from the test: one that comes again, or of another platform. Returns
+        what the dispatcher answered, or None when the rule did not let it through."""
+        if not self._execution_ends.publish(event):
+            return None
+        result = self._execution_ends.results[-1]
+        self.settle()
+        return result
+
+    def describes(self) -> List[Any]:
+        """Every DescribeExecution call the dispatcher made, with the source of the pass that made it."""
+        return list(self._observer.describes)
 
     def facts(self, asset: Any) -> List[Dict[str, Any]]:
         """The facts recorded for `asset`, oldest first."""
@@ -555,6 +612,7 @@ class World:
         self.boundary.heal()
         self._stream.heal()
         self._tasks_stream.heal()
+        self._execution_ends.heal()
         self._pass_rows = None
         for machine in list(self.runtime.held):
             self.runtime.release(machine)
@@ -640,6 +698,7 @@ class World:
         select = None if run is None else (lambda record: _run_of(record) == run.name)
         for _ in range(10_000):
             self.runtime.run()
+            self._deliver_execution_ends()
             if not self._tasks_stream.deliver(self._dispatch_in_budget, select=select):
                 return
         raise AssertionError("the tasks table's stream never ran dry")

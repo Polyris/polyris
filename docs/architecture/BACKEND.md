@@ -58,7 +58,7 @@ REST API handler:
 
 ### 2. reconcile (the dispatcher)
 
-The dispatcher (ADR #137 §1, §7). The tasks table's stream wakes it with a run's rows, and it makes a full pass over the run. It decides each waiting row from the rows and facts (trigger rules, ADR #138; `wait_for` assets; a pause; deadlines) and starts each ready row's `run_task`. It carries out the requests on the run row (a Restart's renewal and reset), and answers the run once every row is final. AssetFanout and the sweeper make passes of the same code.
+The dispatcher (ADR #137 §1, §7). The tasks table's stream wakes it with a run's rows, and it makes a full pass over the run. The EventBridge rule `polyris-execution-end` wakes it too, when a `run_task` or pipeline execution ends without a write (stopped in the AWS console, timed out, failed outside its catchers); that pass checks the execution as the sweeper does. It decides each waiting row from the rows and facts (trigger rules, ADR #138; `wait_for` assets; a pause; deadlines) and starts each ready row's `run_task`. It carries out the requests on the run row (a Restart's renewal and reset), and answers the run once every row is final. AssetFanout and the sweeper make passes of the same code.
 
 ### 3. start-run
 
@@ -77,7 +77,7 @@ Reads the `asset-events` stream, new facts only (ADR #130 §6.1).
 An EventBridge schedule runs it every 5 minutes (ADR #130 §8, ADR #137 §7). One run at a time holds the `_sweeper_lease` row, within a time budget.
 
 - Takes the due entries of the `waiting` and `decision` kinds from `attention-index`, run rows included, earliest first, groups them by run and makes one full pass of the dispatcher over each run, in its own process. The pass judges every row of the run from the row itself: a countdown that ended, a limit, a decision deadline, a start to try again
-- Its passes alone judge executions (`DescribeExecution`). A `deps_ready` or `running` row whose `run_task` ended without an outcome fails; one whose execution does not exist yet is no dead one. A `deps_ready` row whose execution does not exist after 2 minutes is started again under its name. The engine stops a run whose execution ended before its answer, or that is still `creating` after `Start_Run`'s retry window, with the cause
+- Its passes judge executions (`DescribeExecution`); so does the pass an execution's end wakes, for that execution alone (reconcile, above). A `deps_ready` or `running` row whose `run_task` ended without an outcome fails; one whose execution does not exist yet is no dead one. A `deps_ready` row whose execution does not exist after 2 minutes is started again under its name. The engine stops a run whose execution ended before its answer, or that is still `creating` after `Start_Run`'s retry window, with the cause
 - After each check it moves the run row's due time on by the backoff (10, 20, then every 30 minutes) and clears `left_at`. A pass that fails moves it too, and warns once per run (`coordination`); a sweep in which most passes failed, and at least two, reports a failed step
 - A row whose wait the pass ended more than 5 minutes after it could have been decided had its hint lost: one `sweeper` warning per run and check, with the count and a few task names. A countdown that ended, and a row found while the run row carries `left_at`, are no lost hints
 - Rows whose run row is missing, such as those a 1.2 run left in flight, are stopped with the cause

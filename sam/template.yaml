@@ -1265,6 +1265,39 @@ Resources:
         - Key: polyris:component
           Value: platform
 
+  # ADR #137 §7: an execution that ends without a write (stopped in the AWS console, timed out, failed outside
+  # its catchers) wakes its run at once instead of at the sweeper's check. A hint: a lost event costs that
+  # check. The engine's own stops end with Polyris.Stopped (dispatcher.STOPPED_ERROR) and make no event; an
+  # execution stopped without an error has "error": null, which the pattern names, since the docs leave
+  # anything-but on null unstated. Pipelines by wildcard: a pipeline takes the namespace and stage of its own
+  # config.py (D137). A JSON string: CloudFormation refuses null in YAML. No queue, DLQ or failure destination
+  # (Principle #45).
+  ExecutionEndRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-execution-end"
+      Description: Wakes the polyris dispatcher when a run_task or pipeline execution ends without a write
+      State: ENABLED
+      EventPattern: !Sub '{"source": ["aws.states"], "detail-type": ["Step Functions Execution Status Change"], "detail": {"status": ["ABORTED", "FAILED", "TIMED_OUT"], "error": [null, {"anything-but": "Polyris.Stopped"}], "stateMachineArn": ["arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper", {"wildcard": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"}]}}'
+      Targets:
+        - Id: dispatcher
+          Arn: !GetAtt ReconcileFunction.Arn
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  ExecutionEndPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ReconcileFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ExecutionEndRule.Arn
+
   # ADR #130 §8, ADR #137 §7: every 5 minutes, one full pass of the dispatcher over each run that is
   # due, so a lost wake-up hint delays a task and never loses it.
   SweeperFunction:
@@ -1525,6 +1558,17 @@ Resources:
                   - dynamodb:ListStreams
                 Resource:
                   - !GetAtt PipelineTokensTable.StreamArn
+        # The end of an execution (ExecutionEndRule): its pass judges the run's execution, or a row's run_task,
+        # as the sweeper's check does (ADR #137 §1, §7). Its own policy: AssetFanout attaches the managed one.
+        - PolicyName: DispatcherExecutionEndPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*-polyris-*:*"
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace

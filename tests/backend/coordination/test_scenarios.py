@@ -508,10 +508,11 @@ def test_every_running_row_of_a_large_run_is_judged(world, a_large_run_and_a_lat
 
 def test_a_large_run_stopped_in_the_aws_console_is_stopped_by_the_engine(world, monkeypatch):
     """The run's own execution takes its call first in each check of the run (D141): a stop in the AWS console, or
-    by polyris-destroy, is seen at the next sweep, however many rows the run has."""
+    by polyris-destroy, whose end on EventBridge is lost, is seen at the next sweep, however many rows the run has."""
     monkeypatch.setattr(sweep, "DESCRIBES", 8)
     large = world.start_run(world.deploy(pipeline("large", [(name, {}) for name in LARGE])), DATE)
     _sweeps(world, 1)
+    world.lose_execution_end(large)
     world.stop_run_externally(large)
     world.plant(f"invariant 8: the execution of {large.name} ended while "
                 + ", ".join(large.execution_name(name) for name in LARGE) + " were not final")

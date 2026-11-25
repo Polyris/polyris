@@ -252,7 +252,7 @@ In the console, press **Stop** on the run. Or:
 curl -X POST "${API_URL}/api/execution-stop?pipeline_execution=my-pipeline-run-2026-01-15-ab12cd34" -H "Authorization: Bearer $TOKEN"
 ```
 
-A run stopped with `aws stepfunctions stop-execution` instead has its tasks stopped at polyris's next check of the run, up to 30 minutes later.
+A run stopped with `aws stepfunctions stop-execution` instead has its tasks stopped within seconds, when the end of its execution reaches polyris through EventBridge. If that event is lost, they stop at polyris's next check of the run, up to 30 minutes later.
 
 ### Mark a stuck task successful
 

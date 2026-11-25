@@ -138,7 +138,8 @@ class Stack:
 
     def deploy_pipeline(self, dag: Any, *, name: Optional[str] = None) -> str:
         """Deploy as polyris-deploy does: write the pipeline's spec version and read it back, then
-        generate its ASL with the real generator and load it; returns its ARN."""
+        generate its ASL with the real generator and load it under the name polyris-deploy gives it
+        (``{namespace}-{stage}-polyris-{dag_id}``, which the rule on executions' ends matches); returns its ARN."""
         from polyris.coordination import spec_store
         from polyris.generators import build_spec_version, generate_step_function_json
 
@@ -155,4 +156,4 @@ class Stack:
         missing = re.findall(r"\$\{(\w+)\}", asl)
         if missing:
             raise AssertionError(f"generated ASL for {dag.dag_id} still has placeholders: {sorted(set(missing))}")
-        return self.runtime.add_machine(name or f"acme-dev-{dag.dag_id}", json.loads(asl)).arn
+        return self.runtime.add_machine(name or f"acme-dev-polyris-{dag.dag_id}", json.loads(asl)).arn

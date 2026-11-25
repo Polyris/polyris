@@ -10,6 +10,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 - [Inventory by service](#inventory-by-service)
   - [Step Functions state machines (5)](#step-functions-state-machines-5)
   - [Lambda functions (8)](#lambda-functions-8)
+  - [EventBridge rule (1)](#eventbridge-rule-1)
   - [DynamoDB tables (8)](#dynamodb-tables-8)
   - [S3 buckets (2)](#s3-buckets-2)
   - [Cognito (1 user pool + 1 client)](#cognito-1-user-pool--1-client)
@@ -26,7 +27,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 
 Two categories of AWS resources end up in your account.
 
-**A. The polyris platform.** The fixed set the platform stack creates. Every install has exactly these — 5 state machines, 8 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. It decides when each task runs, calls an AWS service and records what happened. It does not do your ETL work.
+**A. The polyris platform.** The fixed set the platform stack creates. Every install has exactly these — 5 state machines, 8 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, 1 EventBridge rule, plus IAM and logs. Purpose: **orchestrate**. It decides when each task runs, calls an AWS service and records what happened. It does not do your ETL work.
 
 **B. Your workloads.** Whatever your pipelines invoke. Every `@task.lambda_function(function_name="my-etl")` points at a Lambda in your account that YOU created outside polyris. Same for `@task.glue_job`, `@task.ecs_task`, `@task.batch_job`, `@task.athena_query`, `@task.sfn`, `@task.emr_step`. Polyris does not deploy or manage these — see [DSL.md](../features/DSL.md#how-polyris-relates-to-aws).
 
@@ -65,13 +66,19 @@ The names below leave out the prefix of your install. Every resource is named `<
 | Logical name | Invoked by | Purpose |
 |--------------|-----------|---------|
 | `polyris-console-api` | API Gateway | Serves the REST API behind the console: pipelines, runs, tasks, operator actions |
-| `polyris-reconcile` | The tasks table's stream | The dispatcher: decides each waiting task of a run (trigger rule, `wait_for` assets, pause), starts its `run_task`, and ends the run once every task is final |
+| `polyris-reconcile` | The tasks table's stream; the rule `polyris-execution-end` | The dispatcher: decides each waiting task of a run (trigger rule, `wait_for` assets, pause), starts its `run_task`, and ends the run once every task is final |
 | `polyris-asset-fanout` | `asset-events` stream | Wakes the tasks waiting on new asset data and starts the pipelines scheduled on that asset |
 | `polyris-sweeper` | EventBridge Scheduler, every 5 minutes | Re-checks every run that is due, so a lost wake-up delays a task instead of losing it; fails a task whose work ended without an outcome; retries failed asset-triggered starts; reports the engine's health to the console |
 | `polyris-start-run` | Each pipeline run, as its first step | Writes the run's rows: one for the run and one per task |
 | `polyris-notify` | `run_task` | Reserved for alert delivery; no route of this console configures it |
 | `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Installs the prebuilt console UI into `ConsoleUiBucket`, writes its `config.js` and invalidates CloudFront |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
+
+### EventBridge rule (1)
+
+| Logical name | Purpose |
+|--------------|---------|
+| `polyris-execution-end` | On the account's default event bus: sends `polyris-reconcile` the end of a `run_task` or pipeline execution that ended `ABORTED`, `TIMED_OUT` or `FAILED`, unless the engine stopped it itself. An execution stopped in the AWS console then shows in the console within seconds; a lost event waits for the sweeper's check |
 
 ### DynamoDB tables (8)
 

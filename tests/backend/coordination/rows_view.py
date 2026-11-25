@@ -13,7 +13,7 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from boto3.dynamodb.types import TypeDeserializer
 
@@ -46,6 +46,10 @@ class Observer:
     starts: List[Start] = field(default_factory=list)
     answers: List[Answer] = field(default_factory=list)
     passes: List[Pass] = field(default_factory=list)
+    #: Each DescribeExecution call of the dispatcher: the source of the pass that made it (``stream``, ``event``,
+    #: ``sweeper``, ...; None outside a pass) and the execution's ARN (ADR #137 §1).
+    describes: List[Tuple[Optional[str], str]] = field(default_factory=list)
+    _sources: List[str] = field(default_factory=list)
     _ids: Any = field(default_factory=lambda: itertools.count(1))
     #: Each pass in progress over a run, the run's rows as they were when it began: status and generation by key.
     _read_before: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
@@ -53,6 +57,11 @@ class Observer:
     def install(self, runtime: Any, run_task_arn: str, dispatcher: Any) -> None:
         start, succeed, fail, pass_over = runtime._start, runtime.send_task_success, runtime.send_task_failure, \
             dispatcher._pass
+        describe = runtime.describe_execution
+
+        def describe_execution(**kwargs: Any) -> Any:
+            self.describes.append((self._sources[-1] if self._sources else None, str(kwargs.get("executionArn"))))
+            return describe(**kwargs)
 
         def _start(machine_arn: str, name: Optional[str], payload: Any) -> Any:
             execution = start(machine_arn, name, payload)
@@ -84,10 +93,12 @@ class Observer:
             run = run_key[len("_run_"):]
             self._read_before.setdefault(run, []).append(
                 {str(r["execution_name"]): (r.get("status"), int(r.get("generation", 0))) for r in self.run_rows(run)})
+            self._sources.append(str(kwargs.get("source")))
             try:
                 result = pass_over(run_key, targets, **kwargs)
             finally:
                 self._read_before[run].pop()
+                self._sources.pop()
             calls = self.log[first:]
             reads = [c for c in calls if c.operation in ("GetItem", "BatchGetItem", "Query") and not c.ok]
             closes = [c for c in calls if c.ok and _closes_a_run_row(c)]
@@ -98,6 +109,7 @@ class Observer:
 
         runtime._start = _start
         runtime.send_task_success, runtime.send_task_failure = answering(succeed), answering(fail)
+        runtime.describe_execution = describe_execution
         dispatcher._pass = _pass
 
 
