@@ -50,25 +50,9 @@ backfill→partition combinations. Rejected:
 - More state, more bugs. The chosen direct-link path is one URL hop,
   no extra UI surface, no extra state machine.
 
-#### Implementation
-
-- `BackfillDetailPage.tsx` — props extended; partition cells get
-  `role="button"`, `tabIndex={0}`, Enter/Space keyboard handling, and
-  `aria-label`. Children rows get `onClick` when callback provided.
-- `App.tsx` — wires both callbacks to `router.push(...)` with the URL
-  patterns above. Encodes pipeline name and execution name for safety.
-- `_modals.css` — `.bd-cell--clickable` and
-  `.bd-children-row--clickable` modifier classes add cursor + hover ring.
-
 #### Tests
 
-5 new tests in `BackfillDetailPage.test.tsx::Navigation`:
-
-- `partition cell click invokes onPartitionClick with pipeline + key`
-- `partition cell is not clickable when callback omitted`
-- `partition cell responds to Enter key` (keyboard a11y)
-- `child row click invokes onChildClick with execution_name + key`
-- `partition cell has aria-label for screen readers when clickable`
+Pinned by `BackfillDetailPage.test.tsx`.
 
 #### Backwards compatibility
 

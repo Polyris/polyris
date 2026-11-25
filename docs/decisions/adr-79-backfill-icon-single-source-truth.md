@@ -83,25 +83,6 @@ from `utils/icons.tsx` per the no-dead-code principle.
 If a future edit hardcodes a different backfill icon in either map, the
 `toBe` reference check fails immediately.
 
-#### Test mock update
-
-Component test mocks for `@/utils/icons` previously stubbed
-`ActionIcons: () => null` (a function). Code now does
-`ActionIcons.backfill`, so the mock had to be an object. Replaced with
-`new Proxy({}, { get: () => () => null })` — any icon key resolves to a
-null-rendering component, future-proof against new keys. Applied across
-15 (`ActionIcons`) + 14 (`ContextIcons`) test files. HelpModal's mock
-gained a `ContextIcons` entry it previously lacked.
-
-#### Tests
-
-| Suite | Was | Now | Δ |
-|---|---|---|---|
-| vitest | 830 | **833** | +3 (icon SSoT guard) |
-| Python total | 1358 | 1358 | 0 |
-| tsc strict | 0 errors | **0 errors** | — |
-| **All gates** | green | **green** | — |
-
 #### Lesson
 
 "Make the icon consistent" looked like a find-and-replace, but the real

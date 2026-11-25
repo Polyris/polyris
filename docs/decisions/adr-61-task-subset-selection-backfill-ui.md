@@ -52,31 +52,9 @@ Distinct from `usePipelineDetailQuery` (which also pulls execution
 status and re-fetches frequently) — for picker purposes only static
 metadata is needed.
 
-#### Implementation
-
-State: `selectedTasks: string[] | null` in `BackfillModal`. `null`
-means "default (run all)", non-null is the positive subset. Built
-into the request just before submit:
-
-```ts
-let tasksField: string[] | null = seed.tasks ?? null;
-if (target.type === 'pipeline' && selectedTasks && selectedTasks.length > 0) {
-    tasksField = selectedTasks;
-}
-```
-
-`seed.tasks` (from task-detail entry point) remains the pre-fill;
-user explicit selection in the modal overrides it.
-
 #### Tests
 
-Five vitest tests in `BackfillModal.test.tsx::task subset selection`:
-
-- Selector renders for pipeline targets (header + 3 rows).
-- `skip_on_backfill` rows display the flag badge.
-- Selector is **absent** for asset targets.
-- Default state shows "All tasks".
-- Clicking a checkbox transitions from default to "N selected".
+Pinned by `BackfillModal.test.tsx`.
 
 #### Backwards compatibility
 

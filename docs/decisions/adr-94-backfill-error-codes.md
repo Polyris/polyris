@@ -4,13 +4,6 @@ accepted: by 2026-05-31
 ---
 # ADR #94 — BackfillUpstream + backfill error-code registry onto the generated SSoT
 
-#### Status
-
-Accepted. Chore (v0.85.0). Closes two cross-language drift surfaces found in
-the v0.84.1 reviewer audit: the `BackfillUpstream` enum was added outside the
-generated enum SSoT, and the UI backfill error-map had silently fallen behind
-the route. No product behavior change.
-
 #### Context
 
 The upstream-lineage epic (v0.81–v0.84) added a `BackfillUpstream` mode
@@ -78,16 +71,3 @@ Two different fixes because the two surfaces differ in kind.
   generatable; here the friendly copy is irreducibly human, so we keep a
   hand-maintained registry and gate it, rather than institutionalize a second
   hand-maintained *map*. Two test surfaces, but both check one generated list.
-
-#### CLAUDE.md alignment
-
-- **#1 (no dead code):** removed the 5 dead UI error codes, the unreachable
-  `partitions_covering` branch, the unused `_DAY_NAMES`, and the unused
-  `processed` counter; replaced the false-green `criticalCodes` test.
-- **#2 / #12 (no duplication / maximize reuse):** eliminated the
-  `BackfillUpstream` copy entirely; for the error map, single-sourced the code
-  *list* both gates derive from rather than adding a parallel list.
-- **#6 (align before implement):** audit-driven; mapped the existing codegen
-  (sync_enums families, `_set_py`/`_ts_array`) before extending it.
-- **#7 (ADR for API/architecture):** this entry; the registry and the upstream
-  enum are now part of the documented generated contract.

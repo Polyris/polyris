@@ -106,17 +106,7 @@ common case, and only running/pending records ever reach the SFN describe
 
 #### Tests
 
-| Suite | Was | Now | Δ |
-|---|---|---|---|
-| console_api | 348 | **355** | +7 |
-| — `TestZombieReconciliation` | — | 6 | counters-heal, SFN-timeout-heal, execution-gone-heal (old record), just-started-not-healed (race guard), genuinely-running-blocks, SFN-error-fails-closed |
-| — `TestListBackfills.test_list_self_heals_zombie_status` | — | 1 | display self-heal + badge |
-| SDK Python | 912 | 912 | 0 |
-| **All gates** | green | **green** | — |
-
-The pre-existing concurrency reject test was tightened to set an explicit
-`describe_execution → RUNNING`, so it no longer passes by accident on a
-truthy MagicMock.
+Pinned by `test_list_self_heals_zombie_status`.
 
 #### What this does NOT do
 

@@ -94,16 +94,6 @@ they lock the class/structure contract the CSS relies on. A future rename
 of `bf-modal` or removal of the body/footer wrappers fails the test
 immediately.
 
-#### Tests
-
-| Suite | Was | Now | Δ |
-|---|---|---|---|
-| vitest | 833 | **835** | +2 (layout contract guards) |
-| Python total | 1358 | 1358 | 0 |
-| tsc strict | 0 errors | **0 errors** | — |
-| CSS lines | — | **−220 dead** | cleanup |
-| **All gates** | green | **green** | — |
-
 #### Lesson
 
 The bug looked like "modal too tall" but was really "CSS pointed at a

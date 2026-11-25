@@ -86,28 +86,7 @@ Three reasons:
 
 #### Tests
 
-Backend (`tests/routes/test_backfill.py`, +7 in `TestRetryFailedWithPartitionKeys`):
-
-- Empty body retries all failed (backward-compat)
-- Subset partition_keys retries only those
-- Unknown partition_key → 422 with `failed_partitions` in body
-- Non-array `partition_keys` → 422 `invalid_partition_keys`
-- Malformed JSON body → 422 `malformed_body`
-- Empty array == no filter (treated as "retry all")
-- Duplicate keys deduplicated (set semantics)
-
-Frontend (`hooks/queries/useBackfillQueries.test.ts`, +3 in
-`useRetryFailedBackfillMutation`):
-
-- Backward-compat: bare `mutateAsync('bf-id')` works, sends empty body
-- New shape `{backfillId, partitionKeys: [...]}` sends `partition_keys`
-- Empty array → omitted from body (parallels backend treatment)
-
-UI behavior tests for the ↻ button per-partition retry are covered
-implicitly via existing BackfillDetailPage tests + the mutation
-contract test. A dedicated click-through test would be valuable but
-involves modal/confirm interception not yet abstracted in the test
-harness — left as a follow-up.
+Pinned by `tests/routes/test_backfill.py`, `hooks/queries/useBackfillQueries.test.ts`.
 
 #### Lesson
 

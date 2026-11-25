@@ -115,31 +115,6 @@ Estimate is labeled "Estimated" in UI and copy reads "approximate based
 on current pipeline structure." Users with cost-sensitive workflows are
 directed to AWS Cost Explorer for precise post-hoc accounting.
 
-##### What the user sees
-
-In modal preview:
-
-```
-Estimated SFN cost:        $0.012
-Estimated duration:        ~3 min at max_parallel=5
-```
-
-Hover tooltip on "Estimated SFN cost":
-> "Covers Step Functions Standard transitions for bulk-backfill plus
->  child pipeline executions. Excludes Lambda, DynamoDB, S3, and data
->  processing (Athena, Glue) costs. Estimate is approximate based on
->  current pipeline structure."
-
-In `/backfills/{id}` Detail Page footer:
-
-```
-Estimated: $0.012   |   Track actual: AWS Cost Explorer
-```
-
-No actual cost is computed post-hoc — that would require parsing
-CloudWatch metrics or Cost Explorer API per backfill, an entire
-subsystem. Out of scope for v0.78.
-
 ##### Cost preview update flow
 
 The preview updates as user changes inputs in the modal:

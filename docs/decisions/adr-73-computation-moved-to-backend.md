@@ -96,31 +96,7 @@ redeployed yet).
 
 #### Tests
 
-Backend (`tests/routes/test_backfill.py`, +15):
-
-- `TestDerivedBackfillStatus` (8 tests):
-  - Terminal status respected (per each terminal value)
-  - Running + all completed → 'completed'
-  - Running + all failed → 'failed'
-  - Running + mixed → 'partial'
-  - Running + some pending → 'running' (untouched)
-  - `skipped` counts toward processed
-  - Pending + no partitions → 'pending'
-  - String-coerced int inputs (DDB returns Decimal sometimes)
-- `TestSummarizePartitionStatus` (7 tests):
-  - No children → 'pending'
-  - All success → 'success'
-  - Any failed/upstream_failed/aborted → 'failed'
-  - In-flight (running) when not all done
-  - Partition_key filter isolates correctly
-
-Frontend tests rewritten for the backend-trust contract:
-
-- `BackfillDetailPage.test.tsx` — `derivedStatus` describe block
-  replaced with `status rendering trusts backend` (5 tests). Mocks
-  provide the derived value (matches what backend returns).
-- `BackfillsListPage.test.tsx` — stuck-running tests replaced with
-  the backend-trust equivalents (same 5 tests, semantics aligned).
+Pinned by `tests/routes/test_backfill.py`, `BackfillDetailPage.test.tsx`, `BackfillsListPage.test.tsx`.
 
 #### Lesson
 
