@@ -836,6 +836,118 @@ def test_a_creating_run_whose_execution_ended_within_start_runs_window_is_left_t
     assert item(world, RUN_KEY)["stop"]["by"] == "the engine"
 
 
+def run_task_input(task: str, generation: int = 1, **changes: Any) -> str:
+    """The keys of run_task's input that the end of its execution is read by (run_task_input.Key)."""
+    import json
+
+    payload = {"execution_name": key(task), "generation": generation, "pipeline_execution": EXECUTION,
+               "task_name": task, **changes}
+    return json.dumps({k: v for k, v in payload.items() if v is not None})
+
+
+def run_task_ended(task: str, generation: int = 1, *, status: str = "ABORTED", **detail: Any) -> Dict[str, Any]:
+    return ended(run_task_execution(task, generation), status=status, machine=RUN_TASK,
+                 **{"input": run_task_input(task, generation), **detail})
+
+
+def started_running(world) -> None:
+    """extract runs, its liveness check 10 minutes away; its run_task ended without an outcome."""
+    start(world, CHAIN)
+    full(world)
+    execution_is(world)
+    update(world, key("extract"), status="running", status_since=format_utc(NOW))
+    world.sfn.executions[run_task_execution("extract")] = {"status": "ABORTED", "error": "Console"}
+
+
+def test_the_end_of_a_run_task_fails_its_row_at_once_with_how_it_ended(world):
+    started_running(world)
+    result = on_end(world, run_task_ended("extract"))
+    assert result["source"] == "event"
+    extract = item(world, key("extract"))
+    assert extract["status"] == "failed"
+    assert extract["error"] == "its run_task execution ended ABORTED (Console) without recording an outcome"
+    assert item(world, key("load"))["status"] == "upstream_failed"       # decided in the same pass (ADR #138)
+    assert world.sfn.described == [run_task_execution("extract")]          # the row's, and not the run's
+
+
+def test_an_end_that_left_out_its_input_reads_it_from_describe_execution(world):
+    started_running(world)
+    world.sfn.executions[run_task_execution("extract")]["input"] = run_task_input("extract")
+    on_end(world, run_task_ended("extract", input=None, inputDetails={"included": False}))
+    assert item(world, key("extract"))["status"] == "failed"
+    assert world.sfn.described == [run_task_execution("extract")] * 2     # the input, then the judgment: two calls
+
+
+@pytest.mark.parametrize("event,reason", [
+    (run_task_ended("extract", input=run_task_input("extract", generation=None)), "a run_task input that names no row of 1.3"),
+    (run_task_ended("extract", input="not json"), "a run_task input that names no row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", generation=True)), "a run_task input that names no row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="")), "a run_task input that names no row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="orders-run-2026-11-12-0ther000")),
+     "no run of this platform"),
+    (run_task_ended("extract", input=run_task_input("transform")), "no row of the run"),
+    (run_task_ended("extract", 2), "another execution than the row's run_task"),          # not its generation
+    (ended(run_task_execution("extract").replace("abcd1234", "abcd9999"), machine=RUN_TASK,
+           input=run_task_input("extract")), "another execution than the row's run_task"),
+])
+def test_an_end_of_no_row_of_1_3_or_of_another_generation_changes_nothing(world, event, reason):
+    started_running(world)
+    result = on_end(world, event)
+    assert (result["action"], result["reason"]) == ("ignored", reason)
+    assert item(world, key("extract"))["status"] == "running" and world.sfn.described == []
+
+
+@pytest.mark.parametrize("fields,reason", [
+    ({"status": "success"}, "a row that waits for no outcome"),
+    ({"status": "waiting"}, "a row that waits for no outcome"),
+])
+def test_an_end_of_a_row_that_waits_for_no_outcome_changes_nothing(world, fields, reason):
+    started_running(world)
+    update(world, key("extract"), **fields)
+    assert on_end(world, run_task_ended("extract"))["reason"] == reason and world.sfn.described == []
+
+
+def test_an_end_of_a_run_stopped_or_answered_changes_nothing(world):
+    started_running(world)
+    update(world, RUN_KEY, stop={"by": "ops", "reason": "done", "at": START})
+    assert on_end(world, run_task_ended("extract"))["reason"] == "a run answered or stopped already"
+    assert item(world, key("extract"))["status"] == "running"
+
+
+def test_the_end_of_a_ready_row_whose_start_failed_or_that_a_pause_holds_judges_nothing(world):
+    """liveness_due keeps its conditions: a failed start's next try, and a pause, hold the judgment (§5)."""
+    started_running(world)
+    update(world, key("extract"), status="deps_ready", start_failures=1, start_failed_first=format_utc(NOW),
+           start_failed_last=format_utc(NOW))
+    on_end(world, run_task_ended("extract"))
+    assert item(world, key("extract"))["status"] == "deps_ready" and world.sfn.described == []
+
+
+def test_an_input_that_cannot_be_described_is_dropped_or_tried_again(world):
+    from failures import CoordinationTransient
+
+    started_running(world)
+    event = run_task_ended("extract", input=None)
+    world.sfn.errors["describe_execution"] = client_error("AccessDeniedException", "DescribeExecution")
+    assert on_end(world, event)["action"] == "ignored"
+    world.sfn.errors["describe_execution"] = client_error("ThrottlingException", "DescribeExecution")
+    with pytest.raises(CoordinationTransient):
+        on_end(world, event)
+
+
+def test_rows_of_an_ended_run_task_that_cannot_be_read_are_left_to_their_check(world, monkeypatch):
+    from failures import CoordinationTransient
+
+    started_running(world)
+    update(world, key("extract"), generation="one")
+    assert on_end(world, run_task_ended("extract"))["action"] == "failed"
+    monkeypatch.setattr(world.dispatcher, "_batch_get", _raises(client_error("AccessDeniedException", "BatchGetItem")))
+    assert on_end(world, run_task_ended("extract"))["action"] == "failed"
+    monkeypatch.setattr(world.dispatcher, "_batch_get", _raises(client_error("ThrottlingException", "BatchGetItem")))
+    with pytest.raises(CoordinationTransient):
+        on_end(world, run_task_ended("extract"))
+
+
 def test_a_check_reports_the_rows_whose_wait_ended_on_a_lost_hint(world):
     start(world, CHAIN)
     full(world)

@@ -8,6 +8,8 @@ check. The World delivers each event the rule lets through whenever the stack
 settles, as EventBridge does within seconds (event_bus.py).
 """
 
+import json
+
 import pytest
 
 from dags import chain
@@ -95,6 +97,45 @@ def test_a_failed_run_ends_with_an_event_that_finds_it_answered(world):
     [end] = world.execution_ends(run)
     assert end["detail"]["error"] == "Polyris.RunFailed"
     assert world.send_execution_end(end)["reason"] == "a run answered or stopped already"
+
+
+@defect("R-V1")
+def test_a_run_task_stopped_in_the_aws_console_fails_its_task_on_its_end_before_any_sweep(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.stop_run_task_externally(run, "extract")
+    row = world.row(run, "extract")
+    assert row["status"] == "failed"
+    assert "ended ABORTED (Console: stopped by hand) without recording an outcome" in row["error"]
+    assert world.status(run, "load") == "upstream_failed" and len(world.execution_ends(run, "extract")) == 1
+
+
+def test_a_run_task_whose_end_is_lost_fails_its_task_at_its_check(world):
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.lose_execution_end(run, "extract")
+    world.stop_run_task_externally(run, "extract")
+    assert world.status(run, "extract") == "running"
+    world.clock.advance(minutes=11)                  # past the row's first liveness check
+    world.sweep()
+    assert world.status(run, "extract") == "failed"
+
+
+def test_an_end_of_a_1_2_run_task_or_of_an_old_generation_changes_nothing(world):
+    """A 1.2 execution's input has no generation; a Restart raised the row's: neither end is the row's run_task."""
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.lose_execution_end(run, "extract")
+    world.stop_run_task_externally(run, "extract")
+    [end] = world.executions_ended(run, "extract")
+    old = json.loads(end["detail"]["input"])
+    del old["generation"]
+    older = {**end, "detail": {**end["detail"], "input": json.dumps(old)}}
+    assert world.send_execution_end(older)["reason"] == "a run_task input that names no row of 1.3"
+    assert world.status(run, "extract") == "running"
+    assert world.send_execution_end(end)["source"] == "event"                     # it comes late, then
+    assert world.status(run, "extract") == "failed"
+    world.restart(run, "extract")
+    assert world.running_tasks(run) == ["extract"]
+    assert world.send_execution_end(end)["reason"] == "another execution than the row's run_task"
+    assert world.running_tasks(run) == ["extract"]
 
 
 def test_the_streams_passes_make_no_describe_execution(world):

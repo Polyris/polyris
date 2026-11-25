@@ -206,6 +206,22 @@ def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     walk(lambda: dispatcher.on_execution_end({"executionArn": arn, "name": third, "status": "ABORTED",
                                               "stateMachineArn": arn.rsplit(":", 1)[0]}, lambda: 60_000))
     assert item(run_row.key(third))["stop"]["by"] == run_row.ENGINE, "the walk must take an execution's end"
+
+    # A fourth, whose task's run_task is stopped in the AWS console: its end fails the row at once (§7).
+    from polyris.coordination import run_name, task_row
+
+    fourth = "orders-run-2026-11-12-dddd0004"
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"}],
+               execution=fourth)
+    walk(lambda: dispatcher.full_pass(run_row.key(fourth), source="test", remaining_ms=lambda: 60_000))
+    row_key = task_row.key("extract", "2026-11-12", fourth)
+    task_arn = f"{dispatcher.run_task_arn}:{run_name.run_task_name(row_key, STARTED_AT, 1)}"
+    sfn.executions[task_arn] = "ABORTED"
+    payload = json.dumps({"execution_name": row_key, "generation": 1, "pipeline_execution": fourth})
+    walk(lambda: dispatcher.on_execution_end({"executionArn": task_arn, "name": task_arn.rsplit(":", 1)[-1],
+                                              "status": "ABORTED", "stateMachineArn": dispatcher.run_task_arn,
+                                              "input": payload}, lambda: 60_000))
+    assert item(row_key)["status"] == "failed", "the walk must take a run_task's end"
     return calls, reads
 
 

@@ -17,8 +17,9 @@ is the pass's time. Each judges a row from the row itself (§1):
 - a ``deps_ready`` row whose start failed is started again at its next try and
   fails past ``START_FAIL_AFTER``; ``start_failed`` records a failed attempt;
 - a ``waiting_decision`` row fails at its decision deadline;
-- in the sweeper's passes only, a ``deps_ready`` or ``running`` row whose
-  liveness check has come has its ``run_task`` execution judged (``liveness``):
+- in the sweeper's passes, a ``deps_ready`` or ``running`` row whose liveness
+  check has come has its ``run_task`` execution judged (``liveness``), and in
+  the pass that the end of that execution wakes, at once (``liveness_due``):
   ended without an outcome, it fails; not visible yet, it is no dead one; a
   ``deps_ready`` row whose execution does not exist is started again;
 - a run being stopped has every unfinished row stopped, dependants first (§4),
@@ -420,18 +421,21 @@ class Execution:
         return f"{self.status or 'missing'}" + (f" ({detail})" if detail else "")
 
 
-def liveness_due(row: RowView, run: RunView, *, now: datetime) -> bool:
-    """Whether a pass of the sweeper judges the row's ``run_task`` execution now (§1, §7).
+def liveness_due(row: RowView, run: RunView, *, now: datetime, at_once: bool = False) -> bool:
+    """Whether a pass judges the row's ``run_task`` execution now (§1, §7).
 
     A ``running`` row is judged at its liveness check; a ``deps_ready`` row too,
     unless a start of it failed (its next try is due instead) or its run is
-    paused, which holds its start.
+    paused, which holds its start. ``at_once``: the end of that execution came
+    on EventBridge, so the check comes now instead of at its time; the rest holds.
     """
     if row.status == S.DEPS_READY.value:
         if run.paused or row.times.start_failures > 0:
             return False
     elif row.status != S.RUNNING.value:
         return False
+    if at_once:
+        return True
     check = deadlines.liveness_check(row.times)
     return check is not None and check <= now
 

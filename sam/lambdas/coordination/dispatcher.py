@@ -34,8 +34,10 @@ goes the other way, dependants first (§4).
 - An execution that ended ABORTED, TIMED_OUT or FAILED, not by the engine's own
   stop, reaches ``on_execution_end`` through an EventBridge rule (§7): a hint. A
   run that the event names gets one full pass whose engine's check comes now
-  (``engine_now``); it decides as the sweeper's check does, from the rows and
-  DescribeExecution. A stream or narrow pass makes no DescribeExecution call.
+  (``engine_now``), or whose check of the row a ``run_task`` execution served,
+  in that row's current generation, comes now (``judge_now``). The pass decides
+  as the sweeper's check does, from the rows and DescribeExecution, with at most
+  two calls. A stream or narrow pass makes no DescribeExecution call.
 - A row whose run row is missing is stopped with the cause (invariant 11), a row
   that a 1.2 run left in flight included (*Migration*).
 
@@ -130,6 +132,7 @@ class _Pass:
     check: bool = False                    # the sweeper's pass: liveness, the engine's stop, lost hints (§7)
     describes: Optional[sweep.Calls] = None    # the DescribeExecution calls its sweeper run may still make (S5)
     granted: Optional[Set[str]] = None         # the rows whose executions it judges, of those due (D141)
+    judge_now: Mapping[str, int] = field(default_factory=dict)   # an end's row and generation: judged now (§7)
     granted_used: int = 0                      # of them, the calls made; the rest go back at the pass's end
     engine_call: bool = False                  # a call taken for the run's own execution, before its rows (D141)
     left_read: bool = False                # the run row carried left_at when the pass read it
@@ -215,20 +218,21 @@ class Dispatcher:
         """An execution that ended ABORTED, TIMED_OUT or FAILED, not by the engine's own stop (§7): a hint.
 
         The event decides nothing. A run whose own execution it names gets one
-        full pass in which the engine's check of the run comes now; the pass
-        decides as the sweeper's check does, from the rows and DescribeExecution.
-        A cheap read comes first: an event of no run of this platform, of another
-        execution of the run's name, or of a run answered or stopped already,
-        costs one GetItem. An event that cannot be read is logged and dropped,
-        never raised: a lost hint costs the run row's next check, and Lambda
-        retries an asynchronous invocation that fails only twice.
+        full pass in which the engine's check of the run comes now; the row a
+        ``run_task`` execution served, in its current generation, gets one in
+        which its liveness check comes now. Each pass decides as the sweeper's
+        check does, from the rows and DescribeExecution. A cheap read comes
+        first: an event of no run of this platform, of another execution than
+        the one the run or the row records, or of a run answered or stopped
+        already, costs one read. An event that cannot be read is logged and
+        dropped, never raised: a lost hint costs the run row's next check, and
+        Lambda retries an asynchronous invocation that fails only twice.
         """
         if not isinstance(detail, Mapping):
             return _ignored("an event without a detail", detail=str(detail)[:200])
         arn, name = str(detail.get("executionArn") or ""), str(detail.get("name") or "")
         if str(detail.get("stateMachineArn") or "") == self.run_task_arn:
-            # A run_task execution's end is judged at its row's liveness check.
-            return _ignored("the end of a run_task execution", execution=arn)
+            return self._run_task_ended(detail, arn, remaining_ms)
         if not arn or not name:
             return _ignored("an event that names no execution", execution=arn)
         run_key = run_row.key(name)
@@ -252,16 +256,78 @@ class Dispatcher:
             return _ignored("a run answered or stopped already", execution=arn, run=run_key)
         return self._pass(run_key, None, source="event", remaining_ms=remaining_ms, engine_now=True)
 
+    def _run_task_ended(self, detail: Mapping[str, Any], arn: str, remaining_ms: Callable[[], int]) -> Dict[str, Any]:
+        """The end of a ``run_task`` execution: the row its input names is judged now, if the execution is the one
+        of the row's current generation (invariant 4) and the row still waits for its outcome (§7)."""
+        named = self._run_task_input(detail, arn)
+        if named is None:
+            return _ignored("a run_task input that names no row of 1.3", execution=arn)
+        row_key, run_key = named
+        try:
+            found = {str(i[task_row.TABLE_KEY]): i for i in self._batch_get([run_key, row_key])}
+            run = dispatch.run_view(found[run_key]) if run_key in found else None
+            row = found.get(row_key)
+            current = int(row[task_row.GENERATION]) if row is not None and run is not None \
+                and task_row.of_run(row, run.execution, run.run_start) else None
+        except (ClientError, BotoCoreError) as exc:
+            failures.reraise_transient(exc)
+            log.error("dispatcher", "the rows of an ended run_task could not be read; its check finds them",
+                      execution=arn, error=str(exc))
+            return {"run": run_key, "source": "event", "action": "failed", "error": str(exc)}
+        except (ValueError, KeyError, TypeError) as exc:
+            log.error("dispatcher", "the rows of an ended run_task cannot be read; its check finds them",
+                      execution=arn, error=str(exc))
+            return {"run": run_key, "source": "event", "action": "failed", "error": str(exc)}
+        if run is None:
+            return _ignored("no run of this platform", execution=arn)
+        if row is None or current is None:
+            return _ignored("no row of the run", execution=arn, run=run_key)
+        if _execution_arn(self.run_task_arn, row_key, run, current) != arn:
+            return _ignored("another execution than the row's run_task", execution=arn, run=run_key)
+        if run.answered or run.stop is not None:
+            return _ignored("a run answered or stopped already", execution=arn, run=run_key)
+        if str(row.get(task_row.STATUS)) not in _STARTED:
+            return _ignored("a row that waits for no outcome", execution=arn, run=run_key)
+        return self._pass(run_key, None, source="event", remaining_ms=remaining_ms, judge_now={row_key: current})
+
+    def _run_task_input(self, detail: Mapping[str, Any], arn: str) -> Optional[Tuple[str, str]]:
+        """The row key and the run key a ``run_task`` execution's input names; DescribeExecution gives the input
+        an event left out (over 248 KiB). None for an input that names no row of 1.3, such as a 1.2 execution's,
+        which has no generation, or one that cannot be read."""
+        text = detail.get("input")
+        if not isinstance(text, str):
+            try:
+                text = self.sfn.describe_execution(executionArn=arn).get("input")
+            except (ClientError, BotoCoreError) as exc:
+                failures.reraise_transient(exc)
+                log.error("dispatcher", "the input of an ended run_task could not be read; its check finds it",
+                          execution=arn, error=str(exc))
+                return None
+        try:
+            payload = json.loads(text) if isinstance(text, str) else None
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            return None
+        row_key = payload.get(run_task_input.Key.EXECUTION_NAME)
+        execution = payload.get(run_task_input.Key.PIPELINE_EXECUTION)
+        generation = payload.get(run_task_input.Key.GENERATION)
+        if not (isinstance(row_key, str) and row_key and isinstance(execution, str) and execution
+                and isinstance(generation, int) and not isinstance(generation, bool)):
+            return None
+        return row_key, run_row.key(execution)
+
     # ── a pass ───────────────────────────────────────────────────────────
 
     def _pass(self, run_key: str, targets: Optional[Set[str]], *, source: str, remaining_ms: Callable[[], int],
               orphan_keys: Optional[Set[str]] = None, check: bool = False,
-              describes: Optional[sweep.Calls] = None, engine_now: bool = False) -> Dict[str, Any]:
+              describes: Optional[sweep.Calls] = None, engine_now: bool = False,
+              judge_now: Optional[Mapping[str, int]] = None) -> Dict[str, Any]:
         deadline = self.monotonic() + max(0, remaining_ms() - RESERVE_MS) / 1000
         try:
             return self._run_pass(run_key, targets, source=source, deadline=deadline,
                                   orphan_keys=orphan_keys or set(targets or ()), check=check, describes=describes,
-                                  engine_now=engine_now)
+                                  engine_now=engine_now, judge_now=judge_now or {})
         except CoordinationTransient:
             raise
         except (ClientError, BotoCoreError) as exc:
@@ -272,7 +338,7 @@ class Dispatcher:
 
     def _run_pass(self, run_key: str, targets: Optional[Set[str]], *, source: str, deadline: float,
                   orphan_keys: Set[str], check: bool, describes: Optional[sweep.Calls],
-                  engine_now: bool = False) -> Dict[str, Any]:
+                  engine_now: bool = False, judge_now: Mapping[str, int]) -> Dict[str, Any]:
         now = self.clock()
         run_item = self._get(run_key)
         if run_item is None:
@@ -294,7 +360,7 @@ class Dispatcher:
         else:
             judged = {name for name, key in keys.items() if key in targets}
         state = _Pass(run, {}, {}, names, deadline, source, now, check=check, describes=describes,
-                      left_read=run.left_at is not None)
+                      left_read=run.left_at is not None, judge_now=judge_now)
         self._read_rows(state, {name: keys[name] for name in judged})
         if check and describes is not None and not run.stopping:
             # The run's own execution takes its call first; then its rows, the longest due first, to their share (D141).
@@ -532,7 +598,8 @@ class Dispatcher:
         row = state.rows[name]
         if stop:
             return dispatch.stop(row, now=state.now, cause=_stop_cause(state.run))
-        if state.check and dispatch.liveness_due(row, state.run, now=state.now):
+        at_once = state.judge_now.get(row.key) == row.generation        # its run_task's end came (§7)
+        if (state.check or at_once) and dispatch.liveness_due(row, state.run, now=state.now, at_once=at_once):
             self._within_budget(state)                         # judging an execution takes a call
             # A row not granted a call stays due: the next sweeper run judges it (S5, D141).
             if state.granted is None or name in state.granted:

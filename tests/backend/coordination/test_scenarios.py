@@ -439,9 +439,11 @@ def test_a_lost_hint_after_mark_success_heals_at_the_runs_next_check(world):
 
 
 def test_a_run_task_stopped_outside_polyris_fails_its_task_with_an_explanation(world):
-    """The dispatcher judges the execution at the row's liveness check (ADR #137 §1): it ended without an
-    outcome, so the task fails with how it ended, and the run ends; it stayed RUNNING in 1.2 (Z1, live)."""
+    """The dispatcher judges the execution at the row's liveness check (ADR #137 §1) when the end of the execution
+    on EventBridge is lost: it ended without an outcome, so the task fails with how it ended, and the run ends; it
+    stayed RUNNING in 1.2 (Z1, live)."""
     run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.lose_execution_end(run, "extract")
     world.stop_run_task_externally(run, "extract")
     world.clock.advance(minutes=11)         # past the row's first liveness check, 10 minutes after its start
     world.sweep()
@@ -459,6 +461,7 @@ def test_a_sweep_judges_as_many_executions_as_its_calls_allow_and_the_next_one_t
     names = ("a", "b", "c")
     run = world.start_run(world.deploy(pipeline("wide", [(name, {}) for name in names])), DATE)
     for name in names:
+        world.lose_execution_end(run, name)                # each judged at its check, within the sweep's calls
         world.stop_run_task_externally(run, name)
     world.clock.advance(minutes=11)
     world.sweep()
@@ -487,6 +490,7 @@ def a_large_run_and_a_later_one(world, monkeypatch):
     large = world.start_run(world.deploy(pipeline("large", [(name, {}) for name in LARGE])), DATE)
     world.clock.advance(minutes=1)
     small = world.start_run(world.deploy(pipeline("small", [("victim", {})])), DATE)
+    world.lose_execution_end(small, "victim")              # found by the sweeper's checks alone
     world.stop_run_task_externally(small, "victim")
     yield large, small
     for name in world.running_tasks(large):

@@ -343,4 +343,8 @@ PROBES: Tuple[Probe, ...] = (
     # The dispatcher before the rule: an execution's end reads as a stream batch without records, a no-op.
     Probe("R-V1", (Edit(DISPATCHER, "    if event.get(\"source\") == EVENT_SOURCE:\n", "    if False:\n"),),
           f"{ENDS}::test_a_run_stopped_in_the_aws_console_is_stopped_on_its_end_before_any_sweep"),
+    # The end of a run_task brings no check of its row: the row waits for its liveness check, as before (§7).
+    Probe("R-V1", (Edit(DISPATCHER, "        at_once = state.judge_now.get(row.key) == row.generation",
+                        "        at_once = False"),),
+          f"{ENDS}::test_a_run_task_stopped_in_the_aws_console_fails_its_task_on_its_end_before_any_sweep"),
 )
