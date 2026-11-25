@@ -11,11 +11,11 @@ jobs:
   # Python Tests & Linting
   # ============================================
   python:
-    name: ${{ matrix.python-version == '3.12' && 'Checks and tests' || 'Checks' }} (Python ${{ matrix.python-version }})
+    name: ${{ matrix.python-version == '3.11' && 'Checks and tests' || 'Checks' }} (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Each version runs every test once: 3.12 here, plain; 3.11 under coverage, in the
+      # Each version runs every test once: 3.11 here, plain; 3.12 under coverage, in the
       # coverage job below, which fails on a broken test as a plain run does.
       matrix:
         python-version: ["3.11", "3.12"]
@@ -52,19 +52,19 @@ jobs:
 
       # The tests run in parallel processes (pytest-xdist), one per CPU.
       - name: Run SDK tests
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.11'
         env:
           PYTEST_ADDOPTS: -n auto
         run: make test-sdk
 
       - name: Run backend tests
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.11'
         env:
           PYTEST_ADDOPTS: -n auto
         run: make test-backend
 
       - name: Run integration tests
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.11'
         env:
           PYTEST_ADDOPTS: -n auto
         run: make test-integration
@@ -101,20 +101,22 @@ jobs:
         run: make smoke-pipelines
 
   # ============================================
-  # Coverage (Principle #22): the SDK, backend and integration tests on 3.11, under
-  # coverage, in parallel processes (pytest-xdist, one per CPU).
+  # Coverage (Principle #22): the SDK, backend and integration tests on 3.12, under
+  # coverage, in parallel processes (pytest-xdist, one per CPU). On 3.12 coverage can
+  # measure through sys.monitoring (COVERAGE_CORE=sysmon), which slows the tests far
+  # less than the tracer 3.11 needs.
   # ============================================
   coverage:
-    name: Tests under coverage (Python 3.11)
+    name: Tests under coverage (Python 3.12)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -124,6 +126,7 @@ jobs:
       - name: Core coverage floor
         env:
           PYTEST_ADDOPTS: -n auto
+          COVERAGE_CORE: sysmon
         run: make test-cov
 
   # ============================================
