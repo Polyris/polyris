@@ -632,6 +632,8 @@ except (ClientError, BotoCoreError) as e:
 
 **A step a pass repeats until its request clears records its progress or keeps off the decisions' path.** A Restart's pointer step rewrote the pointers of every waiting row before any decision, on every pass until it cleared, and under a Stop wrote pointers it deleted at once; it writes those of the rows waiting since its request alone, keeps the first request's time, and none under a Stop (review of TR-6; `test_a_restart_writes_the_pointers_of_the_rows_it_put_back_to_wait_and_renews_nothing`).
 
+**A pass that an event brought writes only what the event's facts decide.** `DescribeExecution` is eventually consistent: right after an execution ends it may still say `RUNNING`. The pass that an execution's end wakes (ADR #137 §7) writes an end or a start, never a recorded check: one backed the row's own check off from 10 to 20 minutes (the break review of the execution-end events; `test_an_end_that_describe_execution_does_not_show_yet_leaves_the_row_its_own_check`). The stand answers at once, so a test of a read right after an event makes it answer the old state.
+
 ---
 
 ## CloudFormation custom resources (Lambda-backed)
