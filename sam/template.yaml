@@ -934,6 +934,25 @@ Resources:
               - secretsmanager:GetSecretValue
               - secretsmanager:DescribeSecret
             Resource: "*"
+          # A pipeline's direct steps (polyris.steps) run in its state machine under this role,
+          # on the resources the pipeline names, as its tasks' services do above.
+          # tests/sdk/test_orchestration_role_direct_steps.py holds every step to a grant here.
+          - Sid: AllowDirectSteps
+            Effect: Allow
+            Action:
+              - sns:Publish
+              - sqs:SendMessage
+              - bedrock:InvokeModel
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+            Resource: "*"
 
   # ---------------------------------------------------------------------------
   # CloudWatch Log Groups — Step Functions

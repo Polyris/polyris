@@ -9494,3 +9494,19 @@ Each time the console showed the task ended while its run stayed `RUNNING` until
 - `--all` takes about a quarter of a second more per folder, and `deploy --all` loads each file twice (the `dag_id` check, then the deploy).
 - A DAG made in a worker thread counts for the file being loaded; no command loads files from several threads.
 - Code: `polyris/loader.py` and `polyris/folder_process.py`; every command loads through them. Tests: `tests/sdk/test_loader.py` (with the check that nothing else runs a pipeline file), `test_folder_process.py`, `test_validation_core.py`, `test_deploy_bulk.py`. Rule in `polyris/CLAUDE.md`.
+
+---
+
+## ADR #140 — The orchestration role makes the direct steps' calls
+
+**Context.** A pipeline's direct steps (`polyris.steps`: `SNSTask`, `SQSTask`, `S3Task`, `DynamoDBTask`, `EventBridgeTask`, `BedrockTask`, `HttpTask`) run in its state machine under the platform's orchestration role, on resources the pipeline names. The role allowed the task services (Lambda, Step Functions, ECS, Batch, Glue, Athena, EMR) on any resource, but no `sns:Publish`, `sqs:SendMessage` or `bedrock:InvokeModel`, and S3 and DynamoDB only on the platform's own bucket and tables: those steps failed with AccessDenied on a user's resources (the docs audit after 1.3). Principle #45 kept `sns:Publish` and `sqs:SendMessage` out of the template, so that the platform sends no message of its own.
+
+**Decision.**
+
+1. The orchestration role allows the direct steps' calls on any resource: `sns:Publish`, `sqs:SendMessage`, `bedrock:InvokeModel`, `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, and DynamoDB's `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query` and `Scan` (statement `AllowDirectSteps`), as it allows the task services' calls.
+2. Principle #45 stands for the platform. Its guard (`tests/sdk/test_no_monitoring_infrastructure.py`) excepts this one statement, which holds the direct steps' calls and nothing else; the platform creates no topic or queue and publishes nothing of its own.
+3. `tests/sdk/test_orchestration_role_direct_steps.py` holds every direct step class to a grant of what its integration calls.
+
+**Alternatives.** A policy per pipeline on exactly the resources its steps and tasks name, written by `polyris-deploy`: least privilege, and a new IAM mechanism, left for later. Leaving each user to grant the calls: every user met AccessDenied first.
+
+**Consequences.** The role can reach any topic, queue, model, bucket and table of the account. Only Step Functions, EventBridge, EventBridge Scheduler and API Gateway of the account can assume it, so who may deploy a pipeline decides what it touches. A team that keeps data away from it puts the platform in an account of its own and reaches the data with a task's `role=`, or attaches a permissions boundary to the role (IAM_PERMISSIONS.md).

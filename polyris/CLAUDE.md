@@ -157,6 +157,10 @@ A CLI command that validates a file or runs tests must:
 
 Returning `None` silently on failure causes the caller to treat failure as success.
 
+## A direct step's call has its grant on the orchestration role
+
+A pipeline's direct steps (`polyris/steps.py`) run in its state machine under the platform's orchestration role, on the resources the pipeline names. Every action a step's Step Functions integration needs is allowed there on any resource (`AllowDirectSteps` and `AllowTaskServices` in `sam/template.yaml`); a new step class joins `tests/sdk/test_orchestration_role_direct_steps.py`, which fails until it does. `SNSTask`, `SQSTask`, `BedrockTask` and the S3 and DynamoDB steps on a user's resources failed with AccessDenied until 1.3.1.
+
 ## `TaskConfigKey` is the single source of truth for the SDK→SFN contract
 
 Any AWS parameter that flows from the SDK through `task_config` to the SFN

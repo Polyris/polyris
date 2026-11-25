@@ -620,7 +620,7 @@ A string value is either text or, whole, a JSONata expression in `{% ... %}`. An
 
 Give each step a `step_id` unique in the pipeline. `Wait`, `Pass` and `Succeed` exist too, but since nothing follows a step, they change nothing in a run: for a delay before a task, use `wait_before`. `LambdaTask`, `GlueTask`, `AthenaTask` and `ECSTask` run as tasks, not steps; use the `@task` decorators of the same services instead.
 
-> **Note:** The pipeline's state machine runs as the platform's role `<namespace>-<stage>-polyris-orchestration-role`. That role may call EventBridge and HTTP endpoints, but not your SNS topics, SQS queues, S3 buckets, DynamoDB tables or Bedrock models. Attach a policy that grants the call (for example `sns:Publish` on the topic) to that role, or the step fails with `AccessDenied`.
+> **Note:** The pipeline's state machine runs as the platform's role `<namespace>-<stage>-polyris-orchestration-role`, which may make each of these calls on any resource of the account ([IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md)). A resource in another account, or one whose policy or KMS key refuses the role, still answers `AccessDenied`.
 
 ---
 

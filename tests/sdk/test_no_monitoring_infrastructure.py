@@ -1,5 +1,8 @@
 """The platform template ships no custom metrics, alarms, SNS topics or DLQs (CLAUDE.md Principle #45).
 
+The one exception is the orchestration role's grant of the direct steps' calls, which serve the steps a
+user declares (ADR #140).
+
 Failures heal in code, fail the affected task loudly, or show in the console
 as a warning or in the System status (ADR #130 §9). Monitoring
 infrastructure costs every user money and needs someone to watch it; adding
@@ -54,6 +57,27 @@ def test_no_dead_letter_queues_or_failure_destinations(resources):
     assert {name: keys for name, keys in found.items() if keys} == {}
 
 
+#: The calls of the direct steps a user declares (ADR #140): the orchestration role makes them on the
+#: user's resources. The platform publishes nothing of its own, so no other statement may hold them.
+DIRECT_STEP_CALLS = {"sns:Publish", "sqs:SendMessage", "bedrock:InvokeModel", "s3:GetObject", "s3:PutObject",
+                     "s3:DeleteObject", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+                     "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"}
+
+
+def _direct_steps_statement(resources):
+    statements = resources["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]["Statement"]
+    return next(s for s in statements if s.get("Sid") == "AllowDirectSteps")
+
+
 def test_no_role_may_publish_metrics_alarms_or_messages(resources):
-    text = json.dumps(resources)
+    excepted = _direct_steps_statement(resources)
+    others = {name: r for name, r in resources.items() if name != "OrchestrationRolePolicy"}
+    policy = json.dumps([s for s in resources["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]["Statement"]
+                         if s is not excepted])
+    text = json.dumps(others) + policy
     assert [action for action in sorted(FORBIDDEN_ACTIONS) if f'"{action}"' in text] == []
+
+
+def test_the_direct_steps_statement_holds_their_calls_and_nothing_else(resources):
+    """ADR #140 excepts one statement from the guard above; it may never carry a metric or an alarm."""
+    assert set(_direct_steps_statement(resources)["Action"]) <= DIRECT_STEP_CALLS
