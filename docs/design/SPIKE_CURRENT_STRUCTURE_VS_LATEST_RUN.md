@@ -1,9 +1,10 @@
 # Spike: Viewing a pipeline's current deployed structure after `polyris-deploy`,
 # without tying it to any past or future execution
 
+**Historical analysis @ v1.2.** In 1.3 the deployed structure comes from the pipeline's spec version (ADR #137 §8).
+
 **Status: DECIDED AND IMPLEMENTED.** Option A (explicit toggle) shipped — see
-"Resolution" at the end of this document. **Historical analysis @ v1.2.** In 1.3 the
-deployed structure comes from the pipeline's spec version (ADR #137 §8).
+"Resolution" at the end of this document.
 
 **Question.** After `polyris-deploy` changes a pipeline's task structure or types, the
 pipeline detail view still shows the graph tied to the last real run — which reflects the

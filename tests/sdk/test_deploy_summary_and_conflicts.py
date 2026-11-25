@@ -22,6 +22,14 @@ from polyris import deploy as deploy_mod
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _config_from_the_test(monkeypatch):
+    """``_cfg`` sets the environments itself: never let the config load a config.py from disk.
+    ``PolyrisConfig._loaded`` is shared by the class, so the order of the tests decided whether
+    it did, and a test run alone failed (the docs audit after 1.3)."""
+    monkeypatch.setattr(PolyrisConfig, "_loaded", True)
+
+
 def _cfg(environments, default_stage="dev"):
     """Build a PolyrisConfig without touching the filesystem."""
     c = PolyrisConfig.__new__(PolyrisConfig)  # bypass __init__/_load
@@ -165,8 +173,8 @@ class TestPrintDeploySummary:
         out = capsys.readouterr().out
         assert "daily_orders" in out
         assert "stage:" in out and "dev" in out
-        assert "sam stack:" in out and "acme-dev" in out
-        # The hint that ties the sam stack to CFN outputs is what makes the
+        assert "platform stack:" in out and "acme-dev" in out
+        # The hint that ties the platform stack to CFN outputs is what makes the
         # summary *educational*, not just decorative — pin it.
         assert "CloudFormation outputs" in out
         assert "acme" in out and "us-east-1" in out
@@ -279,7 +287,8 @@ class TestFailNoStackName:
         assert "stack_name" in out
         assert "dev" in out
         assert "--stack" in out
-        assert "samconfig.toml" in out
+        assert "<namespace>-<stage>" in out  # the platform stack polyris-up created
+        assert "samconfig.toml" not in out    # a polyris-up user has none
 
     def test_recommends_polyris_init_when_no_config_py_exists(self, mocker, capsys):
         # A brand-new project has no config.py yet; telling the user to "add
@@ -342,8 +351,9 @@ class TestReadSamStack:
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "acme-dev" in out
-        assert "sam deploy" in out            # tells the user the recovery
-        assert "samconfig.toml" in out        # names the value to check
+        assert "polyris-up" in out            # tells the user the recovery
+        assert "sam deploy" not in out
+        assert "<namespace>-<stage>" in out   # names the value to check
 
     def test_other_client_errors_propagate(self, mocker):
         from botocore.exceptions import ClientError

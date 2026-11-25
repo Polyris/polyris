@@ -34,9 +34,6 @@ Local Testing:
     
     # Mock execution - simulate locally
     run(dag, mock=True)
-    
-    # LocalStack - run on AWS emulator
-    run(dag, localstack=True)
 
 Deploy Options:
 

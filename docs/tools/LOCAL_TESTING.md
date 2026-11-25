@@ -1,6 +1,6 @@
 # Local Testing
 
-Test polyris pipelines locally without deploying to AWS.
+Check and simulate a pipeline on your machine, without AWS: `polyris-local` from the shell, `polyris.local` from your tests.
 
 ## Quick start
 
@@ -38,8 +38,7 @@ polyris-local --validate
 
 ### Mock execution
 
-Simulates the pipeline locally by calling each task's Python function in topological order.
-Respects trigger rules (`all_success`, `all_done`, etc.).
+Runs the pipeline's tasks in dependency order, each by calling its decorated Python function, and applies the trigger rules (`all_success`, `all_done`, …). No AWS service is called. Exits 0 if every task succeeds.
 
 ```bash
 polyris-local --mock
@@ -49,10 +48,17 @@ polyris-local --mock
 
 ## Python API
 
-The same functions are available for use in pipeline files or tests:
+The same functions, for your tests. Install polyris into your test environment (the CLI's own environment is separate):
+
+```bash
+pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
+```
+
+Then, from the pipeline folder:
 
 ```python
 from polyris.local import validate, dry_run, run
+from dag import dag          # dag.py in this folder
 
 result = validate(dag, verbose=False)
 # {'valid': True, 'errors': [], 'warnings': [], 'info': {'dag_id': ..., 'task_count': 2, 'schedule': '@daily'}}
@@ -62,7 +68,6 @@ result = dry_run(dag, show_asl=False, show_mermaid=True)
 
 result = run(dag, mock=True)
 result = run(dag, mock=True, task_mocks={'extract': {'records': 100}})
-result = run(dag, localstack=True)  # requires LocalStack at localhost:4566
 ```
 
 ### `ExecutionResult`
@@ -85,8 +90,9 @@ for t in result.task_results:
 ## Testing pattern
 
 ```python
-# tests/test_my_pipeline.py
+# test_my_pipeline.py, next to dag.py
 from polyris.local import validate, run
+from dag import dag
 
 def test_valid():
     result = validate(dag, verbose=False)
@@ -101,8 +107,4 @@ def test_mock():
 
 ## Trigger rule note
 
-`run(dag, mock=True)` evaluates each trigger rule with the engine's own code, so it records
-`skipped` or `upstream_failed` where a deployed run does, and fails a task whose rule it does not
-know. It is still a plain Python loop: a failed task does not wait for a human decision, and every
-skip in it counts as a rule's skip. A green mock run does not guarantee identical behaviour in
-production. See `docs/features/DSL.md#trigger-rules` for what each trigger rule does.
+`run(dag, mock=True)` evaluates each trigger rule with the same code as a deployed run, so it records `skipped` or `upstream_failed` where a deployed run does, and fails a task whose rule it does not know. It is still a plain Python loop: a failed task does not retry or wait for a decision, and every skip in it counts as a rule's skip. A green mock run does not guarantee the same behaviour in AWS. What each trigger rule does: [DSL.md → Trigger rules](../features/DSL.md#trigger-rules).

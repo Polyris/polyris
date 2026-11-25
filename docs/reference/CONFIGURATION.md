@@ -1,38 +1,27 @@
 # Configuration
 
-Polyris uses `config.py` for per-stage pipeline project settings. Read by
-`polyris-deploy` when it deploys a pipeline — a single `--stage <name>` picks
-up stack name, region, profile, and roles for that environment.
+`config.py` holds a pipeline project's settings per stage: which platform stack, namespace, region, profile, account and roles `polyris-deploy` uses. With it, `polyris-deploy --stage prod` picks up everything for prod.
 
-`config.py` is optional while there is one platform stack in the region:
-without it, `polyris-deploy` finds the stack `polyris-up` installed (by its
-tag) and uses your AWS profile's region. Add it when you have several stages,
-need a fixed account guard (`account_id`), or deploy to a stack created with
-`sam deploy` (those aren't tagged).
-
-`ui/deploy.sh` does **not** read `config.py` — UI deploy is a per-stack
-action independent of any pipeline; pass the stack + region as CLI args.
+`config.py` is optional while there is one platform stack in the region: without it, `polyris-deploy` finds the stack `polyris-up` installed and takes its namespace and stage. Add it when you have several stages, want an account guard (`account_id`), or name roles for your tasks.
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
-# Generate config.py template
-polyris-init --project
+polyris-init --project            # writes pipelines/config.py
+cd pipelines && polyris-init my-pipeline
 ```
 
-Or create manually at `pipelines/config.py` in the monorepo layout (or at
-the pipelines-repo root if pipelines live separately):
+Or write `config.py` yourself, at the root of the folder that holds your pipeline folders:
 
 ```python
 # pipelines/config.py
 
-# The dict KEYS ("dev", "prod") are the stage names — that's what --stage picks.
-# There is no separate "stage" field inside the per-stage dict.
+# The keys ("dev", "prod") are the stage names: --stage picks one.
 ENVIRONMENTS = {
     "dev": {
-        "stack_name": "mycompany-dev",  # SAM stack (matches samconfig.toml)
+        "stack_name": "mycompany-dev",  # the platform stack polyris-up created: <namespace>-<stage>
         "namespace": "mycompany",
         "region": "us-east-1",
         "account_id": "111111111111",
@@ -50,66 +39,52 @@ ENVIRONMENTS = {
     },
 }
 
-DEFAULT_STAGE = "dev"  # stage KEY picked when --stage is not passed
+DEFAULT_STAGE = "dev"  # the stage picked when --stage is not passed
 ```
 
 ---
 
-## What each field does
+## Fields
 
-The stage itself is the dict KEY (`"dev"`, `"prod"`). The table below lists
-the fields *inside* each stage's dict, plus the module-level `DEFAULT_STAGE`.
+The stage is the key (`"dev"`, `"prod"`); there is no `stage` field. Inside each stage:
 
 | Field | Read by | Purpose |
 |-------|---------|---------|
-| `stack_name` | `polyris-deploy` | The platform stack (`polyris-up` names it `<Namespace>-<Stage>`; for `sam deploy`, the `stack_name` in `sam/samconfig.toml`). `polyris-deploy` calls `describe_stacks(<stack_name>)` to fetch the start-run function's ARN, the orchestration role ARN, DynamoDB table names, and results bucket. Optional when one `polyris-up` platform is in the region. |
-| `namespace` | `polyris-deploy` | Prefix for the *pipeline* stacks polyris-deploy creates: `{namespace}-{stage}-polyris-{dag_id}` (where `{stage}` is the dict key). Does not need to match `stack_name`. |
-| `region` | `polyris-deploy` | The AWS region of the SAM stack. All SDK calls use this. |
-| `profile` | `polyris-deploy` | Named profile from `~/.aws/credentials`. Optional. |
-| `account_id` | `polyris-deploy` | Guard — `polyris-deploy` runs `sts:GetCallerIdentity` and refuses to deploy if credentials point at a different account. Optional but recommended. |
-| `roles` | task code (at runtime) | Runtime role ARNs referenced by pipeline tasks via `@task.sfn(role="etl")`. Not used at deploy time. |
-| `DEFAULT_STAGE` (module-level) | `polyris-deploy` | The stage KEY picked when `--stage` is not passed. Must be one of the `ENVIRONMENTS` keys. |
+| `stack_name` | `polyris-deploy` | The platform stack `polyris-up` created, `<namespace>-<stage>`. `polyris-deploy` reads its outputs: the start-run function, the orchestration role, the table names and the results bucket. Optional while one platform is in the region |
+| `namespace` | `polyris-deploy` | The prefix of the pipeline stacks: `{namespace}-{stage}-polyris-{dag_id}`. Usually the namespace you gave `polyris-up` |
+| `region` | `polyris-deploy` | The region of the platform stack. Every AWS call uses it |
+| `profile` | `polyris-deploy` | A named AWS profile. Optional |
+| `account_id` | `polyris-deploy` | A guard: `polyris-deploy` checks the account of your credentials (`sts:GetCallerIdentity`) and refuses to deploy to another. Optional, recommended |
+| `roles` | `polyris-deploy`, `polyris-validate` | Role ARNs a task names by key (`@task.sfn(role="etl")`). `polyris-deploy` puts the ARN in the generated pipeline; `polyris-validate` rejects a key that is not here. `POLYRIS_ROLE_<KEY>` overrides one |
+
+At the module level, `DEFAULT_STAGE` is the stage picked when `--stage` is not passed; it must be one of the `ENVIRONMENTS` keys.
 
 ---
 
-## Which command reads what
+## Which `config.py`, and what wins
 
-| Command | Reads from | Fields needed |
-|---------|------------|---------------|
-| `sam deploy` | `sam/samconfig.toml` | `stack_name`, `region`, `profile`, `Namespace`, `Stage` |
-| `polyris-deploy --stage <s>` | `config.py` → `ENVIRONMENTS[s]` | `stack_name`, `namespace`, `region`, `profile` (optional), `account_id` (optional) |
-| `ui/deploy.sh <stack> <region>` | CLI args (no config file) | Runs independent of `config.py`; you pass what it needs. |
+`polyris-deploy` reads the `config.py` that `POLYRIS_CONFIG` names, or else the first `config.py` with `ENVIRONMENTS` from the current folder up to the project root (`.git` or `pyproject.toml`). So a pipeline folder inside `pipelines/` finds `pipelines/config.py`. It stops with the reason, before any AWS call, when it cannot use that config. That happens when `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse. It also happens when a `config.py` it found does not parse or fails when run.
 
-**Key overlap:** the `stack_name` in `config.py` must equal the `stack_name` in
-`sam/samconfig.toml`. Polyris cannot cross-check them because the two files may
-live in different repositories.
+Per field, the first that is set wins:
 
----
+1. **Command-line options**: `--stage`, `--stack`, `--region`, `--profile`
+2. **Environment variables**: `POLYRIS_STAGE`, `POLYRIS_STACK`, `POLYRIS_NAMESPACE`, `POLYRIS_REGION`, `POLYRIS_PROFILE`, `AWS_REGION`, `AWS_PROFILE`
+3. **`config.py`**: `ENVIRONMENTS[stage]`
 
-## Priority for polyris-deploy
-
-Per field, in order:
-
-1. **CLI arguments** — `--stage`, `--stack`, `--region`, `--profile`
-2. **Environment variables** — `POLYRIS_STAGE`, `POLYRIS_STACK`, `POLYRIS_REGION`, `POLYRIS_PROFILE`, `AWS_REGION`, `AWS_PROFILE`
-3. **config.py** — `ENVIRONMENTS[stage]`
-
-`polyris-deploy` reads the `config.py` that `POLYRIS_CONFIG` names, or else the first `config.py` with `ENVIRONMENTS` from the current directory up to the project root (`.git` or `pyproject.toml`). If it cannot use a config you pointed it at, it stops with the reason before any AWS call (ADR #134). That happens when `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse, and when a `config.py` it found does not parse or fails when run.
-
-CLI arguments that override config values print a loud warning:
+An option that overrides `config.py` prints a warning:
 
 ```
 ⚠️  --region us-west-2 overrides config.py (us-east-1). Continuing.
 ```
 
-Every deploy also prints a resolved-target summary before the first AWS write:
+Every deploy prints the resolved target before its first AWS write:
 
 ```
 ── Deploy target ──────────────────────────────────────────────────
    dag:             daily_orders
    stage:           dev
    config:          /home/me/pipelines/config.py
-   sam stack:       mycompany-dev    ← reads CloudFormation outputs from here
+   platform stack:  mycompany-dev    ← reads CloudFormation outputs from here
    namespace:       mycompany
    region:          us-east-1
    profile:         my-dev-profile
@@ -120,14 +95,13 @@ Every deploy also prints a resolved-target summary before the first AWS write:
 
 ---
 
-## Cross-Account Roles
+## Roles for tasks in other accounts
 
 ```python
 ENVIRONMENTS = {
     "prod": {
         "stack_name": "mycompany-prod",
         "namespace": "mycompany",
-        "stage": "prod",
         "region": "us-east-1",
         "roles": {
             "etl": "arn:aws:iam::123456789012:role/etl-execution-role",
@@ -137,62 +111,43 @@ ENVIRONMENTS = {
 }
 ```
 
-Usage in pipeline:
+In the pipeline:
+
 ```python
 @task.sfn(
-    arn="arn:aws:states:us-east-1:...",
-    role="etl",  # key from config.py roles
+    arn="arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job",
+    role="etl",  # a key of config.py's roles
 )
 ```
 
+Setting up the roles: [CROSS_ACCOUNT_ROLES.md](../deployment/CROSS_ACCOUNT_ROLES.md).
+
 ---
 
-## Multi-Stage Deploy
+## Several stages
+
+Install a platform per stage with `polyris-up` ([manage-the-platform.md](../how-to/manage-the-platform.md#add-a-stage)), add the stage to `ENVIRONMENTS`, and deploy to it:
 
 ```bash
-# Deploy pipelines
 polyris-deploy --stage dev
 polyris-deploy --stage prod
-polyris-deploy --stage prod --profile my-prod-profile  # override profile
-
-# Deploy the console UI — pass the SAM stack + region explicitly (deploy.sh
-# does NOT read config.py; UI deploy is a per-stack action).
-cd ui && ./deploy.sh myorg-dev  us-east-1 --profile polyris-dev
-cd ui && ./deploy.sh myorg-prod us-east-1 --profile polyris-prod
+polyris-deploy --stage prod --profile my-prod-profile  # another profile
 ```
 
 ---
 
-## Monorepo vs split-repo
+## CI/CD
 
-`polyris-deploy` uses `--stage <name>` to read `config.py`. `ui/deploy.sh` is
-independent — it takes the SAM stack + region positionally and does not read
-`config.py`. Both work in either layout:
-
-- **Monorepo** (pipelines + SAM + UI in one repo). `polyris-init --project`
-  writes `pipelines/config.py`; `polyris.config` walks up from the pipeline
-  directory to find it, so `polyris-deploy` works from any pipeline subdir.
-- **Split-repo** (pipelines in repo A, SAM in repo B, UI in repo C). Each repo
-  that runs `polyris-deploy` needs its own `config.py`. Keep the `stack_name`
-  field in sync with the SAM `samconfig.toml` — polyris cannot see across
-  repositories.
-
----
-
-## Environment Variables (CI/CD)
-
-For GitHub Actions or other CI systems:
+Environment variables replace `config.py` settings, for example in GitHub Actions:
 
 ```yaml
 - name: Deploy
   env:
-    POLYRIS_STACK: mycompany-prod   # or POLYRIS_STAGE + a config.py
+    POLYRIS_STACK: mycompany-prod   # or POLYRIS_STAGE and a config.py
     # POLYRIS_CONFIG: ci/config.py  # a config.py elsewhere; it must exist
     POLYRIS_REGION: us-east-1
     AWS_PROFILE: prod
   run: polyris-deploy
 ```
 
----
-
-See [CLI.md](CLI.md) for full command options reference.
+A platform deployed from a checkout with `sam deploy`: [FROM_SOURCE.md](../deployment/FROM_SOURCE.md#pipelines-on-a-stack-deployed-with-sam). Every command's options: [CLI.md](CLI.md).

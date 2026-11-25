@@ -1,7 +1,7 @@
 # Spike: Stop→Restart mechanics, event history, XCom, and the manual-action
 # escape hatch's real downstream consequences
 
-> **Historical analysis.** Snapshot of task-action lifecycle at time of
+> **Historical analysis @ v0.93.** Snapshot of task-action lifecycle at time of
 > investigation. All findings shipped in code + tests. For current
 > task-action behaviour see [DATA_PASSING.md](../features/DATA_PASSING.md)
 > and the ADRs referenced below. Kept because `DESIGN_DECISIONS.md` cites

@@ -604,7 +604,6 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
         if verbose:
             print(f"  Schedule: {_c(str(dag.schedule), CYAN) if dag.schedule else 'manual'}")
             print(f"  Tasks: {len(dag.tasks)}")
-            print(f"  States: {len(asl.get('States', {}))}")
             if errors:
                 print(_c(f"  ❌ Errors ({len(errors)}):", RED))
                 for e in errors:
@@ -624,7 +623,7 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
 
 
 def _run_test(dag_file: str) -> bool:
-    """Run python_callable for each task (for @task.python pipelines).
+    """Run each task's Python body locally, and report the ones that raise.
 
     Returns True if all callables succeeded, False if any raised.
     """
@@ -716,7 +715,7 @@ def main():
     parser.add_argument(
         '--verbose', '-v',
         action='store_true',
-        help='Show detailed output (schedule, task count, state count)'
+        help='Show detailed output (schedule and task count)'
     )
     parser.add_argument(
         '--file', '-f',
@@ -726,7 +725,7 @@ def main():
     parser.add_argument(
         '--test',
         action='store_true',
-        help='Run python_callable for each task (for @task.python pipelines)'
+        help="Run each task's Python body locally and report the ones that raise"
     )
     parser.add_argument(
         '--json',

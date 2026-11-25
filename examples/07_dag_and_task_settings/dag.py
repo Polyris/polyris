@@ -1,15 +1,13 @@
-"""Operational knobs — retries, backoff, timeouts, and backfill behavior.
+"""Operational knobs — retries, backoff and timeouts.
 
 The settings that matter once a pipeline is in production:
 
   - retry policy with exponential backoff, jitter, and a cap
   - per-task execution timeout and per-task orchestration timeout
-  - `skip_on_backfill` — don't re-run a live scraper when backfilling history
-  - a bounded active window with `start_date` / `end_date`
 
 Run it locally (no AWS):  polyris-validate -v
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from polyris import DAG, task
 
@@ -20,14 +18,11 @@ with DAG(
     dag_id="operational-demo",
     group="features",
     schedule="@daily",
-    description="Production knobs: retries, timeouts, backfill.",
+    description="Production knobs: retries and timeouts.",
     tags=["example", "operations"],
-    start_date=datetime(2026, 1, 1),
-    end_date=datetime(2027, 1, 1),
 ) as dag:
 
-    # A live scraper — during a backfill of old dates this should NOT re-run.
-    @task.sfn(arn=ARN, skip_on_backfill=True)
+    @task.sfn(arn=ARN)
     def scrape_live_source():
         pass
 

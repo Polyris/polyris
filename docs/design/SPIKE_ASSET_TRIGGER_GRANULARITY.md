@@ -1,6 +1,6 @@
 # Spike: Asset-trigger dedup is silently daily-only, regardless of schedule
 
-> **Historical analysis.** Snapshot of asset-trigger dedup behaviour at the
+> **Historical analysis @ v0.93.** Snapshot of asset-trigger dedup behaviour at the
 > time of investigation. For the current asset contract see
 > [ASSETS.md](../features/ASSETS.md). Kept because `DSL.md`, `polyris/assets.py`,
 > and example DAGs cite this analysis; do not read as current reference.

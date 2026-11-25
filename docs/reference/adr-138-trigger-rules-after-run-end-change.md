@@ -189,7 +189,7 @@ Every skip records who made it, in `skip_origin`:
 **Docs**, in the same change:
 - `docs/features/DSL.md`: the nine rules with their examples, final failures, the skip origins with a part for readers who come from Airflow, and the run outcome.
 - `docs/architecture/ARCHITECTURE.md`, `docs/architecture/BACKEND.md`, `docs/operations/TROUBLESHOOTING.md`, `docs/features/DATA_PASSING.md` and `docs/tools/LOCAL_TESTING.md`; `docs/operations/UI.md`, which loses its two lines on the UI's copy; the examples `03_fan_in` and `09_trigger_rules`, and `examples/README.md`.
-- The status line of `docs/reference/SPIKE_TRIGGER_RULES.md`, and root `CLAUDE.md` Principle #48, whose enabling time gains the `one_failed` clause.
+- The status line of `docs/design/SPIKE_TRIGGER_RULES.md`, and root `CLAUDE.md` Principle #48, whose enabling time gains the `one_failed` clause.
 
 ## Alternatives considered
 

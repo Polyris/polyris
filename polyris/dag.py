@@ -15,6 +15,26 @@ if TYPE_CHECKING:
     from .steps import Step
 
 
+def resolve_schedule(schedule: str, *, dag_id: str) -> Optional[str]:
+    """The EventBridge expression of a time-based schedule: a preset's, or the expression itself.
+
+    EventBridge Scheduler takes ``cron(...)``, ``rate(...)`` or ``at(...)`` only. A bare cron such
+    as ``"0 9 * * MON-FRI"`` passed validation and failed the deploy, so anything else is refused
+    with the form to write. ``polyris-init --schedule`` checks its value with this too.
+    """
+    expression = schedule.strip()
+    if expression in SCHEDULE_PRESETS:
+        return SCHEDULE_PRESETS[expression]
+    if expression.startswith(("cron(", "rate(", "at(")):
+        return expression
+    presets = ", ".join(p for p in SCHEDULE_PRESETS if p != "@once")
+    raise ValueError(
+        f"DAG '{dag_id}': schedule {schedule!r} is neither a preset ({presets}) nor an EventBridge "
+        f"expression. Write a cron as cron(minutes hours day-of-month month day-of-week year), e.g. "
+        f"schedule=\"cron(0 9 ? * MON-FRI *)\" for weekdays at 09:00 UTC, or use rate(...)."
+    )
+
+
 @dataclass(eq=False)
 class DAG:
     """
@@ -33,16 +53,13 @@ class DAG:
 
     `group` is the group the console's pipelines sidebar lists the pipeline
     under (compared without case); without one it is listed under Ungrouped.
-    
-    Alerts are configured in the Console UI (Settings → Alerts), not in
-    the DSL.
     """
     dag_id: str
     description: str = ""
     
     # Scheduling
     # Can be:
-    #   - str: "@daily", "@hourly", "0 * * * *" (time-based)
+    #   - str: "@daily", "@hourly", "cron(0 9 ? * MON-FRI *)", "rate(6 hours)" (time-based)
     #   - Asset: schedule=my_asset (triggered when asset is updated)
     #   - List[Asset]: schedule=[asset_a, asset_b] (AND - all must be ready)
     #   - AssetAll: schedule=[asset_a & asset_b] (explicit AND)
@@ -119,10 +136,8 @@ class DAG:
             self._eventbridge_schedule = None
         elif isinstance(self.schedule, str):
             # Time-based schedule
-            if self.schedule in SCHEDULE_PRESETS:
-                self._eventbridge_schedule = SCHEDULE_PRESETS[self.schedule]
-            else:
-                self._eventbridge_schedule = self.schedule
+            self.schedule = self.schedule.strip()  # " cron(...)" passed the check and failed the deploy
+            self._eventbridge_schedule = resolve_schedule(self.schedule, dag_id=self.dag_id)
         elif self.schedule is not None:
             raise TypeError(
                 f"Unrecognised schedule type: {type(self.schedule)!r}. "

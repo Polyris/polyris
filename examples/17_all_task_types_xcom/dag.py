@@ -1,7 +1,6 @@
 """End-to-end XCom smoke — every task type reads upstream AND writes its output.
 
-Ships a linear chain that exercises every polyris task type polyris 1.0.0 supports,
-with each task participating in XCom bidirectionally (reads upstream via
+Ships a linear chain that exercises every polyris task type but EMR, with each task participating in XCom bidirectionally (reads upstream via
 ``xcom.get()`` / native inject, writes its output via return / ``xcom.push()`` /
 nested SFN Output).
 
@@ -19,17 +18,17 @@ Console)::
 
 Per-task xcom pattern:
 
-* ``seed_lambda`` — head of chain, no upstream. Returns a dict; the wrapper
+* ``seed_lambda`` — head of chain, no upstream. Returns a dict; ``run_task``
   captures it as the task's xcom output automatically (Lambda return = xcom).
 * ``transform_spark`` — Glue ETL (Spark). Reads seed's ``s3_seed`` via
   ``xcom.get(None, "seed_lambda")`` in job code; enriches; writes bronze
   parquet; publishes ``{"bronze_rows", "s3_bronze"}`` via ``xcom.push()``.
 * ``aggregate_pyshell`` — Glue pythonshell. Reads transform via ``xcom.get()``;
   aggregates; publishes ``{"silver_count", "s3_silver"}`` via ``xcom.push()``.
-* ``summary_athena`` — Athena SQL. Reads ``silver_count`` **at DAG-definition
-  time** via ``variables=`` templating (Athena SQL can't call xcom at runtime;
-  see DATA_PASSING.md#emr-and-athena--reads-yes-xcompush-no). The task's xcom
-  output is the wrapper-captured ``{QueryExecution: {QueryExecutionId: ...}}``
+* ``summary_athena`` — Athena SQL. Its threshold is baked into the query **at
+  DAG-definition time** (``SILVER_THRESHOLD``; Athena SQL can't call xcom at
+  runtime; see DATA_PASSING.md#emr-and-athena--reads-yes-xcompush-no). The
+  task's xcom output is the ``run_task``-captured ``{QueryExecution: {QueryExecutionId: ...}}``
   AWS metadata — Athena has no SDK hook for ``xcom.push()``. Downstream reads
   that metadata and unpacks it.
 * ``resolve_athena`` — Lambda. Reads ``summary_athena``'s xcom output
@@ -44,17 +43,16 @@ Per-task xcom pattern:
 * ``publish_sfn`` — nested Step Functions state machine. Receives
   ``render_batch``'s output as its SFN Input under ``$.upstream.render_batch.
   output``; the nested SM returns ``{"published_url"}`` as its Output, which
-  the wrapper stores as this task's xcom.
+  ``run_task`` stores as this task's xcom.
 
-EMR is intentionally omitted: ``xcom.push()`` is not supported for EMR in 1.0.0
+EMR is intentionally omitted: ``xcom.push()`` is not supported for EMR
 (``addStep.sync`` has no Environment field to inject POLYRIS_* env vars, and
 injecting via ``HadoopJarStep.Args`` would risk breaking user Spark parsers).
 See docs/features/DATA_PASSING.md.
 
-The examples version uses the placeholder-style ``polyris-test-*`` resource
-names from ``examples/testing-infra/test-resources.yaml``. A ready-to-run
-variant with the same resource names in the polyris-dev account lives in
-``examples_temp/17_all_task_types_xcom/`` — same DAG, same handler code.
+The resource names follow the ``polyris-test-*`` style of
+``examples/testing-infra/test-resources.yaml``; README.md beside this file says
+what to create.
 
 Run locally (no AWS):  polyris-validate -v
 """
@@ -75,7 +73,7 @@ with DAG(
     dag_id="all-task-types-xcom",
     group="features",
     schedule="cron(0 6 * * ? *)",   # 06:00 UTC daily
-    description="Every polyris 1.0.0 task type, each fully participating in xcom.",
+    description="Every polyris task type but EMR, each fully participating in xcom.",
     tags=["example", "xcom", "smoke", "reference"],
     variables={
         "silver_threshold": SILVER_THRESHOLD,
@@ -87,7 +85,7 @@ with DAG(
 ) as dag:
 
     # -----------------------------------------------------------------------
-    # 1. Seed — Lambda producer. Returns a dict; wrapper captures the return
+    # 1. Seed — Lambda producer. Returns a dict; run_task captures the return
     #    value as xcom output automatically. No SDK required in the handler.
     # -----------------------------------------------------------------------
     @task.lambda_function(function_name="polyris-test-xcom-all-seed")
@@ -104,9 +102,8 @@ with DAG(
     #
     # Requires:
     # - Glue job of Command Name "glueetl" (Spark), GlueVersion "4.0"+, DPUs
-    # - polyris SDK installed on the cluster via
-    #     --additional-python-modules polyris==1.0.0
-    #   (or via --extra-py-files s3://.../polyris-1.0.0-*.whl if not on PyPI yet)
+    # - the polyris SDK of your platform's version installed on the job; see
+    #   docs/features/DATA_PASSING.md#installing-polyris-sdk-in-glue--ecs--batch--emr
     # - IAM: PolyrisTaskReadPolicy (xcom.get) + PolyrisTaskWritePolicy (xcom.push)
     # -----------------------------------------------------------------------
     @task.glue_job(
@@ -134,8 +131,8 @@ with DAG(
         pass
 
     # -----------------------------------------------------------------------
-    # 4. Summary — Athena SQL. Reads ``silver_threshold`` from DAG variables
-    #    (Athena can't xcom.get at runtime); output is the wrapper-captured
+    # 4. Summary — Athena SQL. Its threshold is baked into the query
+    #    (Athena can't xcom.get at runtime); output is the run_task-captured
     #    QueryExecutionId metadata (Athena can't xcom.push either).
     # -----------------------------------------------------------------------
     @task.athena_query(
@@ -182,14 +179,14 @@ with DAG(
     #
     # NOTE: the shared test-resources.yaml provisions ``polyris-test-ecs`` with
     # a busybox container that only echoes. To run this pipeline you need a
-    # Python-capable image with polyris>=1.0.0 installed; see README for the
-    # ECS TaskDefinition snippet.
+    # Python-capable image with the polyris SDK of your platform's version
+    # installed; see README for the ECS TaskDefinition snippet.
     # -----------------------------------------------------------------------
     @task.ecs_task(
         cluster="polyris-test-ecs",
         # No trailing `:N` revision — ECS RunTask resolves the family name to
         # the latest ACTIVE revision. Pinning `:1` locks you to whatever code
-        # CFN built the first time; the next `sam deploy` bumps the container
+        # CFN built the first time; the next deploy of that stack bumps the container
         # Command into TaskDefinition:2, but a pinned DAG keeps calling :1.
         task_definition=(
             "arn:aws:ecs:us-east-1:000000000000:task-definition/"
@@ -231,7 +228,7 @@ with DAG(
     #    its SFN Input; the nested SM's Output becomes this task's xcom.
     # -----------------------------------------------------------------------
     #
-    # No SDK, no push — SFN "just works" because the wrapper stores the
+    # No SDK, no push — SFN "just works" because run_task stores the
     # nested SM's Output as ``result`` on the output# row. The nested SM
     # definition lives in sfn_definitions/publish.json.
     # -----------------------------------------------------------------------

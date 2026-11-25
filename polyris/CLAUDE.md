@@ -91,6 +91,10 @@ nodes into one, making one task disappear from the execution graph.
 
 `PolyrisConfig` loads `config.py` on first use (`_ensure_loaded()`). Every accessor that reads `_environments` or `_default_stage` — on `PolyrisConfig` and on the `_StageConfig` view — calls `_ensure_loaded()` first. The view once read `_environments` directly; `polyris-deploy --stage dev` reads only the view, so a pipeline file that never touched `config` deployed with the default AWS credentials and without `stack_name`. `test_stage_view_loads_config_py_on_its_first_read` pins it.
 
+## A stage the command names is the stage the pipeline file reads
+
+`polyris-deploy` deploys to `--stage`, or else to `config.py`'s `DEFAULT_STAGE`, and a pipeline file reads its own stage from `POLYRIS_STAGE` (`config.stage`, or `os.environ` as the file `polyris-init` writes does). The command sets it to the stage of the deploy before it runs a file (`config.use_stage`), and the request of each folder's process of `--all` carries it (`folder_process.main`); never the inherited environment. Until 1.3.1 a deploy to prod ran the file under the shell's stage and carried its ARNs (`TestStageReachesThePipelineFile`, `test_a_folders_files_run_under_the_stage_of_its_request`).
+
 ## A config the user names is used, or the command stops (ADR #134)
 
 Any way `polyris.config` fails to use a config the user pointed at — `POLYRIS_CONFIG` naming a missing file, a file without `ENVIRONMENTS`, a `config.py` that does not parse or fails when run — raises `ConfigError`; `polyris-deploy` prints it and exits before any AWS call. Never turn such a failure into "no config": without one the deploy uses the default credentials and reaches another account. This class happened twice in the 1.2.0 rehearsal (F5, F17); the deploy target now also names the config file and the account.
@@ -152,6 +156,10 @@ A CLI command that validates a file or runs tests must:
 3. Call `sys.exit(0 if success else 1)` in `main()` based on that result.
 
 Returning `None` silently on failure causes the caller to treat failure as success.
+
+## A direct step's call has its grant on the orchestration role
+
+A pipeline's direct steps (`polyris/steps.py`) run in its state machine under the platform's orchestration role, on the resources the pipeline names. Every action a step's Step Functions integration needs is allowed there on any resource (`AllowDirectSteps` and `AllowTaskServices` in `sam/template.yaml`); a new step class joins `tests/sdk/test_orchestration_role_direct_steps.py`, which fails until it does. `SNSTask`, `SQSTask`, `BedrockTask` and the S3 and DynamoDB steps on a user's resources failed with AccessDenied until 1.3.1.
 
 ## `TaskConfigKey` is the single source of truth for the SDK→SFN contract
 
@@ -419,6 +427,8 @@ expression `infer_cron_cadence` cannot parse will fail that test immediately.
 
 **When changing a preset expression:** the parity test fails until `infer_cron_cadence`
 is updated to handle the new form — the coupling is enforced, not advisory.
+
+**A preset fires at the start of its period:** the hour, 00:00 UTC, Monday 00:00 UTC (an ISO week), the 1st of the month. A `rate(...)` counts from when the schedule was created, so `@daily` ran at the time of day of the deploy until 1.3.1 (`test_each_preset_fires_at_the_start_of_its_period`).
 
 **Sub-daily rate/step cadences return `None`, never `"hourly"`:** `rate(N hours)` and
 `*/N` in the hours cron field for N>1 fire every N hours (sub-daily). Returning

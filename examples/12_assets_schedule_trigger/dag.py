@@ -1,10 +1,10 @@
-"""Assets — cross-pipeline lineage and asset-triggered runs (EXPERIMENTAL).
+"""Assets — a pipeline that another pipeline's asset triggers (EXPERIMENTAL).
 
-⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
+⚠️  Assets are experimental: the API may change. List each asset's producers and consumers with `polyris-output --assets`.
 
 This pipeline consumes `clean/orders` — the asset **produced by the
 `11_assets_outlets_inlets` pipeline** — and produces `analytics/orders_daily`. Because the
-two pipelines share an Asset by name, Polyris links them into one lineage graph:
+two pipelines share an Asset by name, a run of the first that produces it starts the second:
 
     (orders-clean)  extract -> transform --produces--> clean/orders
                                                             |
@@ -15,7 +15,7 @@ Instead of a timer, this DAG is **triggered by the asset**: `schedule=[clean_ord
 means "run whenever clean/orders is updated" — the first time each day. If
 `orders-clean` runs more than once on the same calendar day, only the first
 materialization triggers this pipeline; see
-docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md for why, and
+docs/design/SPIKE_ASSET_TRIGGER_GRANULARITY.md for why, and
 `AssetAny([clean_orders])` below for the escape hatch when every run should
 recompute the consumer (e.g. an hourly producer). Scheduling options:
 
@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)
 # NOTE: placeholder ARN — replace with your own state machine before deploying.
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
-# Same asset name as produced in 11_assets_outlets_inlets — this is what links the lineage.
+# Same asset name as produced in 11_assets_outlets_inlets — this is what links the two pipelines.
 clean_orders = Asset("clean/orders", uri="s3://polyris-example/clean/orders/", group="processed")
 orders_daily = Asset("analytics/orders_daily", uri="s3://polyris-example/analytics/orders_daily/", group="aggregated")
 

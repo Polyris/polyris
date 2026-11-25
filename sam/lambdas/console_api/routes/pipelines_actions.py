@@ -91,7 +91,7 @@ def run_pipeline(pipeline_name: str, event: Dict) -> Dict:
         current_date = date_val
         partition_arg = date_val
     
-    # Extract skip_tasks — must be at top level for wrapper's Check_Skip_Tasks
+    # skip_tasks: the tasks Start_Run writes as skipped, read from the run input's top level
     skip_tasks = input_data.pop('skip_tasks', None)
     
     # Wrap user params in variables so they reach tasks via clean input
@@ -106,7 +106,7 @@ def run_pipeline(pipeline_name: str, event: Dict) -> Dict:
         }
     }
     
-    # skip_tasks must be top-level (wrapper checks $states.input.skip_tasks)
+    # Top level, where Start_Run reads it (run_input.SKIP_TASKS)
     if skip_tasks:
         execution_data['skip_tasks'] = skip_tasks
     

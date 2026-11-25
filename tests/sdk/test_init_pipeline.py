@@ -91,34 +91,24 @@ class TestInitPipelineCfnDefault:
         assert "polyris init --local" not in content
         assert "polyris-deploy" in content
 
-    def test_generated_local_pipeline_is_structurally_valid_after_arn_substitution(self, tmp_path):
-        """Mirror of the cfn substitution test for the --local template: after
-        replacing placeholder sentinels the local scaffold must also produce
-        structurally valid ASL."""
+    def test_generated_local_pipeline_validates_as_written(self, tmp_path):
+        """The --local scaffold is the no-AWS path: its example ARNs (account
+        123456789012) pass, so polyris-validate and polyris-local succeed without an
+        edit. It wrote REGION / ACCOUNT_ID placeholders, and the first command a
+        newcomer ran failed three times (the docs audit after 1.3)."""
         init_pipeline(name="my-pipeline", base_dir=str(tmp_path), deploy_method="local")
-        dag_file = tmp_path / "my-pipeline" / "dag.py"
-        content = dag_file.read_text()
-        real_content = content.replace("REGION", "us-east-1").replace("ACCOUNT_ID", "123456789012")
-        dag_file.write_text(real_content)
-        dag = _load_dag(str(dag_file))
-        is_valid, errors, _ = validate_asl_from_dag(dag, verbose=False)
-        assert is_valid is True, errors
-        assert not any("placeholder" in e.lower() for e in errors)
-
-    def test_local_deploy_method_unaffected(self, tmp_path):
-        """Control: the pre-existing --local path must still work exactly
-        as before, and must be distinguishable from the cfn template — this
-        fix must not have swapped or merged the two."""
-        init_pipeline(name="my-pipeline", base_dir=str(tmp_path), deploy_method="local")
-        content = (tmp_path / "my-pipeline" / "dag.py").read_text()
-        assert "polyris init --local" in content
-        assert "CloudFormation-ready" not in content
         dag = _load_dag(str(tmp_path / "my-pipeline" / "dag.py"))
         is_valid, errors, _ = validate_asl_from_dag(dag, verbose=False)
-        assert is_valid is False, "placeholder ARNs must block deployment"
-        assert any("placeholder" in e.lower() for e in errors), (
-            "local template also embeds placeholder ARNs that must be flagged"
-        )
+        assert is_valid is True, errors
+
+    def test_local_deploy_method_unaffected(self, tmp_path):
+        """The --local template stays distinguishable from the cfn template: its
+        own header, and example ARNs where the cfn one has placeholders."""
+        init_pipeline(name="my-pipeline", base_dir=str(tmp_path), deploy_method="local")
+        content = (tmp_path / "my-pipeline" / "dag.py").read_text()
+        assert "polyris-init --local" in content
+        assert "CloudFormation-ready" not in content
+        assert "ACCOUNT_ID" not in content and "arn:aws:states:us-east-1:123456789012:" in content
 
 
 class TestStarterPipelineRetryDefaults:

@@ -16,8 +16,8 @@ include_fragments = "full"
 exclude_path = [
     "^docs/reference/DESIGN_DECISIONS\\.md$",
     "^docs/reference/adr-[0-9]+.*\\.md$",
-    "^docs/reference/SPIKE_.*\\.md$",
-    "^docs/reference/COMPLETENESS_REPORT_.*\\.md$",
+    "^docs/design/SPIKE_.*\\.md$",
+    "^docs/design/COMPLETENESS_REPORT_.*\\.md$",
     "^CHANGELOG\\.md$",
     "(^|/)node_modules(/|$)",
     "(^|/)\\.venv(/|$)",

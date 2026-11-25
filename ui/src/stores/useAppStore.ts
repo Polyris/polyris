@@ -32,7 +32,7 @@ interface AppState extends ModalState {
     selectedTaskName: string | null;
     // Pipeline detail: show the last run's graph (tied to that run's actual
     // structure/statuses) or the currently-deployed structure (registry,
-    // no execution — see docs/reference/SPIKE_CURRENT_STRUCTURE_VS_LATEST_RUN.md).
+    // no execution — see docs/design/SPIKE_CURRENT_STRUCTURE_VS_LATEST_RUN.md).
     // Deliberately separate from `viewMode` (dag/gantt/table/calendar layout).
     dagViewSource: 'run' | 'current';
 

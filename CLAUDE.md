@@ -301,7 +301,7 @@ Then decide with the maintainer: patch now and schedule the model change, or cha
 **45. No custom CloudWatch metrics, alarms, SNS topics or DLQs in the platform template**
 Code computes engine health on demand and shows it in the console (ADR #130 §9). Failures follow #38 and #41. Custom metrics, alarms, topics and queues cost every user money and need someone to watch them.
 
-A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR.
+A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR. ADR #140 is the one exception: the orchestration role makes the direct steps' calls (`sns:Publish` and `sqs:SendMessage` among them) on the resources a user's pipeline names, and the platform publishes nothing of its own.
 
 **48. A value an ADR defines clause by clause is one pure function with a test per clause**
 The enabling time (ADR #130 §9, ADR #138 §2) has five clauses: latest required dependency, earliest success for `one_success`, earliest final failure for `one_failed`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.

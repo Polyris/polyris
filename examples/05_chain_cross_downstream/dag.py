@@ -4,8 +4,8 @@ Real pipelines rarely run in a straight line. Here one task fans out to several
 parallel branches, the branches fan back in, and `trigger_rule` controls *when*
 the downstream tasks run:
 
-  - the merge waits for every branch to finish, success or skip (`all_done`)
-  - a cleanup task runs the same way, after the branches settle (`all_done`)
+  - the merge waits until every branch is final, whatever the outcome (`all_done`)
+  - a cleanup task runs the same way, once the merge is final (`all_done`)
 
 `chain()` and `cross_downstream()` are helpers for wiring dependencies without a
 wall of `>>`.
@@ -44,16 +44,14 @@ with DAG(
 
     @task.sfn(arn=ARN, trigger_rule="all_done")
     def merge():
-        """Runs once every branch has reached a terminal state — success or
-        skip. (If a branch genuinely fails, it pauses for a decision first —
-        ADR #114 — so this waits with it rather than running early.)"""
+        """Runs once every branch is final — success, skip or failure. (A
+        branch that fails waits for a decision first, so this waits with it
+        rather than running early.)"""
         pass
 
     @task.sfn(arn=ARN, trigger_rule="all_done")
     def cleanup():
-        """Runs after `merge` settles — success or skip. Reacting to a branch
-        that's still paused after a failure isn't part of this rule; see
-        `merge`'s docstring."""
+        """Runs once `merge` is final, whatever its outcome."""
         pass
 
     s = start()

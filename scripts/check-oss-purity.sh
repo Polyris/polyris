@@ -18,7 +18,7 @@
 #      they describe the mechanism, not the feature. Skipped by this check
 #      (see CLAUDE.md #24 seam-defining exception).
 #         docs/reference/adr-*.md
-#         docs/reference/SPIKE_*.md
+#         docs/design/SPIKE_*.md
 #         docs/reference/alerting-master-plan.md
 #         CLAUDE.md  docs/CLAUDE.md
 #
@@ -56,14 +56,18 @@ FORBIDDEN_PATTERNS=(
 )
 
 # Paths that must be OSS-pure. Kept explicit rather than "everything under
-# docs/" so the seam-defining paths in docs/reference/ don't trip the check.
+# docs/" so the seam-defining ADRs in docs/reference/ and the notes in docs/design/ don't trip it.
 USER_FACING_PATHS=(
   docs/features
   docs/getting-started
+  docs/how-to
   docs/deployment
   docs/architecture
   docs/operations
+  docs/reference/CLI.md
+  docs/reference/CONFIGURATION.md
   README.md
+  GLOSSARY.md
   examples
 )
 

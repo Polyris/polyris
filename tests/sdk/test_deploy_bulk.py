@@ -6,6 +6,7 @@ file, and a file with zero DAGs (a shared config.py, a utils module) is a
 no-op, not an error. One DAG failing must not stop the rest of the batch.
 """
 import sys
+import os
 import textwrap
 
 import pytest
@@ -599,6 +600,93 @@ class TestBulkRealProcesses:
                              destroy=True, log_level="ERROR", log_retention_days=30, profile=None)
         assert exc.value.code == 1
         assert "exited with code 0 before reporting" in capsys.readouterr().out
+
+
+def test_destroys_help_describes_the_destroy(monkeypatch, capsys):
+    """polyris-destroy --help said "Deploy Polyris pipeline via CloudFormation" and listed
+    --destroy (the docs audit after 1.3)."""
+    monkeypatch.setattr("sys.argv", ["polyris-destroy", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        deploy.main(force_destroy=True)
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "Remove a Polyris pipeline" in out and "polyris-destroy --stage prod" in out
+    assert "Deploy Polyris pipeline" not in out and "--destroy" not in out
+
+
+class TestStageReachesThePipelineFile:
+    """``--stage`` names the stage of the pipeline file too: a file that picks its ARNs by
+    ``POLYRIS_STAGE`` took the shell's stage, or its default, under ``polyris-deploy --stage prod``
+    (the docs audit after 1.3)."""
+
+    def test_one_file(self, tmp_path, mocker, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "dev")
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            import os
+            from polyris import DAG, task
+
+            with DAG(f"etl-{os.environ['POLYRIS_STAGE']}", schedule="@daily") as dag:
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def go():
+                    pass
+                go()
+        """))
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-deploy", "--stage", "prod"])
+        deploy.main()
+        assert deployed.call_args.kwargs["dag"].dag_id == "etl-prod"
+        assert deployed.call_args.kwargs["stage"] == "prod"
+
+    def test_the_default_stage_of_the_config_without_stage(self, tmp_path, mocker, monkeypatch):
+        """No --stage: the deploy goes to config.py's DEFAULT_STAGE, and the file read its own
+        default, dev (the break review of the docs audit)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "x")
+        monkeypatch.delenv("POLYRIS_STAGE")  # unset now, and unset again after the test
+        (tmp_path / "config.py").write_text(
+            'ENVIRONMENTS = {"dev": {"stack_name": "acme-dev"}, "prod": {"stack_name": "acme-prod"}}\n'
+            'DEFAULT_STAGE = "prod"\n')
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            import os
+            from polyris import DAG, task
+
+            with DAG(f"etl-{os.environ.get('POLYRIS_STAGE', 'dev')}", schedule="@daily") as dag:
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def go():
+                    pass
+                go()
+        """))
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-deploy"])
+        deploy.polyris_config.reset()
+        try:
+            deploy.main()
+        finally:
+            deploy.polyris_config.reset()
+        assert deployed.call_args.kwargs["dag"].dag_id == "etl-prod"
+
+    def test_no_config_and_no_stage_leave_it_to_the_platform(self, tmp_path, monkeypatch):
+        from polyris.config import use_stage
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "x")
+        monkeypatch.delenv("POLYRIS_STAGE")
+        use_stage(None)
+        assert "POLYRIS_STAGE" not in os.environ
+
+    def test_every_folders_process_of_all(self, tmp_path, mocker, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "dev")
+        (tmp_path / "dir_a").mkdir()
+        _write_dag_file(tmp_path / "dir_a" / "dag.py", "dag-a")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all", "--stage", "prod"])
+        requests = _folders_run_here(mocker)
+        with pytest.raises(SystemExit) as exc:
+            deploy.main()
+        assert exc.value.code == 0
+        assert [(r["command"], r["stage"]) for r in requests] == [("collect", "prod"), ("deploy", "prod")]
+        assert deployed.call_args.kwargs["stage"] == "prod"
 
 
 class TestMainCliBulkFlags:

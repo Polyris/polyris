@@ -1,142 +1,98 @@
-# Project Structure
+# Project structure
 
-This guide covers different ways to organize polyris projects.
+How to lay out a repository of pipelines, keep one `config.py` for your stages, and validate and deploy from CI. Assumes the platform is installed ([QUICKSTART.md](QUICKSTART.md)).
 
-## Installation
+## Install
+
+For the CLI on your machine, use install.sh ([README → Install](../../README.md#install)). For CI, or to import polyris in your own Python environment:
 
 ```bash
-# Replace <VERSION> with a real tag from
-# https://github.com/Polyris/polyris/tags (e.g. v1.0.1).
-pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
+pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
 ```
 
-## Structure Options
+Use the version your platform runs.
 
-### Option A: Single Repository (Simple)
+## Layout
 
-Best for: Small teams, getting started, monorepo setups.
+One folder per pipeline, each with a `dag.py`, and one `config.py` next to them:
 
 ```
-mycompany-data/
-├── pyproject.toml              # Python packaging + dev tools
-├── sam/
-│   └── shared/                 # Shared infrastructure
-│       ├── template.yaml       # SAM template
-│       └── samconfig.toml
-│
-├── pipelines/                  # (whole directory is gitignored — real
-│   ├── config.py               #  account_id / profile stay out of git)
-│   ├── acme-daily/
+data-pipelines/
+├── pipelines/
+│   ├── config.py               # your stages: platform stack, namespace, region, account
+│   ├── orders-daily/
 │   │   └── dag.py
-│   └── nexus-hourly/
+│   └── clicks-hourly/
 │       └── dag.py
-│
 └── .github/
     └── workflows/
-        └── ci.yml
+        └── pipelines.yml
 ```
 
-**pipelines/config.py**:
-```python
-# pipelines/config.py
-ENVIRONMENTS = {
-    "dev": {
-        "namespace": "mycompany",
-        "stage": "dev",
-        "region": "us-east-1",
-    },
-}
+`polyris-init --project` writes `pipelines/config.py`. Create each pipeline inside `pipelines/`, so the commands find `config.py` from the pipeline's folder:
 
-DEFAULT_STAGE = "dev"
-```
-
-**Workflow:**
 ```bash
-# 1. Install the platform (one-time)
-polyris-up --namespace myorg --stage dev
-
-# 2. Create pipeline
+polyris-init --project
 cd pipelines
-polyris-init my-pipeline
-cd my-pipeline
-
-# 3. Deploy
-polyris-deploy
+polyris-init orders-daily
+cd orders-daily && polyris-deploy
 ```
 
----
+`config.py` holds no secret. Commit it, so CI deploys with the same settings, and leave `profile` out of it: CI has no named profiles, so set `AWS_PROFILE` on your machine instead. Every field: [CONFIGURATION.md](../reference/CONFIGURATION.md).
 
-### Option B: Separate Repositories (Production)
+When one platform team serves several data teams, each team keeps a repository of this shape; the platform team installs the platform once with `polyris-up`.
 
-Best for: Multiple teams, separate ownership.
+## A pipeline file
 
-```
-# Repo 1: polyris library (PyPI)
-polyris/
-├── polyris/
-└── pyproject.toml
+A `dag.py` can pick its resources by stage. Before it runs the file, `polyris-deploy` sets `POLYRIS_STAGE` to the stage it deploys to: `--stage`, or else `DEFAULT_STAGE` from `config.py`.
 
-# Repo 2: Infrastructure (platform team)
-polyris-infra/
-└── sam/
-    ├── dev/shared/
-    └── prod/shared/
-
-# Repo 3: Pipelines (data team)
-data-pipelines/
-├── pyproject.toml              # Python packaging
-├── pipelines/                  # gitignored: config.py carries real
-│   ├── config.py               # account_id / profile
-│   ├── acme-daily/
-│   └── nexus-hourly/
-└── .github/workflows/ci.yml
-```
-
----
-
-## Pipeline File Structure
-
-Each pipeline needs a single `dag.py`:
-
-```
-my-pipeline/
-└── dag.py     # Pipeline definition
-```
-
-**dag.py:**
 ```python
-from polyris import DAG, task
 import os
+
+from polyris import DAG, task
 
 STAGE = os.environ.get("POLYRIS_STAGE", "dev")
 
-# Config from config.py ENVIRONMENTS
+with DAG(dag_id="orders-daily", schedule="@daily") as dag:
 
-with DAG(
-    dag_id="my-pipeline",
-    schedule="@daily",
-) as dag:
-    
-    @task.sfn(arn=f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-extract-task")
-    def extract(): pass
-    
-    @task.sfn(arn=f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-load-task")
-    def load(): pass
-    
+    @task.sfn(arn=f"arn:aws:states:us-east-1:123456789012:stateMachine:acme-{STAGE}-extract-orders")
+    def extract():
+        pass
+
+    @task.sfn(arn=f"arn:aws:states:us-east-1:123456789012:stateMachine:acme-{STAGE}-load-orders")
+    def load():
+        pass
+
     extract() >> load()
-
-# Deploy: polyris-deploy --stage $STAGE
 ```
 
----
+## Stages
 
-## CI/CD
+Add a stage to `ENVIRONMENTS` in `config.py` for each platform you installed (`polyris-up --stage prod` creates the stack `<namespace>-prod`):
 
-### GitHub Actions
+```python
+# pipelines/config.py
+ENVIRONMENTS = {
+    "dev": {"stack_name": "acme-dev", "namespace": "acme", "region": "us-east-1"},
+    "prod": {"stack_name": "acme-prod", "namespace": "acme", "region": "us-east-1"},
+}
+DEFAULT_STAGE = "dev"
+```
+
+Pick the stage with `--stage` or `POLYRIS_STAGE`; without either, `DEFAULT_STAGE` applies:
+
+```bash
+polyris-deploy                  # dev
+polyris-deploy --stage prod     # prod
+```
+
+## CI with GitHub Actions
+
+Validate every pipeline on each push, and deploy them all from `main`. The deploy job assumes an AWS role through GitHub's OIDC provider, so no AWS keys are stored in GitHub; the role needs the deploy permissions of [IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#deploy--per-pipeline-polyris-deploy).
 
 ```yaml
-# .github/workflows/ci.yml
-name: CI
+# .github/workflows/pipelines.yml
+name: pipelines
 
 on:
   push:
@@ -144,92 +100,38 @@ on:
   pull_request:
 
 jobs:
-  test:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      
-      - name: Install
-        run: pip install -e ".[dev]"
-      
-      - name: Lint
-        run: ruff check .
-      
-      - name: Test
-        run: pytest tests/
+      - run: pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
+      - name: Validate every pipeline
+        working-directory: pipelines
+        run: polyris-validate --all
 
   deploy-dev:
-    needs: test
+    needs: validate
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    env:
-      POLYRIS_STAGE: dev
+    permissions:
+      id-token: write       # lets the job assume the AWS role below
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install
-        run: pip install -e .
-      - name: Deploy pipeline
-        run: |
-          cd pipelines/my-pipeline
-          polyris-deploy --stage dev
+      - run: pip install "polyris @ https://github.com/Polyris/polyris/archive/refs/tags/v1.3.0.tar.gz"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/acme-pipelines-deploy
+          aws-region: us-east-1
+      - name: Deploy every pipeline
+        working-directory: pipelines
+        run: polyris-deploy --all --stage dev
 ```
 
----
-
-## Environment Management
-
-### Via pipelines/config.py + Environment Variables
-
-`pipelines/config.py` defines per-stage settings:
-
-```python
-# pipelines/config.py
-ENVIRONMENTS = {
-    "dev": {"namespace": "mycompany", "stage": "dev", "region": "us-east-1"},
-    "prod": {"namespace": "mycompany", "stage": "prod", "region": "us-east-1"},
-}
-DEFAULT_STAGE = "dev"
-```
-
-Override in CI or command line:
-```bash
-# Deploy to dev (default)
-polyris-deploy
-
-# Deploy to prod
-polyris-deploy --stage prod
-
-# Or via environment variable
-export POLYRIS_STAGE=prod
-polyris-deploy
-```
-
-In code:
-```python
-import os
-STAGE = os.environ.get("POLYRIS_STAGE", "dev")
-f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-task"
-```
-
----
-
-## Best Practices
-
-1. **One `pipelines/config.py`** with all polyris ENVIRONMENTS config
-2. **One pipeline per folder** with a `dag.py`
-3. **Use full ARN strings directly** — explicit and transparent
-4. **Use environment variables** for stage/account overrides in CI
-5. **Test locally** before deploying: `polyris-validate -v`
-
----
-
-## Next Steps
-
-- [CONFIGURATION.md](../reference/CONFIGURATION.md) — All config options
-- [DSL.md](../features/DSL.md) — Pipeline DSL reference
+`polyris-validate --all` and `polyris-deploy --all` act on every folder of the current directory and exit 1 if any pipeline fails.

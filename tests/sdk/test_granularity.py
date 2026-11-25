@@ -136,7 +136,7 @@ class TestAWSRate:
         assert infer_cron_cadence("rate(6 hours)") is None
 
     def test_rate_7_days_weekly(self):
-        # polyris @weekly preset emits rate(7 days) via SCHEDULE_PRESETS
+        # rate(7 days) runs once a week, from when the schedule was created
         assert infer_cron_cadence("rate(7 days)") == "weekly"
 
     def test_rate_14_days_ambiguous(self):
@@ -221,6 +221,14 @@ class TestSchedulePresetsParity:
     def test_annually_preset(self):
         # alias for @yearly
         assert infer_cron_cadence(SCHEDULE_PRESETS["@annually"]) is None
+
+    def test_each_preset_fires_at_the_start_of_its_period(self):
+        """@daily was rate(1 day): it ran at the time of day of the deploy while the docs said
+        midnight UTC (the docs audit after 1.3). A preset fires at the start of its period."""
+        assert SCHEDULE_PRESETS["@hourly"] == "cron(0 * * * ? *)"
+        assert SCHEDULE_PRESETS["@daily"] == "cron(0 0 * * ? *)"
+        assert SCHEDULE_PRESETS["@weekly"] == "cron(0 0 ? * MON *)"  # an ISO week begins on Monday
+        assert SCHEDULE_PRESETS["@monthly"] == "cron(0 0 1 * ? *)"
 
 
 class TestNoExceptions:

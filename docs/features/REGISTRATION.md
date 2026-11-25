@@ -1,120 +1,93 @@
-# Pipeline Registration
+# Pipeline registration
+
+Most users never need this page: `polyris-deploy` registers a pipeline, every run registers it again, and `polyris-destroy` removes it. Read on if a deployed pipeline is missing from the console, or an asset-scheduled pipeline does not start.
 
 ## Overview
 
-polyris pipelines must be registered in DynamoDB tables for:
-- **UI discovery** - Console shows pipelines from `pipeline_registry`
-- **Asset triggers** - the asset-fanout function queries `asset_subscriptions`
+A pipeline is registered in two DynamoDB tables of the platform (each named `<namespace>-<stage>-polyris-<table>`):
+- **`pipeline-registry`**: the console lists the pipelines it finds here.
+- **`asset-subscriptions`**: the pipelines scheduled on an asset (`schedule=[asset]`), which polyris starts when the asset gets a new fact.
 
-Registration happens automatically in three ways:
+Registration happens in three ways:
 
-| Method | When | Automatic | Latency |
-|--------|------|-----------|---------|
-| **polyris-deploy lifecycle** | `polyris-deploy` / `polyris-destroy` | Yes | ~2-3 seconds |
-| **Pipeline run** | Every execution (self-healing) | Yes | 0 (inline) |
-| **CLI** | Manual `polyris-register` command | No | ~2-3 seconds |
+| Method | When | Automatic |
+|--------|------|-----------|
+| **`polyris-deploy` / `polyris-destroy`** | Every deploy and destroy | Yes |
+| **Pipeline run** | Every run, as its first step | Yes |
+| **`polyris-register`** | When you run it | No |
 
-## polyris-deploy Lifecycle Registration
+## On deploy and destroy
 
-When you run `polyris-deploy`, it does the following after the CloudFormation
-stack succeeds:
+When you run `polyris-deploy`, it does the following after the CloudFormation stack succeeds:
 
 ```
 polyris-deploy
     │
     ▼
-CloudFormation deploy (creates/updates the pipeline StateMachine)
+CloudFormation deploy (creates/updates the pipeline's state machine)
     │
     ▼
-DynamoDB UpdateItem on pipeline_registry
-    └──► registered_at = <now>   ← "Deployed at" timestamp in the Console
+pipeline-registry: registered_at = <now>   ← "Deployed at" in the console
     │
     ▼
-SFN StartExecution(register_only=true) — fire-and-forget
-    │
-    ▼
-Register_Pipeline state (UpdateItem)
-    ├──► sfn_arn, schedule, description, spec_id, task_count, ...
-    └──► asset_subscriptions (if asset-triggered)
-```
-
-The registry names the pipeline's spec version (`spec_id`, `task_count`); the
-tasks and the graph live in `pipeline-specs`, and each run's row names the
-version it ran with (ADR #137 §8).
-
-`registered_at` is written **once**, by `polyris-deploy`, and is never
-overwritten by pipeline runs. The Console's "Deployed at X" reflects the last
-actual deploy, not the last run.
-
-**On destroy** (`polyris-destroy`): deletes the CloudFormation stack
-(removes the pipeline StateMachine and EventBridge schedule), stopping the
-pipeline's running runs until the stack is gone. DynamoDB entries
-(`pipeline_registry`, `asset_subscriptions`) are not removed automatically —
-delete the items directly via the AWS Console / CLI if needed.
-
-## Self-Healing Registration
-
-Every pipeline run includes registration as the first step:
-
-```
-Pipeline Start
+Start the state machine with register_only=true (does not wait for it)
     │
     ▼
 Register_Pipeline state
-    │
-    ├──► pipeline_registry
-    └──► asset_subscriptions (if asset-triggered)
-    │
-    ▼
-Check_Register_Only
-    │
-    ├── true  → Success (exit)
-    └── false → Run_All_Tasks: Start_Run writes the run's tasks as rows,
-                and each direct step runs as a branch beside it
+    ├──► pipeline-registry: state machine ARN, schedule, description, spec version, task count, ...
+    └──► asset-subscriptions (if the pipeline is scheduled on assets)
 ```
 
-This ensures metadata stays current even if DynamoDB items were deleted manually
-or subscriptions expired (TTL).
+`registered_at` is written only by `polyris-deploy`: the console's "Deployed at" shows the last deploy, not the last run.
 
-Note: the self-healing run does **not** update `registered_at`. Only
-`polyris-deploy` writes that field — so "Deployed at" always reflects the last
-actual deploy, not the last run.
+**On destroy**, `polyris-destroy` deletes the pipeline's CloudFormation stack (its state machine and schedule), stopping the pipeline's running runs until the stack is gone. Then it deletes the pipeline's `pipeline-registry` item and its `asset-subscriptions` items, so the console no longer lists it.
 
-## Manual Registration (CLI)
+## On every run
 
-Use `polyris-register` to register without running tasks:
+Every run starts by registering the pipeline again, so the registry stays current even if its items were deleted by hand:
+
+```
+Pipeline start
+    │
+    ▼
+Register_Pipeline state ──► pipeline-registry, asset-subscriptions (if scheduled on assets)
+    │
+    ▼
+register_only?
+    ├── true  → end
+    └── false → run the tasks
+```
+
+A run does not update `registered_at`.
+
+## Manual registration (CLI)
+
+`polyris-register` starts the register-only run without running tasks. It comes with the CLI ([README → Install](../../README.md#install)).
 
 ```bash
-# Install (replace <VERSION> with a real tag from
-# https://github.com/Polyris/polyris/tags, e.g. v1.0.1)
-pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
-
 # Register by ARN
-polyris-register arn:aws:states:us-east-1:123456789:stateMachine:my-pipeline
+polyris-register arn:aws:states:us-east-1:123456789012:stateMachine:mycompany-dev-polyris-feeds-pipeline
 
-# Register by name
-polyris-register --name my-pipeline --region us-east-1
+# Register by name (the dag_id)
+polyris-register --name feeds-pipeline --region us-east-1
 ```
 
 ### Authentication
 
-Uses standard AWS credential chain (same as AWS CLI):
+It uses the standard AWS credential chain, as the AWS CLI does:
 
 ```bash
 # Default credentials (env vars, instance profile)
-polyris-register --name my-pipeline
+polyris-register --name feeds-pipeline
 
 # AWS profile from ~/.aws/credentials or ~/.aws/config
-polyris-register --name my-pipeline --profile prod
+polyris-register --name feeds-pipeline --profile prod
 
-# AWS_PROFILE environment variable
-AWS_PROFILE=prod polyris-register --name my-pipeline
-
-# Assume IAM role
-polyris-register --name my-pipeline --role-arn arn:aws:iam::123:role/deploy
+# Assume an IAM role
+polyris-register --name feeds-pipeline --role-arn arn:aws:iam::123456789012:role/deploy
 
 # Cross-account (profile + role)
-polyris-register --name my-pipeline --profile dev --role-arn arn:aws:iam::456:role/prod
+polyris-register --name feeds-pipeline --profile dev --role-arn arn:aws:iam::210987654321:role/prod
 ```
 
 ### Options
@@ -122,92 +95,62 @@ polyris-register --name my-pipeline --profile dev --role-arn arn:aws:iam::456:ro
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--name` | `-n` | Pipeline name (alternative to ARN) |
-| `--region` | `-r` | AWS region (default: us-east-1) |
+| `--region` | `-r` | AWS region (default: the region of the ARN, or of your AWS profile) |
 | `--profile` | `-p` | AWS profile from ~/.aws/credentials or ~/.aws/config |
 | `--role-arn` | | IAM role ARN to assume |
 | `--namespace` | | Namespace prefix for pipeline search |
 | `--json` | | Output result as JSON |
 
-### Example Output
+### Example output
 
 ```
 $ polyris-register --name feeds-pipeline --profile prod
 
-Looking for pipeline 'feeds-pipeline' in us-east-1...
-   Found: arn:aws:states:us-east-1:123:stateMachine:polyris-prod-feeds-pipeline
+🔍 Looking for pipeline 'feeds-pipeline' in the region of your AWS profile...
+   Found: arn:aws:states:us-east-1:123456789012:stateMachine:mycompany-prod-polyris-feeds-pipeline
 
-Registering pipeline...
+📝 Registering pipeline...
    Using profile: prod
 
-Registration triggered.
-   Execution: arn:aws:states:us-east-1:123:execution:feeds-pipeline:reg-abc123
-   Started: 2026-01-27T13:00:00
+✅ Registration triggered!
+   Execution: arn:aws:states:us-east-1:123456789012:execution:mycompany-prod-polyris-feeds-pipeline:register-mycompany-prod-polyris-feeds-pipeline-1a2b3c4d
+   Started: 2026-01-27T13:00:00+00:00
 
    Pipeline will be registered in:
-   - pipeline_registry (for UI discovery)
-   - asset_subscriptions (for asset triggers)
+   • pipeline_registry (for UI discovery)
+   • asset_subscriptions (for asset triggers)
 ```
 
-> **Note:** `polyris-register` does **not** write `registered_at`. It triggers the
-> pipeline's register-only SFN execution, which refreshes runtime metadata (tasks, dag,
-> schedule, etc.) but never touches deploy-owned fields. If you use `polyris-register`
-> as a recovery step instead of re-running `polyris-deploy`, the Console's "Deployed at"
-> will remain at the timestamp of the last actual deploy — or absent entirely if the
-> pipeline was never deployed before.
+`polyris-register` does not write `registered_at`: after it, the console's "Deployed at" still shows the last deploy, or nothing if the pipeline was never deployed.
 
-## When to Use Manual Registration
+## When to use manual registration
 
-1. **After deploy, before first asset** - Asset-triggered pipelines need subscriptions before assets arrive
-2. **Testing** - Verify registration works without running tasks
-3. **Recovery** - Re-register after manual DynamoDB cleanup
-4. **CI/CD** - Include in deployment scripts as safety net
-
-### CI/CD Example
-
-```yaml
-# GitHub Actions
-deploy:
-  steps:
-    - run: polyris-deploy
-    
-    # Optional safety net: polyris-deploy already registers inline, but
-    # an explicit call here re-triggers registration if the SFN step failed.
-    - run: |
-        polyris-register \
-          --name ${{ env.PIPELINE_NAME }} \
-          --region ${{ env.AWS_REGION }} \
-          --profile deploy
-```
+1. **Recovery**: register again after registry items were deleted by hand.
+2. **Testing**: check that registration works without running tasks.
 
 ## Troubleshooting
 
-### Pipeline not appearing in UI
+### Pipeline not in the console
 
-1. Check `pipeline_registry` table in DynamoDB
-2. Run `polyris-register --name <pipeline>`
-3. Or trigger pipeline once manually
+1. Check the `pipeline-registry` table for an item named after the pipeline.
+2. Run `polyris-register --name <pipeline>`, or start a run once.
 
-### Asset triggers not working
+### Asset-scheduled pipeline does not start
 
-1. Check `asset_subscriptions` table in DynamoDB
-2. Verify `asset_schedule` in pipeline definition
-3. Run `polyris-register --name <pipeline>`
+1. Check that the DAG's `schedule=` names the assets.
+2. Check the `asset-subscriptions` table for an item per asset and pipeline.
+3. Run `polyris-register --name <pipeline>`.
 
-### "Profile not found" error
+### "ProfileNotFound" error
 
 ```
-Profile not found: prod
-   Check ~/.aws/credentials or ~/.aws/config
+❌ Search failed — ProfileNotFound: The config profile (prod) could not be found
 ```
 
-Verify profile exists:
-```bash
-aws configure list-profiles
-cat ~/.aws/config
-```
+Check that the profile exists in `~/.aws/config` or `~/.aws/credentials`: `aws configure list-profiles`.
 
 ### "State machine not found" error
 
-1. Check pipeline name matches exactly
-2. Try with full ARN instead of name
-3. Verify region is correct
+1. Check that the name matches the `dag_id` exactly.
+2. Try the full ARN instead of the name.
+3. Check the region.

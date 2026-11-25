@@ -76,7 +76,7 @@ from .platform import (
     parameters_of,
     select_platform_stack,
 )
-from .config import ConfigError
+from .config import ConfigError, use_stage
 from .config import config as polyris_config
 from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN
 from .resource_check import (
@@ -90,66 +90,6 @@ from .resource_check import (
 # =============================================================================
 # CFN Template Generation
 # =============================================================================
-
-
-def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: Optional[str]) -> None:
-    """Advisory check: compare each Glue-backed asset's declared granularity
-    to what its Glue PartitionKeys suggest (ADR #50).
-
-    Prints warnings on mismatch but never fails — the declared value always
-    wins. Users with naming conventions that don't match the inference
-    heuristics (or who know their data better than the heuristics) are
-    expected to ignore the warning.
-    """
-    try:
-        from .adapters.glue import (
-            fetch_glue_partition_keys,
-            infer_granularity_from_partition_keys,
-        )
-    except ImportError:
-        return  # boto3 missing — skip silently
-
-    seen: dict = {}
-    for task in getattr(dag, "tasks", []):
-        for outlet in getattr(task, "outlets", []) or []:
-            glue_table = getattr(outlet, "glue_table", "")
-            if not glue_table or "." not in glue_table:
-                continue
-            seen.setdefault(outlet.name, outlet)
-
-    if not seen:
-        return
-
-    print("\nChecking Glue-declared granularity for assets...")
-    for asset_name, asset in seen.items():
-        glue_table = asset.glue_table
-        db, _, tbl = glue_table.partition(".")
-        declared = getattr(asset, "granularity", "daily")
-        try:
-            keys = fetch_glue_partition_keys(
-                db,
-                tbl,
-                catalog_id=getattr(asset, "glue_catalog", "") or None,
-                region=getattr(asset, "glue_region", "") or region,
-            )
-        except Exception as e:
-            print(f"  ? {asset_name}: could not read Glue ({type(e).__name__})")
-            continue
-
-        inferred = infer_granularity_from_partition_keys(keys)
-        if inferred is None:
-            print(f"  • {asset_name}: declared {declared}, Glue keys {keys or '(none)'} (no inference)")
-            continue
-
-        if inferred == declared:
-            print(f"  ✓ {asset_name}: declared {declared}, Glue confirms")
-        else:
-            print(
-                f"  ⚠ {asset_name}: declared {declared} but Glue partition "
-                f"keys {keys} suggest {inferred}. "
-                f"If your declaration is correct, ignore this. Otherwise "
-                f"update granularity={inferred!r} in your Asset(...)."
-            )
 
 
 def _generate_cfn_template(
@@ -428,7 +368,7 @@ def _register_pipeline(
 # Config resolution + pre-deploy summary
 # =============================================================================
 
-# Names of the CloudFormation Outputs the SAM stack exports for pipeline
+# Names of the CloudFormation Outputs the platform stack exports for pipeline
 # deploys. See sam/template.yaml. Kept as a constant so the reader here and any
 # tests import the same names — a rename in the template that misses this
 # constant is caught immediately (Principle #13).
@@ -444,24 +384,21 @@ SAM_STACK_OUTPUT_KEYS = (
 
 
 def _read_sam_stack(session: "boto3.Session", stack_name: str) -> Tuple[dict, dict]:
-    """Return ({OutputKey: OutputValue}, {ParameterKey: ParameterValue}) for the SAM stack.
+    """Return ({OutputKey: OutputValue}, {ParameterKey: ParameterValue}) for the platform stack.
 
     Raises ClientError with a wrapped, actionable message when the stack does
-    not exist — the user's likely mistake is that ``sam deploy`` was never run
-    with this name, or the name in config.py is stale.
+    not exist — the user's likely mistake is that the platform was never installed
+    here (``polyris-up``), or the name in config.py is stale.
     """
     cfn = session.client("cloudformation")
     try:
         stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
     except ClientError as e:
         if "does not exist" in str(e):
-            print(f"\n❌ SAM stack '{stack_name}' not found in this account/region.")
+            print(f"\n❌ Platform stack '{stack_name}' not found in this account/region.")
             print("   Two things to check:")
-            print(
-                f"     1) Did you run `sam deploy` for this stack? "
-                f"(from sam/samconfig.toml: stack_name = \"{stack_name}\")"
-            )
-            print("     2) Does the stack_name in your config.py match the one in sam/samconfig.toml?")
+            print(f"     1) Is the platform installed here? {_c('polyris-up', CYAN)} installs it.")
+            print("     2) Do stack_name in your config.py, or --stack, name it: <namespace>-<stage>?")
             sys.exit(1)
         raise
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
@@ -511,7 +448,7 @@ def _print_deploy_summary(
     print(f"   dag:             {_c(dag_id, CYAN)}")
     print(f"   stage:           {_c(stage, CYAN)}")
     print(f"   config:          {_c(str(config_file) if config_file else 'none', CYAN)}")
-    print(f"   sam stack:       {_c(stack_name, CYAN)}    ← reads CloudFormation outputs from here")
+    print(f"   platform stack:  {_c(stack_name, CYAN)}    ← reads CloudFormation outputs from here")
     print(f"   namespace:       {_c(namespace, CYAN)}")
     print(f"   region:          {_c(region, CYAN)}")
     print(f"   profile:         {_c(profile or '(default)', CYAN)}")
@@ -617,9 +554,9 @@ def _discover_platform_stack(session: "boto3.Session", region: str) -> Tuple[Opt
 def _fail_no_stack_name(stage: str) -> None:
     """Exit with a clear message when stack_name cannot be resolved.
 
-    The user has stage=X but nothing tells polyris which SAM CloudFormation
-    stack to read outputs from. The error names the exact config.py field to
-    add and points at samconfig.toml (the value must match). Also handles
+    The user has stage=X but nothing tells polyris which platform stack to read
+    outputs from. The error names the exact config.py field to add and the
+    stack's name, <namespace>-<stage>. Also handles
     the case where config.py doesn't exist yet — the "add stack_name" hint
     is useless there, so we recommend polyris-init instead.
     """
@@ -627,7 +564,7 @@ def _fail_no_stack_name(stage: str) -> None:
 
     has_config = _find_project_config() is not None
 
-    print(f"\n❌ No SAM stack_name resolved for stage '{stage}'.")
+    print(f"\n❌ No platform stack resolved for stage '{stage}'.")
     print("   No platform stack installed by polyris-up was found in this region either.")
     print(f"   New install? Run {_c('polyris-up', CYAN)}. Wrong region? Pass --region.")
     print("")
@@ -636,20 +573,20 @@ def _fail_no_stack_name(stage: str) -> None:
         print("")
         print("       ENVIRONMENTS = {")
         print(f"           \"{stage}\": {{")
-        print("               \"stack_name\": \"<name-from-samconfig.toml>\",")
+        print("               \"stack_name\": \"<namespace>-<stage>\",   # the stack polyris-up created")
         print("               ...")
         print("           }")
         print("       }")
         print("")
-        print("   Or pass --stack <name> on the CLI (matches sam/samconfig.toml).")
+        print("   Or pass --stack <namespace>-<stage> on the CLI.")
     else:
         print("   No config.py was found walking up from the current directory.")
         print("   Create one with:")
         print("")
         print("       polyris-init --project")
         print("")
-        print("   then edit ENVIRONMENTS to add the stack_name from your")
-        print("   sam/samconfig.toml. Alternatively pass --stack <name> to")
+        print("   then set stack_name in ENVIRONMENTS to the platform stack,")
+        print("   <namespace>-<stage>. Or pass --stack <namespace>-<stage> to")
         print("   polyris-deploy directly.")
     sys.exit(1)
 
@@ -852,7 +789,13 @@ def deploy_pipeline(
             print(f"\n❌ --stage {cli_stage}, but platform {sam_stack_name} is stage {platform_stage}.")
             print("   Install that stage first (polyris-up --stage ...), or name its platform with --stack.")
             sys.exit(1)
+        file_stage = os.environ.get("POLYRIS_STAGE")
         new_namespace, new_stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
+        if not cli_stage and not file_stage and new_stage:
+            # No --stage and no config.py: the stage is the platform's, known only now, after the
+            # pipeline file ran without POLYRIS_STAGE (config.use_stage). Say so.
+            print(f"   stage {_c(new_stage, CYAN)} comes from the platform stack; the pipeline file ran "
+                  f"without POLYRIS_STAGE. If it reads its stage, deploy with --stage {new_stage}.")
         adopted = f"{new_namespace}-{new_stage}-polyris-{dag.dag_id}"
         if adopted != pipeline_stack and _keep_existing_pipeline_stack(session, pipeline_stack, adopted):
             print(f"Keeping pipeline stack {_c(pipeline_stack, CYAN)}: it was deployed before polyris named "
@@ -891,7 +834,7 @@ def deploy_pipeline(
     # match the real infra to work. The SAM stack's own Namespace / Stage
     # are cosmetic (they name SAM's own resources); pipeline naming lives
     # in config.py.
-    print(f"\nReading SAM stack outputs from {_c(sam_stack_name, CYAN)}...")
+    print(f"\nReading platform stack outputs from {_c(sam_stack_name, CYAN)}...")
     outputs, _params = _read_sam_stack(session, sam_stack_name)
 
     start_run_arn = outputs.get("StartRunFunctionArn")
@@ -906,10 +849,9 @@ def deploy_pipeline(
     required = ("OrchestrationRoleArn",) + (() if destroy else ("PipelineSpecsTable", "StartRunFunctionArn"))
     missing = [k for k in required if not outputs.get(k)]
     if missing:
-        print(f"❌ SAM stack '{sam_stack_name}' is missing required outputs.")
+        print(f"❌ Platform stack '{sam_stack_name}' is missing required outputs.")
         print(f"   Missing outputs: {', '.join(missing)}")
-        print("   The platform is older than this polyris. Upgrade it with polyris-up "
-              "(or redeploy sam/ from the current repo).")
+        print(f"   The platform is older than this polyris. Upgrade it with {_c('polyris-up', CYAN)}.")
         sys.exit(1)
     assert role_arn  # narrowed by the check above
 
@@ -1211,11 +1153,12 @@ def deploy_directory(
     return results
 
 
-def _check_dag_ids(target_dirs: "List[str]", select: Optional[str]) -> "Tuple[List[str], dict]":
+def _check_dag_ids(target_dirs: "List[str]", select: Optional[str],
+                   stage: Optional[str] = None) -> "Tuple[List[str], dict]":
     """The dag_ids (``select`` alone, when given) that two files across ``target_dirs`` make,
     and the directories whose dag_ids could not be read, with why.
 
-    Each directory's files load in its own process, without deploying. A file that does not
+    Each directory's files load in its own process, under ``stage``, without deploying. A file that does not
     load is reported by the deploy that follows; a directory whose process ended without
     answering is not deployed, since its dag_ids were not checked."""
     made: "List[Tuple[str, str]]" = []
@@ -1224,7 +1167,7 @@ def _check_dag_ids(target_dirs: "List[str]", select: Optional[str]) -> "Tuple[Li
     folders = [(d, files) for d, files in folders if files]
     print(f"Checking the dag_ids of {len(folders)} folder(s)...")
     for dir_name, files in folders:
-        answer = folder_process.run("collect", {"files": files}, output="none")
+        answer = folder_process.run("collect", {"files": files, "stage": stage}, output="none")
         if answer.error is not None:
             unchecked[dir_name] = answer.error
             continue
@@ -1260,7 +1203,7 @@ def _run_bulk(
     results: "List[BulkResult]" = []
     target_dirs = sorted(set(target_dirs))  # --only a a: one directory, deployed once
     with folder_process.sigterm_stops_children():
-        twice, unchecked = _check_dag_ids(target_dirs, select)
+        twice, unchecked = _check_dag_ids(target_dirs, select, stage)
         if twice:
             for message in twice:
                 print(f"❌ {message}")
@@ -1289,15 +1232,11 @@ def _run_bulk(
     sys.exit(1 if failed else 0)
 
 
-def main(force_destroy: bool = False) -> None:
-    parser = argparse.ArgumentParser(
-        description="Deploy Polyris pipeline via CloudFormation",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+_DEPLOY_EXAMPLES = """
 Examples:
   polyris-deploy                          # Deploy from current directory (uses DEFAULT_STAGE)
   polyris-deploy --stage prod             # Deploy to prod (config.py picks stack_name, region, profile)
-  polyris-deploy --stack polyris-dev      # Override the SAM stack to read outputs from
+  polyris-deploy --stack polyris-dev      # Read outputs from this platform stack
   polyris-deploy --dry-run                # Preview without deploying
   polyris-deploy --destroy                # Remove pipeline stack
   polyris-deploy --file my_dag.py         # Deploy specific file
@@ -1307,17 +1246,34 @@ Examples:
   polyris-deploy --only dir1 dir2             # Deploy just these subdirectories
   polyris-deploy --destroy --all              # Destroy every subdirectory
   polyris-deploy --only dir1 --select my-dag  # Bulk + pick one DAG per directory
-        """,
+"""
+
+_DESTROY_EXAMPLES = """
+Examples:
+  polyris-destroy                         # Remove the pipeline of dag.py (uses DEFAULT_STAGE)
+  polyris-destroy --stage prod            # Remove it from prod
+  polyris-destroy --all                   # Remove the pipeline of every subdirectory
+  polyris-destroy --dry-run               # Show what would be removed
+"""
+
+
+def main(force_destroy: bool = False) -> None:
+    parser = argparse.ArgumentParser(
+        description=("Remove a Polyris pipeline: its stack, its running runs and its entry in the console"
+                     if force_destroy else "Deploy Polyris pipeline via CloudFormation"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_DESTROY_EXAMPLES if force_destroy else _DEPLOY_EXAMPLES,
     )
-    parser.add_argument("--stage", help="Deployment stage (default: from config.py DEFAULT_STAGE)")
+    parser.add_argument("--stage", help="Deployment stage (default: from config.py DEFAULT_STAGE); the pipeline file reads it as POLYRIS_STAGE")
     parser.add_argument(
         "--stack",
-        help="SAM CloudFormation stack to read outputs from (default: from config.py ENVIRONMENTS[stage].stack_name)",
+        help="The platform stack to read outputs from (default: from config.py ENVIRONMENTS[stage].stack_name)",
     )
     parser.add_argument("--region", help="AWS region (default: from config.py ENVIRONMENTS)")
     parser.add_argument("--file", default=None, help="Pipeline file (default: dag.py). Not used with --all/--only.")
     parser.add_argument("--dry-run", action="store_true", help="Preview without deploying")
-    parser.add_argument("--destroy", action="store_true", help="Remove pipeline stack")
+    parser.add_argument("--destroy", action="store_true",
+                        help=argparse.SUPPRESS if force_destroy else "Remove pipeline stack")
     parser.add_argument("--log-level", default="ERROR", choices=["ALL", "ERROR", "FATAL", "OFF"])
     parser.add_argument("--log-retention", type=int, default=30, help="Log retention in days")
     parser.add_argument(
@@ -1378,7 +1334,8 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
         print(f"❌ Pipeline file not found: {pipeline_file}")
         sys.exit(1)
 
-    # Load DAGs
+    # Load DAGs, under the stage of the deploy (config.use_stage)
+    use_stage(args.stage)
     print(f"Loading pipeline: {_c(str(pipeline_file), CYAN)}")
     dags = _load_dag_from_file(pipeline_file)
 

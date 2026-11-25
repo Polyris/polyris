@@ -1,6 +1,6 @@
 # Completeness Report — Phase 1.3 (canonical/alias reframing)
 
-> **Historical delivery record.** Snapshot of what shipped for Phase 1.3
+> **Superseded — this report pre-dates ADR #138.** Delivery record, a snapshot of what shipped for Phase 1.3
 > (scope-corrected during execution). Kept because ADR #115 cites the
 > scope-correction rationale from this report. For the current trigger-rule
 > contract see [DSL.md](../features/DSL.md#trigger-rules) and ADR #138.

@@ -13,7 +13,7 @@ Example config.py in your pipelines repo:
     # config for that stage.
     ENVIRONMENTS = {
         "dev": {
-            "stack_name": "polyris-dev",   # SAM stack name (matches samconfig.toml)
+            "stack_name": "polyris-dev",   # the platform stack polyris-up created: <namespace>-<stage>
             "namespace": "acme",
             "region": "us-east-1",
             "profile": "my-dev-profile",   # optional
@@ -359,3 +359,20 @@ class _StageConfig:
 
 # Singleton instance
 config = PolyrisConfig()
+
+
+def use_stage(stage: Optional[str]) -> None:
+    """Make the stage of the deploy the stage of the pipeline files this process runs.
+
+    ``polyris-deploy`` deploys to ``--stage``, or else to the ``DEFAULT_STAGE`` of the project's
+    config.py, and a pipeline file reads its own stage from ``POLYRIS_STAGE`` (``config.stage``,
+    or ``os.environ`` as the file ``polyris-init`` writes does). They must agree, or a deploy to
+    prod carries the ARNs a file picks for another stage. The command calls this before it runs a
+    pipeline file, and a folder's process of ``--all`` before it runs its folder's files
+    (``polyris.folder_process``). Without either, the stage comes from the platform stack after
+    the file has run, and ``polyris-deploy`` says so.
+    """
+    if stage:
+        os.environ["POLYRIS_STAGE"] = stage
+    elif not os.environ.get("POLYRIS_STAGE") and _find_project_config() is not None:
+        os.environ["POLYRIS_STAGE"] = config.stage

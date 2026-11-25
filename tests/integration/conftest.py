@@ -2,7 +2,7 @@
 Integration Tests - conftest.py
 
 End-to-end tests that exercise SDK → Lambda → DynamoDB → Step Functions flows.
-These tests may require AWS credentials or LocalStack.
+These tests may require AWS credentials.
 
 Path setup: adds repo root to sys.path.
 """

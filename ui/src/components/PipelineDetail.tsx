@@ -348,7 +348,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                             same spacing pattern as the other action groups. Left:
                             switch to the current deployed definition (blueprint
                             mode, no execution data — see
-                            docs/reference/SPIKE_CURRENT_STRUCTURE_VS_LATEST_RUN.md).
+                            docs/design/SPIKE_CURRENT_STRUCTURE_VS_LATEST_RUN.md).
                             Right: ExecutionDropdown's own History button — opens
                             the picker, lists every run, and doubles as the "active"
                             indicator for run mode (highlighted whenever

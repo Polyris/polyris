@@ -166,7 +166,8 @@ class TestSingleAndVerbose:
         ok, _errors, _warnings = validate_asl_from_dag(dag, verbose=True)
         out = capsys.readouterr().out
         assert ok is True
-        assert "Tasks:" in out and "States:" in out
+        assert "Schedule:" in out and "Tasks:" in out
+        assert "States:" not in out  # a count of generated states means nothing to a reader
 
     def test_validate_asl_from_dag_verbose_with_errors(self, capsys):
         from polyris import DAG, task

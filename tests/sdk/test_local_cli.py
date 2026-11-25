@@ -8,14 +8,9 @@ Coverage targets (after removing local.py from the omit list):
 - run() mock path
 - _run_mock() success / failed / skipped / callbacks / python_callable / statuses
 - _evaluate_trigger_rule() is covered by test_local_trigger_rules.py
-- _parse_execution_history() all event types
 - _load_dag_from_file() success / no-dag / load-error / exit-0 / exit-1
 - run_cli() all modes
-- main() all non-localstack modes
-
-_run_localstack() body and the localstack dispatch lines carry
-# pragma: no cover — they require a live LocalStack instance and are
-exercised by e2e/smoke tests instead.
+- main() all modes
 """
 import sys
 from datetime import datetime, timezone
@@ -31,7 +26,6 @@ from polyris.local import (
     dry_run,
     run,
     _run_mock,
-    _parse_execution_history,
     _load_dag_from_file,
     run_cli,
     main,
@@ -431,6 +425,13 @@ class TestRun:
         assert result.status == 'success'
         assert len(result.task_results) == 2
 
+    def test_a_run_for_real_is_refused_not_mocked(self, tmp_path):
+        """run(dag, mock=False) ran a mock anyway once the LocalStack mode was gone (the break
+        review of the docs audit): the caller believed it had run for real."""
+        dag = _load_dag_from_file(_make_dag_file(tmp_path, arns_real=True))
+        with pytest.raises(ValueError, match="polyris-deploy"):
+            run(dag, mock=False)
+
 
 # ─── _run_mock() ──────────────────────────────────────────────────────────────
 
@@ -573,60 +574,6 @@ with DAG("cb-skip", schedule="@daily") as dag:
         result = _run_mock(dag, {}, None, None)
         assert result.status == 'failed'
         assert result.task_results == []
-
-
-# ─── _parse_execution_history() ───────────────────────────────────────────────
-
-class TestParseExecutionHistory:
-    def _ts(self):
-        return datetime(2024, 1, 1, tzinfo=timezone.utc)
-
-    def test_entered_and_exited(self):
-        ts = self._ts()
-        events = [
-            {'type': 'TaskStateEntered', 'timestamp': ts,
-             'stateEnteredEventDetails': {'name': 'extract'}},
-            {'type': 'TaskStateExited', 'timestamp': ts,
-             'stateExitedEventDetails': {'name': 'extract', 'output': '{"rows": 5}'}},
-        ]
-        results = _parse_execution_history(events)
-        assert len(results) == 1
-        assert results[0].task_id == 'extract'
-        assert results[0].status == 'success'
-        assert results[0].output == {"rows": 5}
-
-    def test_task_failed_finds_prior_entered(self):
-        ts = self._ts()
-        events = [
-            {'type': 'TaskStateEntered', 'timestamp': ts,
-             'stateEnteredEventDetails': {'name': 'load'}},
-            {'type': 'TaskFailed', 'timestamp': ts,
-             'taskFailedEventDetails': {'error': 'States.TaskFailed', 'cause': 'oops'}},
-        ]
-        results = _parse_execution_history(events)
-        assert len(results) == 1
-        assert results[0].task_id == 'load'
-        assert results[0].status == 'failed'
-        assert "States.TaskFailed" in results[0].error
-
-    def test_execution_failed_no_prior_entered(self):
-        ts = self._ts()
-        events = [
-            {'type': 'ExecutionFailed', 'timestamp': ts,
-             'executionFailedEventDetails': {'error': 'States.Runtime', 'cause': 'boom'}},
-        ]
-        results = _parse_execution_history(events)
-        assert len(results) == 1
-        assert results[0].task_id == 'unknown'
-        assert results[0].status == 'failed'
-
-    def test_unknown_event_type_ignored(self):
-        ts = self._ts()
-        events = [
-            {'type': 'ExecutionStarted', 'timestamp': ts},
-        ]
-        results = _parse_execution_history(events)
-        assert results == []
 
 
 # ─── _load_dag_from_file() ────────────────────────────────────────────────────

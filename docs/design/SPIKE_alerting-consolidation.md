@@ -1,8 +1,8 @@
 # Spike: alerting consolidation master plan
 
-> **Historical design doc — spike-frozen at write time.** Kept for
+> **Historical analysis @ v0.93.** Spike-frozen design doc, kept for
 > git-history readability. For current alerts behaviour, see
-> [`docs/features/alerts.md`](../features/alerts.md).
+> [`docs/features/notifications.md`](../features/notifications.md).
 
 The end state we agreed on (verified by two spikes): **all alert *sending* lives
 in the notify Lambda; the SFNs keep only orchestration** (when to alert, when to

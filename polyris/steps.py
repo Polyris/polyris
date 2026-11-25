@@ -223,7 +223,8 @@ class HttpTask(Step):
             url="https://hooks.slack.com/services/...",
             method="POST",
             body={"text": "Pipeline completed!"},
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
+            connection_arn="arn:aws:events:us-east-1:123456789012:connection/slack/0a1b",
         )
     """
     step_id: str = ""
@@ -235,7 +236,7 @@ class HttpTask(Step):
     body: Any = None
     
     # Authentication
-    connection_arn: Optional[str] = None  # EventBridge connection ARN for auth
+    connection_arn: Optional[str] = None  # EventBridge connection ARN for auth: required
     
     def __post_init__(self):
         if not self.url:
@@ -244,6 +245,13 @@ class HttpTask(Step):
                 "state has an empty ApiEndpoint, which passes local "
                 "validation but fails when the state actually tries to "
                 "make the HTTP call."
+            )
+        if not self.connection_arn:
+            raise ValueError(
+                "HttpTask(...) requires 'connection_arn': Step Functions calls an HTTP "
+                "endpoint through an EventBridge connection, which holds its authorization "
+                "(e.g. connection_arn=\"arn:aws:events:us-east-1:123456789012:connection/webhook/0a1b\"). "
+                "Without one the pipeline passed validation and failed at its run."
             )
         if not self.step_id:
             self.step_id = "HttpTask"

@@ -1,11 +1,11 @@
 """Assets — declaring what a task produces and consumes (EXPERIMENTAL).
 
-⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
+⚠️  Assets are experimental: the API may change. List each asset's producers and consumers with `polyris-output --assets`.
 
 An **Asset** is a logical piece of data (a table, an S3 prefix, ...). A task
 declares the assets it writes via `outlets=[...]` and the ones it reads via
-`inlets=[...]`. Polyris uses these to track lineage and (optionally) to trigger
-downstream pipelines when an asset updates.
+`inlets=[...]`. When the task succeeds, polyris records its `outlets`, which can trigger
+downstream pipelines; `inlets` only document what the task reads.
 
 Here one pipeline turns `raw/orders` into `clean/orders`:
 
@@ -32,7 +32,7 @@ with DAG(
     dag_id="orders-clean",
     group="orders",
     schedule="@daily",
-    description="Extract raw orders, then clean them — with asset lineage.",
+    description="Extract raw orders, then clean them, declaring the assets each task reads and writes.",
 ) as dag:
 
     @task.sfn(arn=ARN, outlets=[raw_orders])
@@ -42,7 +42,7 @@ with DAG(
 
     @task.sfn(arn=ARN, inlets=[raw_orders], outlets=[clean_orders])
     def transform():
-        """Read raw/orders, write clean/orders. Declares both sides of lineage."""
+        """Read raw/orders, write clean/orders. Declares both the asset it reads and the one it writes."""
         pass
 
     extract() >> transform()

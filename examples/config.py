@@ -21,9 +21,6 @@ credentials are used).
 #
 #   # Override just one field for a one-off (loud warning; config unchanged):
 #   polyris-deploy --stage dev --region us-west-2
-#
-#   # Deploy the console UI to the same environment:
-#   cd ui && ./deploy.sh --stage dev
 """
 
 # ─────────────────────────────────────────────────────────────────────
@@ -33,32 +30,26 @@ credentials are used).
 # ─────────────────────────────────────────────────────────────────────
 ENVIRONMENTS = {
     "dev": {
-        # ── SAM CloudFormation stack name ────────────────────────────
-        # The name of the *infrastructure* stack that `sam deploy` created
-        # (from sam/samconfig.toml → stack_name = "...").
+        # ── Platform stack name ──────────────────────────────────────
+        # The stack `polyris-up` created: <namespace>-<stage> (polyris-up
+        # prints it, and the console's URL comes from its outputs).
         #
-        # Read by:
-        #   - polyris-deploy  → describe_stacks(<stack_name>) for wrapper ARN,
-        #                       role ARN, DynamoDB table names, results bucket.
-        #   - ui/deploy.sh    → describe_stacks(<stack_name>) for the S3 bucket,
-        #                       CloudFront distribution, Cognito IDs.
-        #
-        # MUST match `stack_name` in your sam/samconfig.toml — polyris does
-        # not read that file (it may live in another repo).
+        # Read by: polyris-deploy → describe_stacks(<stack_name>) for the
+        # Start_Run function, role ARN and DynamoDB table names.
         "stack_name": "polyris-ex-dev",
 
         # ── Namespace ────────────────────────────────────────────────
         # Prefix used for the *pipeline* CloudFormation stacks that
         # polyris-deploy creates: "{namespace}-{stage}-polyris-{dag_id}"
         # (where {stage} is the KEY above — "dev" here).
-        # Does NOT need to be the same as the SAM stack_name above.
+        # Usually the namespace you gave polyris-up.
         #
         # Read by: polyris-deploy (pipeline stack naming).
         "namespace": "polyris-ex",
 
         # ── AWS region ───────────────────────────────────────────────
-        # The region of the SAM stack above. All AWS SDK calls in
-        # polyris-deploy and ui/deploy.sh use this region.
+        # The region of the platform stack above. polyris-deploy makes
+        # its AWS calls in this region.
         #
         # Overridable per invocation with `--region us-west-2` (loud
         # warning) or the AWS_REGION env var.
@@ -77,7 +68,7 @@ ENVIRONMENTS = {
         # Named profile from ~/.aws/credentials. Omit to use the default
         # profile / instance credentials / SSO session.
         #
-        # Read by: polyris-deploy, ui/deploy.sh.
+        # Read by: polyris-deploy.
         # Overridable per invocation with `--profile <name>` or the
         # AWS_PROFILE env var.
         # "profile": "your-aws-profile",

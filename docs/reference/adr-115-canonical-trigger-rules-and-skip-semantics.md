@@ -7,7 +7,7 @@
 > shipped in step 1.3 — **scope corrected during execution**: delivered as a
 > positioning/documentation change only, not the rule-collapse/test-removal
 > originally sketched below (see the corrected Consequences section and
-> `docs/reference/COMPLETENESS_REPORT_phase_1_3.md` for why). Narrows the *advertised*
+> `docs/design/COMPLETENESS_REPORT_phase_1_3.md` for why). Narrows the *advertised*
 > `trigger_rule` vocabulary to what the engine can actually execute under ADR #114's
 > intervention-first failure model, fixes the blocked-rule terminal status, and makes
 > `skipped` a real, distinct status instead of a synonym for `success` in rule evaluation.
@@ -17,7 +17,7 @@
 polyris's SDK exposes 11 `trigger_rule`s. Investigating two observed runs
 (`branching-demo`, `trigger-rules-reference`) where a rule that should not have fired
 showed up **red** with the run marked `aborted` — with no task actually failing — led to a
-full audit (`docs/reference/SPIKE_TRIGGER_RULES.md`). Three independent defects were
+full audit (`docs/design/SPIKE_TRIGGER_RULES.md`). Three independent defects were
 found:
 
 1. **Blocked terminal is always `upstream_failed`.** `evaluate_deps` (`sam/lambdas/
@@ -46,7 +46,7 @@ sibling), the 11 named rules collapse to **3 distinct behaviors**:
 `all_success` ≡ `none_skipped`; `one_success` ≡ `none_failed_min_one_success`;
 `none_failed` is vacuous (its only distinguishing condition — blocking on failure — never
 occurs, once failure can't reach it); `all_skipped` is a narrow but genuine fourth case.
-Full derivation in `docs/reference/SPIKE_TRIGGER_RULES.md`.
+Full derivation in `docs/design/SPIKE_TRIGGER_RULES.md`.
 
 ## Decision
 
@@ -130,7 +130,7 @@ Full derivation in `docs/reference/SPIKE_TRIGGER_RULES.md`.
   Python/JSONata *pair* was duplicated, and that's the parity guard above, not this).
   Step 1.3 shipped as decision 4's literal text specifies — "continue to validate and
   run" — with **zero tests removed**: every existing per-rule test still tests real,
-  unchanged behavior. See `docs/reference/COMPLETENESS_REPORT_phase_1_3.md`.
+  unchanged behavior. See `docs/design/COMPLETENESS_REPORT_phase_1_3.md`.
 - **Docs.** `docs/features/DSL.md` (canonical/alias table + skip-origin behavior),
   `docs/reference/MIGRATION.md`, `docs/operations/TROUBLESHOOTING.md`,
   `docs/architecture/ARCHITECTURE.md`, `docs/architecture/BACKEND.md`, `README.md` —

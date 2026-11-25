@@ -219,6 +219,10 @@ The bell's pop-up called every warning "Pipeline Failed" while its list and the 
 
 React runs a child's effects before its parent's in one commit. `useStoreInit`, called in `App`, forgets the picked run after a pipeline switch; it did so with `setSelectedExecution(null)`, which also chose the run view, and undid the definition view that `PipelineDetail`, a child, had just chosen for a pipeline that never ran. The page stayed on the date of the pipeline before, with no run to pick instead (1.3 live check). The reset calls `clearSelectedExecution`, which writes the run alone. A test of a choice that a later effect may overwrite mounts that effect too, never the component alone (`opens on its definition when picked after a run of another pipeline`).
 
+## The help names what this build does
+
+The console's help listed `waiting_delay`, a status 1.3 removed, and missed `waiting_decision`, the state a failed task waits in. It called the History tab Timeline, and it showed the legend of the paid assets view to every build (the docs audit after 1.3). A status added or removed in `polyris/constants.py` changes the Icons tab of `HelpModal.tsx` in the same commit. A key that a surface binds is listed under the tab's own name. A legend of a paid surface renders only when `paidSurface` has it (`the Icons tab names the task statuses that 1.3 writes`).
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

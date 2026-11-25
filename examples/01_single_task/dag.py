@@ -7,9 +7,6 @@ A single scheduled task. Everything here runs locally with no AWS account:
     polyris-output --mermaid   # Mermaid diagram
     polyris-output --json      # the Step Functions definition and its task specs
 
-Alerts (Slack / PagerDuty) are configured in the Console UI — Settings → Alerts,
-not in the pipeline code.
-
 When you're ready to run it for real:  polyris-deploy
 """
 from polyris import DAG, task
