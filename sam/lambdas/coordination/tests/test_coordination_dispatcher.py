@@ -712,6 +712,250 @@ def test_a_creating_run_whose_execution_runs_past_the_window_is_stopped_too(worl
         f"Start_Run did not make the run active within its retry window of {start_run.retry_window()}")
 
 
+# ── the end of an execution on EventBridge (ADR #137 §7) ───────────────────
+
+def ended(arn: str = PIPELINE_EXECUTION, *, status: str = "ABORTED", machine: str = "", **detail: Any) -> Dict[str, Any]:
+    """An Execution Status Change event as EventBridge delivers it (Step Functions' docs)."""
+    name = arn.rsplit(":", 1)[-1]
+    machine = machine or arn.rsplit(":", 1)[0].replace(":execution:", ":stateMachine:")
+    return {"version": "0", "id": "e1", "detail-type": "Step Functions Execution Status Change",
+            "source": "aws.states", "account": "123456789012", "region": "us-east-1", "resources": [arn],
+            "detail": {"executionArn": arn, "stateMachineArn": machine, "name": name, "status": status,
+                       "input": "{}", "inputDetails": {"included": True}, "error": None, "cause": None, **detail}}
+
+
+def on_end(world, event: Dict[str, Any]) -> Dict[str, Any]:
+    return world.dispatcher.on_execution_end(event["detail"], lambda: 60_000)
+
+
+def test_the_handler_takes_an_execution_end_to_its_path_and_a_batch_to_the_stream(world, monkeypatch):
+    import dispatcher as module
+
+    monkeypatch.setattr(module, "_DISPATCHER", world.dispatcher)
+    calls: List[str] = []
+    monkeypatch.setattr(world.dispatcher, "on_execution_end", lambda detail, remaining: calls.append("end") or {})
+    monkeypatch.setattr(world.dispatcher, "handle", lambda records, remaining: calls.append("stream") or {})
+    module.handler(ended(), None)
+    module.handler({"Records": []}, None)
+    assert calls == ["end", "stream"]
+
+
+def test_the_end_of_a_runs_execution_stops_the_run_at_once(world):
+    start(world, CHAIN)
+    full(world)
+    execution_is(world, {"status": "ABORTED"})
+    world.sfn.executions[run_task_execution("extract")] = "RUNNING"
+    result = on_end(world, ended())
+    assert result["source"] == "event"
+    run = item(world, RUN_KEY)
+    assert run["stop"]["by"] == "the engine" and run["stop"]["reason"] == "its execution ended ABORTED before the run's answer"
+    assert {item(world, key(t))["status"] for t in ("extract", "load")} == {"stopped"}
+    assert world.sfn.described == [PIPELINE_EXECUTION]                  # the run's execution, and no row's
+    assert [s["error"] for s in world.sfn.stopped] == ["Polyris.Stopped"]   # extract's run_task: no event
+    assert world.sfn.failed[0]["token"] == "run-token" and "stop_done" in run
+
+
+def test_an_end_the_execution_does_not_confirm_decides_nothing(world):
+    """The event wakes the check; DescribeExecution decides, as at the sweeper's check (invariant 10)."""
+    start(world, CHAIN)
+    full(world)
+    execution_is(world)                                                   # it still runs
+    on_end(world, ended())
+    assert "stop" not in item(world, RUN_KEY) and world.sfn.failed == []
+    world.sfn.errors["describe_execution"] = client_error("ThrottlingException", "DescribeExecution")
+    on_end(world, ended())
+    assert "stop" not in item(world, RUN_KEY)
+
+
+@pytest.mark.parametrize("change,reason", [
+    (lambda world: world.client.delete_item(TableName=table("TOKENS_TABLE"), Key={"execution_name": {"S": RUN_KEY}}),
+     "no run of this platform"),
+    (lambda world: update(world, RUN_KEY, run_execution_arn=PIPELINE_EXECUTION.replace("acme-dev", "other-qa")),
+     "another execution than the run's"),
+])
+def test_an_end_of_no_run_or_of_another_execution_costs_one_read(world, change, reason):
+    start(world, CHAIN)
+    full(world)
+    execution_is(world, "ABORTED")
+    change(world)
+    reads: List[str] = []
+    world.client.meta.events.register("before-call.dynamodb", lambda model, **_: reads.append(model.name),
+                                      unique_id="reads")
+    try:
+        result = on_end(world, ended())
+    finally:
+        world.client.meta.events.unregister("before-call.dynamodb", unique_id="reads")
+    assert (result["action"], result["reason"]) == ("ignored", reason)
+    assert reads == ["GetItem"] and world.sfn.described == [] and world.sfn.stopped == []
+
+
+@pytest.mark.parametrize("detail", [None, "text", {}, {"executionArn": PIPELINE_EXECUTION}, {"name": EXECUTION}])
+def test_an_end_that_names_no_execution_is_dropped_without_a_read(world, detail):
+    reads: List[str] = []
+    world.client.meta.events.register("before-call.dynamodb", lambda model, **_: reads.append(model.name),
+                                      unique_id="reads")
+    try:
+        result = world.dispatcher.on_execution_end(detail, lambda: 60_000)    # type: ignore[arg-type]
+    finally:
+        world.client.meta.events.unregister("before-call.dynamodb", unique_id="reads")
+    assert result["action"] == "ignored" and reads == []
+
+
+def test_a_run_row_that_cannot_be_read_is_logged_and_left_to_its_check(world, monkeypatch):
+    from failures import CoordinationTransient
+
+    start(world, CHAIN)
+    full(world)
+    update(world, RUN_KEY, run_version="not a number")
+    assert on_end(world, ended())["action"] == "failed"
+    update(world, RUN_KEY, run_version=3)
+    monkeypatch.setattr(world.dispatcher, "_get", _raises(client_error("AccessDeniedException", "GetItem")))
+    assert on_end(world, ended())["action"] == "failed"                   # its check warns with the cause
+    monkeypatch.setattr(world.dispatcher, "_get", _raises(client_error("ThrottlingException", "GetItem")))
+    with pytest.raises(CoordinationTransient):                            # Lambda invokes it again
+        on_end(world, ended())
+
+
+def _raises(exc: Exception) -> Any:
+    def call(*_: Any, **__: Any) -> Any:
+        raise exc
+    return call
+
+
+def test_a_creating_run_whose_execution_ended_within_start_runs_window_is_left_to_its_check(world):
+    """The engine's check keeps its conditions (engine_check_due): the event only makes it come now."""
+    start(world, CHAIN)
+    update(world, RUN_KEY, status="creating")
+    execution_is(world, {"status": "FAILED", "error": "States.TaskFailed"})
+    assert on_end(world, ended(status="FAILED"))["action"] == "creating" and world.sfn.described == []
+    world.clock.at = NOW + start_run.retry_window()
+    on_end(world, ended(status="FAILED"))
+    assert item(world, RUN_KEY)["stop"]["by"] == "the engine"
+
+
+def run_task_input(task: str, generation: int = 1, **changes: Any) -> str:
+    """The keys of run_task's input that the end of its execution is read by (run_task_input.Key)."""
+    import json
+
+    payload = {"execution_name": key(task), "generation": generation, "pipeline_execution": EXECUTION,
+               "task_name": task, **changes}
+    return json.dumps({k: v for k, v in payload.items() if v is not None})
+
+
+def run_task_ended(task: str, generation: int = 1, *, status: str = "ABORTED", **detail: Any) -> Dict[str, Any]:
+    return ended(run_task_execution(task, generation), status=status, machine=RUN_TASK,
+                 **{"input": run_task_input(task, generation), **detail})
+
+
+def started_running(world) -> None:
+    """extract runs, its liveness check 10 minutes away; its run_task ended without an outcome."""
+    start(world, CHAIN)
+    full(world)
+    execution_is(world)
+    update(world, key("extract"), status="running", status_since=format_utc(NOW))
+    world.sfn.executions[run_task_execution("extract")] = {"status": "ABORTED", "error": "Console"}
+
+
+def test_the_end_of_a_run_task_fails_its_row_at_once_with_how_it_ended(world):
+    started_running(world)
+    result = on_end(world, run_task_ended("extract"))
+    assert result["source"] == "event"
+    extract = item(world, key("extract"))
+    assert extract["status"] == "failed"
+    assert extract["error"] == "its run_task execution ended ABORTED (Console) without recording an outcome"
+    assert item(world, key("load"))["status"] == "upstream_failed"       # decided in the same pass (ADR #138)
+    assert world.sfn.described == [run_task_execution("extract")]          # the row's, and not the run's
+
+
+def test_an_end_without_its_input_is_left_to_the_rows_own_check(world):
+    """Over 248 KiB the event leaves the input out: a lost hint, never a DescribeExecution of its own (§7)."""
+    started_running(world)
+    result = on_end(world, run_task_ended("extract", input=None, inputDetails={"included": False}))
+    assert (result["action"], result["reason"]) == ("ignored", "no input that names a row of 1.3")
+    assert item(world, key("extract"))["status"] == "running" and world.sfn.described == []
+
+
+@pytest.mark.parametrize("event,reason", [
+    (run_task_ended("extract", input=run_task_input("extract", generation=None)), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input="not json"), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", generation=True)), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="")), "no input that names a row of 1.3"),
+    (run_task_ended("extract", input=run_task_input("extract", pipeline_execution="orders-run-2026-11-12-0ther000")),
+     "no run of this platform"),
+    (run_task_ended("extract", input=run_task_input("transform")), "no row of the run"),
+    (run_task_ended("extract", 2), "another execution than the row's run_task"),          # not its generation
+    (ended(run_task_execution("extract").replace("abcd1234", "abcd9999"), machine=RUN_TASK,
+           input=run_task_input("extract")), "another execution than the row's run_task"),
+])
+def test_an_end_of_no_row_of_1_3_or_of_another_generation_changes_nothing(world, event, reason):
+    started_running(world)
+    result = on_end(world, event)
+    assert (result["action"], result["reason"]) == ("ignored", reason)
+    assert item(world, key("extract"))["status"] == "running" and world.sfn.described == []
+
+
+@pytest.mark.parametrize("status,after", [("success", "success"), ("waiting", "deps_ready")])
+def test_an_end_of_a_row_that_waits_for_no_outcome_is_decided_as_any_pass_decides_it(world, status, after):
+    """The event holds no rule of its own (§7): the pass decides the row from its upstreams as any pass does,
+    and judges no execution of a row that waits for none (a waiting extract has no upstream: it is ready)."""
+    started_running(world)
+    update(world, key("extract"), status=status)
+    assert on_end(world, run_task_ended("extract"))["source"] == "event"
+    assert item(world, key("extract"))["status"] == after and world.sfn.described == []
+
+
+def test_the_end_of_a_run_task_restarted_after_its_run_answered_fails_its_row_at_once(world):
+    """A Restart of a task of a run that ended failed (the run answered), whose run_task is then stopped in the
+    AWS console: its row fails at once, as the sweeper's check would fail it later (the break review)."""
+    started_running(world)
+    update(world, RUN_KEY, answered_order=0)
+    assert on_end(world, run_task_ended("extract"))["source"] == "event"
+    assert item(world, key("extract"))["status"] == "failed"
+
+
+def test_an_end_of_a_run_whose_stop_is_in_progress_carries_the_stop_on(world):
+    """A run with a stop mark: the event's pass does what any pass does with it, and stops its unfinished rows."""
+    started_running(world)
+    update(world, RUN_KEY, stop={"by": "ops", "reason": "done", "at": START})
+    on_end(world, run_task_ended("extract"))
+    assert item(world, key("extract"))["status"] == "stopped"
+
+
+def test_the_end_of_a_ready_row_whose_start_failed_or_that_a_pause_holds_judges_nothing(world):
+    """liveness_due keeps its conditions: a failed start's next try, and a pause, hold the judgment (§5)."""
+    started_running(world)
+    update(world, key("extract"), status="deps_ready", start_failures=1, start_failed_first=format_utc(NOW),
+           start_failed_last=format_utc(NOW))
+    on_end(world, run_task_ended("extract"))
+    assert item(world, key("extract"))["status"] == "deps_ready" and world.sfn.described == []
+
+
+def test_an_end_that_describe_execution_does_not_show_yet_leaves_the_row_its_own_check(world):
+    """DescribeExecution is eventually consistent: right after the end it may still say RUNNING. The event's
+    check then writes nothing, so the row's check comes as it would without the event (§7)."""
+    started_running(world)
+    world.sfn.executions[run_task_execution("extract")] = {"status": "RUNNING"}
+    before = item(world, key("extract"))
+    on_end(world, run_task_ended("extract"))
+    after = item(world, key("extract"))
+    assert after["status"] == "running" and world.sfn.described == [run_task_execution("extract")]
+    assert {k: after.get(k) for k in ("last_check", "checks", "due")} == \
+        {k: before.get(k) for k in ("last_check", "checks", "due")}
+
+
+def test_rows_of_an_ended_run_task_that_cannot_be_read_are_left_to_their_check(world, monkeypatch):
+    from failures import CoordinationTransient
+
+    started_running(world)
+    update(world, key("extract"), generation="one")
+    assert on_end(world, run_task_ended("extract"))["action"] == "failed"
+    monkeypatch.setattr(world.dispatcher, "_batch_get", _raises(client_error("AccessDeniedException", "BatchGetItem")))
+    assert on_end(world, run_task_ended("extract"))["action"] == "failed"
+    monkeypatch.setattr(world.dispatcher, "_batch_get", _raises(client_error("ThrottlingException", "BatchGetItem")))
+    with pytest.raises(CoordinationTransient):
+        on_end(world, run_task_ended("extract"))
+
+
 def test_a_check_reports_the_rows_whose_wait_ended_on_a_lost_hint(world):
     start(world, CHAIN)
     full(world)

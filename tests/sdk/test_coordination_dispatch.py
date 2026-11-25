@@ -567,6 +567,23 @@ def test_a_ready_row_whose_start_failed_or_that_a_pause_holds_is_not_judged():
     assert not dispatch.liveness_due(row(status_since=CHECKED), RUN, now=NOW)            # a waiting row
 
 
+def test_the_end_of_a_run_task_brings_the_check_of_its_row_now_and_changes_nothing_else():
+    """ADR #137 §7: `at_once` moves only the time of the check; a failed start, a pause and a row that waits for
+    no outcome keep theirs."""
+    young = NOW - timedelta(seconds=30)
+    for status in (S.DEPS_READY.value, S.RUNNING.value):
+        assert not dispatch.liveness_due(row(status=status, status_since=young), RUN, now=NOW)
+        assert dispatch.liveness_due(row(status=status, status_since=young), RUN, now=NOW, at_once=True)
+        assert dispatch.liveness_due(row(status=status), RUN, now=NOW, at_once=True)    # no time to count from
+    failing = row(status=S.DEPS_READY.value, status_since=young, start_failures=1, start_failed_first=young,
+                  start_failed_last=young)
+    assert not dispatch.liveness_due(failing, RUN, now=NOW, at_once=True)
+    assert not dispatch.liveness_due(row(status=S.DEPS_READY.value, status_since=young), PAUSED, now=NOW, at_once=True)
+    assert dispatch.liveness_due(row(status=S.RUNNING.value, status_since=young), PAUSED, now=NOW, at_once=True)
+    for status in (S.WAITING.value, S.SUCCESS.value, S.WAITING_DECISION.value):
+        assert not dispatch.liveness_due(row(status=status, status_since=young), RUN, now=NOW, at_once=True)
+
+
 @pytest.mark.parametrize("status", ["RUNNING", "PENDING_REDRIVE"])
 def test_an_execution_that_runs_records_the_check_and_backs_off(status):
     judgment = dispatch.liveness(row(status=S.RUNNING.value, status_since=CHECKED, checks=0), RUN, now=NOW,

@@ -9,8 +9,13 @@ AWS does not.
 The patterns that the transition table generates
 (`transitions.filter_patterns`) must pass the same records, and every
 change of a task row that wakes the dispatcher.
+
+The same matcher applies the template's rule on the end of executions
+(`ExecutionEndRule`, ADR #137 §7) to events shaped as Step Functions documents
+them.
 """
 
+import json
 from typing import Any, Dict, Optional
 
 import pytest
@@ -165,3 +170,70 @@ def test_the_fixture_records_of_section_7(item, passes):
     plain = {n: {k: next(iter(v.values())) for k, v in body[n].items()} if n in body else None
              for n in ("OldImage", "NewImage")}
     assert not transitions.wakes(keys, plain["OldImage"], plain["NewImage"])
+
+
+# ── the rule on the end of executions (ADR #137 §7, ExecutionEndRule) ──────────
+
+def test_wildcard_matches_any_run_of_characters_and_refuses_two_in_a_row():
+    pattern = {"arn": [{"wildcard": "arn:aws:states:*:stateMachine:*-polyris-*"}]}
+    assert matches(pattern, {"arn": "arn:aws:states:us-east-1:1:stateMachine:acme-dev-polyris-orders"})
+    assert not matches(pattern, {"arn": "arn:aws:states:us-east-1:1:stateMachine:acme-dev-orders"})
+    assert not matches(pattern, {})                                          # a missing field matches nothing
+    escaped = {"f": [{"wildcard": "a\\*b"}]}
+    assert matches(escaped, {"f": "a*b"}) and not matches(escaped, {"f": "axb"})
+    with pytest.raises(ValueError):
+        matches({"f": [{"wildcard": "a**b"}]}, {"f": "ab"})
+
+
+def test_anything_but_needs_the_field_and_a_value_and_null_matches_null_alone():
+    """The docs leave anything-but on null unstated: the stand takes the strict reading (stream_filters.py)."""
+    pattern = {"error": [{"anything-but": "Polyris.Stopped"}]}
+    assert matches(pattern, {"error": "States.Timeout"})
+    assert not matches(pattern, {"error": "Polyris.Stopped"})
+    assert not matches(pattern, {"error": None}) and not matches(pattern, {})
+    assert matches({"error": [None]}, {"error": None}) and not matches({"error": [None]}, {})
+    assert not matches({"error": [None]}, {"error": ""})                     # null and "" are not the same
+
+
+def _rule_pattern() -> Dict[str, Any]:
+    """The template's rule as CloudFormation resolves it on the harness's stack (acme, dev, us-east-1)."""
+    from coordination_testkit import template
+    from platform_stack import PARAMETERS, Stack
+
+    stack = Stack.__new__(Stack)                    # names only: no tables or machines
+    loaded = template()
+    stack.resources = loaded["Resources"]
+    stack.parameters = {**{k: v.get("Default") for k, v in loaded["Parameters"].items()}, **PARAMETERS}
+    return json.loads(stack._sub(stack.resources["ExecutionEndRule"]["Properties"]["EventPattern"]))
+
+
+def _end(machine: str, *, status: str = "ABORTED", error: Any = None, account: str = "123456789012") -> Dict[str, Any]:
+    arn = f"arn:aws:states:us-east-1:{account}:stateMachine:{machine}"
+    return {"source": "aws.states", "detail-type": "Step Functions Execution Status Change",
+            "detail": {"stateMachineArn": arn, "executionArn": arn.replace(":stateMachine:", ":execution:") + ":x",
+                       "name": "x", "status": status, "error": error, "cause": None}}
+
+
+@pytest.mark.parametrize("event,passes", [
+    (_end("acme-dev-polyris-dep-run-task-helper"), True),                             # stopped by hand: null
+    (_end("acme-dev-polyris-dep-run-task-helper", status="FAILED", error="ClaimFailed"), True),
+    (_end("acme-dev-polyris-orders", status="TIMED_OUT", error="States.Timeout"), True),
+    (_end("ex-qa-polyris-orders", error="Console"), True),                             # a pipeline of its own config
+    (_end("acme-dev-polyris-orders", status="FAILED", error="Polyris.RunFailed"), True),  # answered: one read
+    (_end("acme-dev-polyris-dep-run-task-helper", error="Polyris.Stopped"), False),    # the engine's own stop
+    (_end("acme-dev-polyris-orders", error="Polyris.Stopped"), False),
+    (_end("acme-dev-polyris-orders", status="SUCCEEDED"), False),
+    (_end("acme-dev-polyris-orders", status="RUNNING"), False),
+    (_end("someone-elses-machine"), False),
+    (_end("acme-dev-polyris-orders", account="210987654321"), False),
+])
+def test_the_rule_on_executions_ends_lets_through_the_abnormal_ends_of_polyris_machines(event, passes):
+    assert matches(_rule_pattern(), event) is passes
+
+
+def test_an_end_without_an_error_field_matches_no_branch_of_the_rule():
+    """Step Functions always sends `error`, null when there is none (its docs' examples): an event without the
+    field is not let through, as `[null]` and `anything-but` both need the field."""
+    event = _end("acme-dev-polyris-orders")
+    del event["detail"]["error"]
+    assert not matches(_rule_pattern(), event)

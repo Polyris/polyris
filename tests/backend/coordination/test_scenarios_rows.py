@@ -435,6 +435,7 @@ def test_a_late_success_of_a_run_task_the_engine_stopped_records_nothing(world):
     run = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [orders]})])), DATE)
     world.deliver_task_hints()
     assert world.running_tasks(run) == ["build"]
+    world.lose_execution_end(run)                 # its end would stop the row at once, before the failing stop
     world.stop_run_externally(run)
     # The premise: the execution ended while its row ran (invariant 8); the engine stops the row at its check.
     world.plant(f"invariant 8: the execution of {run.name} ended while {run.execution_name('build')} were not final")

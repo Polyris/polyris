@@ -195,6 +195,33 @@ def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     client.update_item(**actions.stop_run(item(other_key), by="ops", reason="done", now=now, table=tokens))
     walk(full_pass_of_other())                                                   # the stop
     assert sfn.stopped, "the walk must stop a run_task and the run's execution"
+
+    # A third run, whose execution is stopped in the AWS console: its end on EventBridge stops the run (§7).
+    third = "orders-run-2026-11-12-dddd0003"
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"}],
+               execution=third)
+    walk(lambda: dispatcher.full_pass(run_row.key(third), source="test", remaining_ms=lambda: 60_000))
+    arn = str(item(run_row.key(third))[run_row.EXECUTION_ARN])
+    sfn.executions[arn] = "ABORTED"
+    walk(lambda: dispatcher.on_execution_end({"executionArn": arn, "name": third, "status": "ABORTED",
+                                              "stateMachineArn": arn.rsplit(":", 1)[0]}, lambda: 60_000))
+    assert item(run_row.key(third))["stop"]["by"] == run_row.ENGINE, "the walk must take an execution's end"
+
+    # A fourth, whose task's run_task is stopped in the AWS console: its end fails the row at once (§7).
+    from polyris.coordination import run_name, task_row
+
+    fourth = "orders-run-2026-11-12-dddd0004"
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"}],
+               execution=fourth)
+    walk(lambda: dispatcher.full_pass(run_row.key(fourth), source="test", remaining_ms=lambda: 60_000))
+    row_key = task_row.key("extract", "2026-11-12", fourth)
+    task_arn = f"{dispatcher.run_task_arn}:{run_name.run_task_name(row_key, STARTED_AT, 1)}"
+    sfn.executions[task_arn] = "ABORTED"
+    payload = json.dumps({"execution_name": row_key, "generation": 1, "pipeline_execution": fourth})
+    walk(lambda: dispatcher.on_execution_end({"executionArn": task_arn, "name": task_arn.rsplit(":", 1)[-1],
+                                              "status": "ABORTED", "stateMachineArn": dispatcher.run_task_arn,
+                                              "input": payload}, lambda: 60_000))
+    assert item(row_key)["status"] == "failed", "the walk must take a run_task's end"
     return calls, reads
 
 
@@ -204,9 +231,14 @@ def test_reconcile_role_allows_exactly_the_calls_the_code_makes(resources, ddb, 
     granted = _dynamodb_grants(_statements(resources))
     assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
     assert granted - used == set(), "grants no call uses (drop them, or walk the path that needs them)"
-    [own] = resources["ReconcileRole"]["Properties"]["Policies"]
-    [stream] = own["PolicyDocument"]["Statement"]
+    own = {p["PolicyName"]: p["PolicyDocument"]["Statement"] for p in resources["ReconcileRole"]["Properties"]["Policies"]}
+    assert set(own) == {"DispatcherStreamPolicy", "DispatcherExecutionEndPolicy"}
+    [stream] = own["DispatcherStreamPolicy"]
     assert set(stream["Action"]) == STREAM_ACTIONS and stream["Resource"] == [{"!GetAtt": "PipelineTokensTable.StreamArn"}]
+    # The end of an execution: its pass judges the run's execution or a row's run_task (ADR #137 §1, §7). In the
+    # role's own policy: AssetFanout attaches the managed one, and its narrow passes judge no execution.
+    [describe] = own["DispatcherExecutionEndPolicy"]
+    assert describe["Action"] == ["states:DescribeExecution"]
 
 
 def test_every_read_of_the_dispatcher_is_consistent(ddb, rows):
@@ -243,6 +275,44 @@ def test_the_tasks_stream_wakes_the_dispatcher_through_the_transition_tables_fil
     }
     assert [json.loads(f["Pattern"]) for f in filters] == transitions.filter_patterns()
     assert len(filters) <= 4, "Lambda allows five filters per mapping by default; the ADR keeps one spare"
+
+
+def _rule_pattern(resources: Dict[str, Any]) -> Dict[str, Any]:
+    """The rule's EventPattern, its ``${...}`` left as they are."""
+    return json.loads(resources["ExecutionEndRule"]["Properties"]["EventPattern"]["!Sub"])
+
+
+def test_the_end_of_an_execution_wakes_the_dispatcher_through_its_rule(resources):
+    """ADR #137 §7: an abnormal end of run_task or of a pipeline, not by the engine's own stop, on the default bus;
+    the dispatcher, through a permission scoped to the rule. No queue, DLQ or retry policy (Principle #45)."""
+    import dispatcher
+
+    rule = resources["ExecutionEndRule"]["Properties"]
+    assert rule["Name"] == {"!Sub": "${Namespace}-${Stage}-polyris-execution-end"}
+    assert rule["State"] == "ENABLED" and "EventBusName" not in rule            # the default bus
+    assert rule["Targets"] == [{"Id": "dispatcher", "Arn": {"!GetAtt": "ReconcileFunction.Arn"}}]
+    assert _rule_pattern(resources) == {
+        "source": [dispatcher.EVENT_SOURCE],
+        "detail-type": ["Step Functions Execution Status Change"],
+        "detail": {
+            "status": ["ABORTED", "FAILED", "TIMED_OUT"],
+            "error": [None, {"anything-but": dispatcher.STOPPED_ERROR}],
+            "stateMachineArn": [{"wildcard": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"}],
+        },
+    }
+    assert resources["ExecutionEndPermission"]["Properties"] == {
+        "FunctionName": {"!GetAtt": "ReconcileFunction.Arn"}, "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com", "SourceArn": {"!GetAtt": "ExecutionEndRule.Arn"}}
+
+
+def test_the_rule_names_the_run_task_the_dispatcher_tells_apart(resources):
+    """The dispatcher takes an end whose stateMachineArn is its RUN_TASK_ARN for a run_task's (Principle #28)."""
+    from coordination_testkit import RUN_TASK_ARN
+
+    assert resources["ReconcileFunction"]["Properties"]["Environment"]["Variables"]["RUN_TASK_ARN"] == RUN_TASK_ARN
+    # One wildcard takes the pipelines and the run_task machine alike: its name has "-polyris-" in it.
+    [wildcard] = _rule_pattern(resources)["detail"]["stateMachineArn"]
+    assert wildcard["wildcard"].endswith(":stateMachine:*-polyris-*") and "-polyris-" in RUN_TASK_ARN["!Sub"]
 
 
 def test_the_dispatcher_starts_the_run_task_machine_by_its_name(resources):
@@ -353,9 +423,11 @@ def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(reso
 
     [describe] = [s for s in _statements(resources, "SweeperRole", managed=False)
                   if s["Action"] == ["states:DescribeExecution"]]
+    [ended] = [s for s in _statements(resources, "ReconcileRole", managed=False)
+               if s["Action"] == ["states:DescribeExecution"]]
     [stop] = [s for s in _statements(resources, "ReconcileRole") if s["Action"] == ["states:StopExecution"]]
     execution = "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:"
-    for statement in (describe, stop):
+    for statement in (describe, ended, stop):
         [arn] = statement["Resource"]
         assert arn["!Sub"] == execution + "*-polyris-*:*"
     with DAG("orders") as dag:
@@ -467,7 +539,7 @@ def test_step_functions_actions_per_role(resources):
         return {a for s in _statements(resources, role) for a in s["Action"] if a.startswith("states:")}
 
     dispatcher = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:StartExecution", "states:StopExecution"}
-    assert actions("ReconcileRole") == dispatcher
+    assert actions("ReconcileRole") == dispatcher | {"states:DescribeExecution"}     # an execution's end (§7)
     assert actions("AssetFanoutRole") == dispatcher
     assert actions("SweeperRole") == dispatcher | {"states:DescribeExecution"}
     # The fake implements exactly the calls the code makes.

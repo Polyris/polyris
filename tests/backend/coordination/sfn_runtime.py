@@ -11,6 +11,10 @@ Arguments / Output / Assign / Items / ItemSelector / Condition; variables
 copied into Parallel branches and Map iterations; Retry (immediate, or
 held until a test releases it, as a retry that comes late) and Catch; task tokens (`.waitForTaskToken`), `.sync` children, express
 `startSyncExecution`, fire-and-forget starts, stops and timeouts on request.
+Each end of a Standard execution is recorded in `events` as the *Execution
+Status Change* event Step Functions sends to the default EventBridge bus,
+shaped as AWS documents it: `"error": null` for a stop without an error, and
+no input when the input and output pass 248 KiB.
 The runtime also serves the Step Functions API calls the Lambdas make
 (`send_task_success`, `describe_execution`, ...): one object is both the
 interpreter and the boto3 client the code under test talks to.
@@ -53,6 +57,11 @@ REGION = "us-east-1"
 TOKEN_SUFFIX = ".waitForTaskToken"
 #: Step Functions' payload quota: a state's input, output, task result or arguments, as JSON.
 PAYLOAD_LIMIT = 262_144
+#: An Execution Status Change event drops the input when the escaped input and output pass this (AWS docs).
+EVENT_PAYLOAD_LIMIT = 248 * 1024
+#: Its source and detail type on the default bus.
+EVENT_SOURCE = "aws.states"
+EVENT_DETAIL_TYPE = "Step Functions Execution Status Change"
 
 
 class StatesError(Exception):
@@ -231,6 +240,8 @@ class Runtime:
         self.side_effects: List[Dict[str, Any]] = []
         #: Every accepted token callback: {"execution", "state", "outcome"}.
         self.callbacks: List[Dict[str, Any]] = []
+        #: The Execution Status Change event of each end of a Standard execution, as EventBridge receives it.
+        self.events: List[Dict[str, Any]] = []
         #: Every expression that failed in a state, caught or not: {"machine", "state", "cause"}.
         #: Such a failure is always a template bug, never an outcome (D107); the World's check fails on it.
         self.expression_errors: List[Dict[str, str]] = []
@@ -277,7 +288,8 @@ class Runtime:
             raise client_error("ExecutionDoesNotExist", "StopExecution")
         if execution.status == "RUNNING":
             execution.frontier = [f for f in execution.frames if not f.done and f.waiting != "children"]
-            self._finish(execution, "ABORTED", error=error or "States.Aborted", cause=cause)
+            self._finish(execution, "ABORTED", error=error or "States.Aborted", cause=cause,
+                         event_error=(error or None, cause or None))
         return {"stopDate": self.now()}
 
     def redrive_execution(self, *, executionArn: str) -> Dict[str, Any]:
@@ -381,9 +393,14 @@ class Runtime:
             raise RuntimeError(f"express execution {execution.name} did not finish; express machines cannot wait")
 
     def _finish(self, execution: Execution, status: str, *, output: Any = None,
-                error: Optional[str] = None, cause: Optional[str] = None) -> None:
+                error: Optional[str] = None, cause: Optional[str] = None,
+                event_error: Optional[Tuple[Optional[str], Optional[str]]] = None) -> None:
+        """The end of an execution; ``event_error`` is the error and cause its event carries when they differ from
+        what DescribeExecution shows (a stop without an error: null in the event)."""
         execution.status, execution.output, execution.error, execution.cause = status, output, error, cause
         execution.ended = self.now()
+        if execution.machine.type == "STANDARD":
+            self.events.append(self._status_event(execution, *(event_error or (error, cause))))
         for token in [t for t, f in self.tokens.items() if f.execution is execution]:
             del self.tokens[token]
         for job_id in [j for j, job in self.jobs.items() if job.frame.execution is execution]:
@@ -398,6 +415,24 @@ class Runtime:
         else:
             self._wake(waiter, {"error": "States.TaskFailed",
                                 "cause": json.dumps({"Status": status, "Error": error, "Cause": cause})})
+
+    def _status_event(self, execution: Execution, error: Optional[str], cause: Optional[str]) -> Dict[str, Any]:
+        """The event Step Functions sends to the default bus when a Standard execution ends (AWS docs, *Execution
+        Status Change*)."""
+        text = json.dumps(execution.input)
+        output = json.dumps(execution.output) if execution.status == "SUCCEEDED" else None
+        included = len(json.dumps(text)) + len(json.dumps(output or "")) <= EVENT_PAYLOAD_LIMIT
+        return {
+            "version": "0", "id": f"event-{next(self._ids)}", "detail-type": EVENT_DETAIL_TYPE,
+            "source": EVENT_SOURCE, "account": ACCOUNT, "time": execution.ended, "region": REGION,
+            "resources": [execution.arn],
+            "detail": {"executionArn": execution.arn, "stateMachineArn": execution.machine.arn,
+                       "name": execution.name, "status": execution.status, "startDate": execution.started,
+                       "stopDate": execution.ended, "input": text if included else None,
+                       "inputDetails": {"included": included}, "output": output,
+                       "outputDetails": {"included": True} if output is not None else None,
+                       "redriveCount": execution.redrive_count, "error": error, "cause": cause},
+        }
 
     def _describe(self, execution: Execution) -> Dict[str, Any]:
         described = {"executionArn": execution.arn, "name": execution.name, "status": execution.status,
