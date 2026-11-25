@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       # Each version runs every test once: 3.12 here, plain; 3.11 under coverage, in the
-      # coverage-shards jobs below, which fail on a broken test as a plain run does.
+      # coverage job below, which fails on a broken test as a plain run does.
       matrix:
         python-version: ["3.11", "3.12"]
 
@@ -50,16 +50,23 @@ jobs:
       - name: Lint Python + JSON templates
         run: make lint
 
+      # The tests run in parallel processes (pytest-xdist), one per CPU.
       - name: Run SDK tests
         if: matrix.python-version == '3.12'
+        env:
+          PYTEST_ADDOPTS: -n auto
         run: make test-sdk
 
       - name: Run backend tests
         if: matrix.python-version == '3.12'
+        env:
+          PYTEST_ADDOPTS: -n auto
         run: make test-backend
 
       - name: Run integration tests
         if: matrix.python-version == '3.12'
+        env:
+          PYTEST_ADDOPTS: -n auto
         run: make test-integration
 
       - name: Run docs drift tests
@@ -94,16 +101,12 @@ jobs:
         run: make smoke-pipelines
 
   # ============================================
-  # Coverage (Principle #22): the SDK, backend and integration tests on 3.11, in three
-  # parallel parts; the coverage job combines their data and checks the floor.
+  # Coverage (Principle #22): the SDK, backend and integration tests on 3.11, under
+  # coverage, in parallel processes (pytest-xdist, one per CPU).
   # ============================================
-  coverage-shards:
-    name: Coverage ${{ matrix.part }}
+  coverage:
+    name: Tests under coverage (Python 3.11)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [sdk, scenarios, backend]
 
     steps:
       - uses: actions/checkout@v4
@@ -118,41 +121,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run the ${{ matrix.part }} tests under coverage
-        run: make test-cov-${{ matrix.part }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.part }}
-          path: .coverage.${{ matrix.part }}
-          include-hidden-files: true
-          if-no-files-found: error
-          overwrite: true
-
-  coverage:
-    name: Core coverage floor
-    needs: coverage-shards
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # Combining and reporting read the parts, the sources and pyproject.toml; no package install.
-      - name: Install coverage
-        run: pip install "coverage[toml]"
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: coverage-*
-          merge-multiple: true
-
-      - name: Combine the parts and check the floor
-        run: make coverage-report
+      - name: Core coverage floor
+        env:
+          PYTEST_ADDOPTS: -n auto
+        run: make test-cov
 
   # ============================================
   # Mutation probes: each puts a fixed coordination defect back and expects the scenario

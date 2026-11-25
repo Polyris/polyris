@@ -2,7 +2,7 @@
 
 ### Changed
 
-- CI runs the Python tests once per version instead of twice, in parallel jobs: Python 3.12 runs them without coverage; Python 3.11 runs them under coverage in three parts, a job combines the parts and checks the coverage floor, and the mutation probes have a job of their own. `make test-cov` still runs the whole coverage check locally.
+- CI runs the Python tests once per version instead of twice, each run in parallel processes (pytest-xdist, now in the `dev` extra): Python 3.12 runs them without coverage, Python 3.11 under coverage, and the mutation probes have a job of their own. `make test` and `make test-cov` still run the tests one after another locally.
 
 ## v1.3.1 - 2026-11-25
 
