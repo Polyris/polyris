@@ -4,7 +4,7 @@
 reader / writer path exercised in one pipeline. For the API specification, see
 [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md); for the
 design rationale, see
-[ADR #123](../../docs/reference/adr-123-xcom-reliable-data-passing.md).
+[ADR #123](../../docs/decisions/adr-123-xcom-reliable-data-passing.md).
 
 ## Prerequisites
 
@@ -175,4 +175,4 @@ polyris-deploy --destroy     # removes the pipeline stack
 ## Related
 
 - API specification: [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md)
-- Design rationale: [`docs/reference/adr-123-xcom-reliable-data-passing.md`](../../docs/reference/adr-123-xcom-reliable-data-passing.md)
+- Design rationale: [`docs/decisions/adr-123-xcom-reliable-data-passing.md`](../../docs/decisions/adr-123-xcom-reliable-data-passing.md)

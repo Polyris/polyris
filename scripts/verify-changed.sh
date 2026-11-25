@@ -155,9 +155,9 @@ if [ -n "$base_ref" ]; then
 fi
 
 # adr-index.md: declared count must match actual row count in the table
-if [ -f docs/reference/adr-index.md ]; then
-  declared=$(grep -oP '_\K[0-9]+(?= rows indexed)' docs/reference/adr-index.md 2>/dev/null || echo "")
-  actual=$(grep -cE "^\| [0-9]+ \| " docs/reference/adr-index.md 2>/dev/null || echo 0)
+if [ -f docs/decisions/adr-index.md ]; then
+  declared=$(grep -oP '_\K[0-9]+(?= rows indexed)' docs/decisions/adr-index.md 2>/dev/null || echo "")
+  actual=$(grep -cE "^\| [0-9]+ \| " docs/decisions/adr-index.md 2>/dev/null || echo 0)
   if [ -n "$declared" ] && [ "$declared" != "$actual" ]; then
     WARNINGS+=("adr-index.md declares $declared ADRs but table has $actual rows (Principle #29)")
   fi

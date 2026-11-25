@@ -97,7 +97,7 @@ Mechanical gates (pytest / lychee / Vale) catch drift detectable by regex and fi
 
 - `test_cli_flags.py` — every `polyris-<cmd> --flag` in docs must exist as `add_argument("--flag")` in `polyris/*.py`.
 - `test_entry_points.py` — every `polyris-<cmd>` in docs must be in `pyproject.toml [project.scripts]`.
-- `test_adr_refs.py` — every `ADR #N` / `adr-N-slug` must resolve to a file or heading in `DESIGN_DECISIONS.md`.
+- `test_adr_refs.py` — every `ADR #N` / `adr-N-slug` must resolve to a file in `docs/decisions/`; `test_adr_sections.py` — every cited section exists.
 - `test_resource_counts.py` — prose claims like "8 Lambda functions" must match `sam/template.yaml` counts.
 - `test_pypi_installs.py` — bare `pip install polyris` rejected; use `polyris @ git+…@<VERSION>`.
 

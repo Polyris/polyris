@@ -17,7 +17,7 @@
 #   2. SEAM-DEFINING PATHS — legitimately reference the OSS/paid seam because
 #      they describe the mechanism, not the feature. Skipped by this check
 #      (see CLAUDE.md #24 seam-defining exception).
-#         docs/reference/adr-*.md
+#         docs/decisions/adr-*.md
 #         docs/design/SPIKE_*.md
 #         docs/reference/alerting-master-plan.md
 #         CLAUDE.md  docs/CLAUDE.md

@@ -13,20 +13,19 @@ Actively build and sharpen the project's domain model as you design. This is the
 /
 ├── GLOSSARY.md                          ← project-wide terms
 ├── docs/
-│   └── reference/
-│       ├── DESIGN_DECISIONS.md          ← inline ADRs (numbered sections)
+│   └── decisions/
 │       ├── adr-index.md                 ← ADR index (Principle #29)
-│       └── adr-NNN-slug.md             ← standalone ADRs for larger decisions
+│       └── adr-N-slug.md                ← one file per ADR
 └── polyris/CLAUDE.md                    ← SDK-specific rules
 ```
 
-Create files lazily: only when you have something to write. `GLOSSARY.md` is created when the first term resolves. A standalone ADR file is created only when the decision is too large for an inline entry.
+Create files lazily: only when you have something to write. `GLOSSARY.md` is created when the first term resolves. An ADR file is created when a decision is recorded.
 
 ## During the session
 
 ### Challenge against existing docs first
 
-Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md`, and `docs/reference/DESIGN_DECISIONS.md`. A decision already settled there is a constraint, not a question.
+Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md`, and the ADRs in `docs/decisions/`. A decision already settled there is a constraint, not a question.
 
 ### Challenge against the glossary
 
@@ -78,19 +77,7 @@ If any of the three is missing, skip it.
 
 ## ADR format
 
-**Inline** (small decision, add a numbered section to `docs/reference/DESIGN_DECISIONS.md`):
-
-```md
-### ADR #N — Short title
-
-One to three sentences: context, decision, why.
-```
-
-After adding: update the count line in `docs/reference/adr-index.md` and add a row to the table (Principle #29).
-
-**Standalone** (large decision with rejected alternatives, consequences, or constraints worth preserving):
-
-File: `docs/reference/adr-NNN-slug.md`
+File: `docs/decisions/adr-N-slug.md`
 
 ```md
 # ADR #NNN — Short title of the decision
@@ -107,4 +94,4 @@ File: `docs/reference/adr-NNN-slug.md`
 {Non-obvious downstream effects, if any.}
 ```
 
-After adding: update `docs/reference/adr-index.md` count and table (Principle #29).
+After adding: update `docs/decisions/adr-index.md` count and table (Principle #29).

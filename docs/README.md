@@ -62,7 +62,7 @@ Start with the [README](../README.md): what polyris is, how to install it, and [
 |----------|-------------|
 | [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | How polyris works |
 | [BACKEND.md](architecture/BACKEND.md) | The console API and its tables |
-| [DESIGN_DECISIONS.md](reference/DESIGN_DECISIONS.md), [adr-index.md](reference/adr-index.md) | Design decisions (ADRs) |
+| [adr-index.md](decisions/adr-index.md) | Design decisions (ADRs) |
 
 ## Contributing
 

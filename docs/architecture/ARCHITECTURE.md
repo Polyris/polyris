@@ -34,7 +34,7 @@ The sweeper checks what is due every 5 minutes, so a lost wake-up delays a task 
 ## Design Principles
 
 These are the load-bearing decisions the rest of the architecture follows from.
-(Each is expanded in [DESIGN_DECISIONS.md](../reference/DESIGN_DECISIONS.md).)
+(Each is expanded in its ADR; [adr-index.md](../decisions/adr-index.md) lists them.)
 
 1. **Nothing to run — AWS runs it.** polyris has no scheduler, no worker pool
    and no orchestrator to operate. A pipeline compiles to a Step Functions state
@@ -79,7 +79,7 @@ These are the load-bearing decisions the rest of the architecture follows from.
 
 ## Data Flow: "What Calls What"
 
-Use this section to debug "why didn't my task start?" — trace the chain step by step. [ADR #137](../reference/adr-137-tasks-as-rows.md) is the full design.
+Use this section to debug "why didn't my task start?" — trace the chain step by step. [ADR #137](../decisions/adr-137-tasks-as-rows.md) is the full design.
 
 ### Flow 1: A scheduled run
 

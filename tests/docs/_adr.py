@@ -19,8 +19,7 @@ from typing import Iterator, Optional
 
 from tests.docs._helpers import REPO_ROOT
 
-ADR_DIR = REPO_ROOT / "docs" / "reference"
-DESIGN_DECISIONS = ADR_DIR / "DESIGN_DECISIONS.md"
+ADR_DIR = REPO_ROOT / "docs" / "decisions"
 
 # Numbers that name two decisions, with the word a citation of each names right
 # after the number ("ADR #65, view sync"). No other number may collide.
@@ -80,7 +79,6 @@ _SEC_ITEM_RE = re.compile(_SEC)
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _NUMBERED_HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?(?:[ \t]|$)")
 _LIST_ITEM_RE = re.compile(r"^(\d+)\.[ \t]")
-_INLINE_HEADING_RE = re.compile(r"^(##|###)[ \t]+(?:ADR[ \t]+#)?(\d+)(\.\d+)?(?:\.|[ \t])")
 _TITLE_PREFIX_RE = re.compile(r"^(?:ADR[ \t]*[#-][ \t]*\d+[:.]?[ \t]*(?:—|-|:)?[ \t]*|\d+(?:\.\d+)?\.?[ \t]+)")
 # A section replaced by a later decision keeps its heading and one line.
 POINTER_RE = re.compile(r"^Superseded by ADR #(\d+)(?:[ \t]*§[ \t]*(\d+(?:\.\d+)*))?")
@@ -101,14 +99,13 @@ class Adr:
     slug: str
     path: Path
     lines: list[str]
-    first_line: int = 1
     numbered: dict[str, Section] = field(default_factory=dict)
     sections: list[Section] = field(default_factory=list)
     list_items: set[str] = field(default_factory=set)
 
     @property
     def where(self) -> str:
-        return f"{self.path.relative_to(REPO_ROOT).as_posix()}:{self.first_line}"
+        return self.path.relative_to(REPO_ROOT).as_posix()
 
     @property
     def title(self) -> str:
@@ -178,41 +175,14 @@ def _index_sections(adr: Adr) -> None:
             adr.list_items.add(li.group(1))
 
 
-def _slugify(title: str) -> str:
-    words = re.findall(r"[a-z0-9]+", title.lower())
-    return "-".join(words[:8])
-
-
-def _inline_adrs() -> list[Adr]:
-    lines = DESIGN_DECISIONS.read_text().splitlines()
-    starts: list[tuple[int, int, Optional[str], str]] = []
-    for i, line in enumerate(lines):
-        m = _INLINE_HEADING_RE.match(line)
-        if m:
-            starts.append((i, int(m.group(2)), m.group(3), line))
-    adrs: list[Adr] = []
-    for k, (i, num, sub, line) in enumerate(starts):
-        end = starts[k + 1][0] if k + 1 < len(starts) else len(lines)
-        if sub and adrs and adrs[-1].number == num:
-            # `### 64.1` revises #64 in place: one decision, one more section.
-            adrs[-1].lines.extend(lines[i:end])
-            continue
-        title = _HEADING_RE.match(line)
-        assert title, line
-        adrs.append(Adr(num, _slugify(title.group(2)), DESIGN_DECISIONS, lines[i:end], i + 1))
-    return adrs
-
-
 @lru_cache(maxsize=1)
 def load_adrs() -> dict[int, list[Adr]]:
     """Every ADR in force, by number. A colliding number has several."""
     adrs: list[Adr] = []
-    for p in sorted(ADR_DIR.glob("adr-*.md")):
+    for p in sorted(ADR_DIR.glob("adr-[0-9]*.md")):
         m = re.match(r"adr-(\d+)-(.+)\.md$", p.name)
         if m:
             adrs.append(Adr(int(m.group(1)), m.group(2), p, p.read_text().splitlines()))
-    if DESIGN_DECISIONS.exists():
-        adrs.extend(_inline_adrs())
     found: dict[int, list[Adr]] = {}
     for adr in adrs:
         _index_sections(adr)

@@ -34,7 +34,7 @@ Every operation must be safe to repeat. DynamoDB conditional updates, `_sfn_stop
 If the solution is unclear — ask first. A minute of discussion beats an hour of fixing the wrong approach.
 
 **6. Align on architectural decisions**
-DynamoDB schema, SFN flow, API contract, file structure, deployment approach — requires explicit approval. After alignment, document in ADR (`docs/reference/DESIGN_DECISIONS.md`).
+DynamoDB schema, SFN flow, API contract, file structure, deployment approach — requires explicit approval. After alignment, document in ADR (`docs/decisions/`).
 
 **7. Finish what you start**
 Every task: code, tests, documentation, CHANGELOG. If something can't be finished — document exactly what remains and why.
@@ -173,10 +173,9 @@ Any string written in one artifact and read verbatim in another must have a pari
 Examples: `_PUSH_MARKER_FIELD` written by `xcom.push()`, read by SFN template — parity in `test_xcom_coupled_constants_parity.py`. The upstreams whose output a task reads — `run_task`'s `Items` and `xcom._readable` — `test_the_set_run_task_reads_is_the_set_xcom_reads`: an allowlist on both sides, never a list of refusals on one (`_readable` refused only failures and rule skips, and read an older run's output of the date for an upstream that still ran; the review of TR-5). Marker fields `_manually_resolved`/`_resolution`/`_reason`/`_operator` — same test. `SCHEDULE_PRESETS` ↔ `infer_cron_cadence` — `TestSchedulePresetsParity` in `test_granularity.py`. Generated enums covered by `codegen --check`.
 
 **29. adr-index.md count must match its row count**
-`docs/reference/adr-index.md` opens with "_N rows indexed (X inline, Y standalone)_". When you add or remove an ADR, update the count in the same commit:
+`docs/decisions/adr-index.md` opens with "_N rows indexed_". When you add or remove an ADR, update the count in the same commit:
 ```bash
-grep -Ec "^\| [0-9]+ \| " docs/reference/adr-index.md
-grep -Ec "^\| [0-9]+ \| .* \| inline \|" docs/reference/adr-index.md
+grep -Ec "^\| [0-9]+ \| " docs/decisions/adr-index.md
 ```
 
 **30. Date-scoped DDB rows are shared across same-date runs — gate UI reads on settled state**
@@ -780,7 +779,7 @@ make test-cov
 
 After significant changes:
 - `CHANGELOG.md` — new version entry
-- `docs/reference/DESIGN_DECISIONS.md` — new ADR
+- `docs/decisions/adr-N-<slug>.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
 - `CHANGELOG.md` opens with `## Unreleased`; add your entry under it. `scripts/release.sh` refuses an empty one and renames it to `## vX.Y.Z - <date>` (`scripts/changelog_release.py`). Nothing did before, and releases from 1.0.2 to 1.2.2 shipped their notes under `## Unreleased`.
 - A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/docs/test_resource_counts.py` and `tests/docs/test_resource_inventory.py` derive every number and name from `sam/template.yaml` (and the free route count from the console) and fail until the docs agree. Run `make test-docs`.

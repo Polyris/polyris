@@ -56,7 +56,7 @@ jobs:
             - DAL repo pattern: no direct `dynamodb.Table()` in route handlers
             - never edit `*.module.css`; edit the global CSS modules only
             - pytest-mock `mocker` in tests, not `unittest.mock.patch`
-            - ADR required for architecture/API changes (`DESIGN_DECISIONS.md`)
+            - ADR required for architecture/API changes (`docs/decisions/`)
             Do NOT re-check ruff, version sync, enum/constant drift, or test results —
             `ci.yml` already enforces those deterministically. Skip style/formatting.
 

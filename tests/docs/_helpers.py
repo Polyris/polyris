@@ -23,8 +23,7 @@ DOCS_DIR = REPO_ROOT / "docs"
 # paths, obsolete flags. `adr-[0-9]*.md` matches only numbered ADR files;
 # `adr-index.md` is the live index (Principle #29) and must stay audited.
 DEFAULT_SKIP_GLOBS = (
-    "docs/reference/DESIGN_DECISIONS.md",
-    "docs/reference/adr-[0-9]*.md",
+    "docs/decisions/adr-[0-9]*.md",
     "docs/design/SPIKE_*.md",
     "docs/design/COMPLETENESS_REPORT_*.md",
     "docs/CLAUDE.md",
