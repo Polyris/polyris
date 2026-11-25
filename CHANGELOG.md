@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Changed
+
+- CI runs the Python tests once per version instead of twice: Python 3.11 runs them under coverage and runs the mutation probes, Python 3.12 runs them without coverage.
+
 ## v1.3.1 - 2026-11-25
 
 ### Breaking

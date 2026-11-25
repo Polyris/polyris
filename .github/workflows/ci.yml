@@ -15,8 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Each version runs every test once. 3.11 runs them under coverage, which fails on a
+      # broken test as a plain run does, and runs the mutation probes; 3.12 runs them plain.
       matrix:
-        python-version: ["3.11", "3.12"]
+        include:
+          - python-version: "3.11"
+            coverage: true
+          - python-version: "3.12"
+            coverage: false
 
     steps:
       - uses: actions/checkout@v4
@@ -49,18 +55,23 @@ jobs:
         run: make lint
 
       - name: Run SDK tests
+        if: ${{ !matrix.coverage }}
         run: make test-sdk
 
       - name: Run backend tests
+        if: ${{ !matrix.coverage }}
         run: make test-backend
 
       - name: Run integration tests
+        if: ${{ !matrix.coverage }}
         run: make test-integration
 
       - name: Run docs drift tests
         run: make test-docs
 
+      # The SDK, backend and integration tests, under coverage.
       - name: Core coverage floor (Principle #22)
+        if: ${{ matrix.coverage }}
         run: make test-cov
 
       # Codegen drift gates. Each generator has a --check twin; without these in
@@ -94,6 +105,7 @@ jobs:
       # Last: the probes edit source files while they run. Each puts a fixed coordination
       # defect back and expects the scenario that pins it to fail (tests/backend/coordination).
       - name: Coordination mutation probes
+        if: ${{ matrix.coverage }}
         run: make test-probes
 
   # ============================================
