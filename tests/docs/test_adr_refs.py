@@ -21,7 +21,7 @@ def _all_citations() -> list[_adr.Citation]:
 
 
 def test_every_cited_adr_number_resolves() -> None:
-    known = _adr.load_adrs()
+    known = set(_adr.load_adrs()) | set(_adr.load_retired())
     findings: list[tuple[str, int, str]] = []
     for c in _all_citations():
         if c.form != "ADR":
@@ -30,6 +30,25 @@ def test_every_cited_adr_number_resolves() -> None:
             findings.append((rel(c.path), c.lineno, f"ADR #{c.number} names no decision"))
     if findings:
         pytest.fail(format_findings("adr_refs", findings))
+
+
+# What an agent reads as standing instructions cites only decisions in force.
+def _is_instruction(path: str) -> bool:
+    return (
+        path.endswith("CLAUDE.md")
+        or path.startswith(".claude/skills/")
+        or path == ".github/workflows/claude-code-review.yml"
+    )
+
+
+def test_instructions_cite_no_retired_adr() -> None:
+    retired = _adr.load_retired()
+    findings: list[tuple[str, int, str]] = []
+    for c in _all_citations():
+        if c.number in retired and _is_instruction(rel(c.path)):
+            findings.append((rel(c.path), c.lineno, f"ADR #{c.number} is retired: {retired[c.number].why}"))
+    if findings:
+        pytest.fail(format_findings("adr_retired_in_instructions", findings))
 
 
 def test_only_the_known_numbers_name_two_decisions() -> None:

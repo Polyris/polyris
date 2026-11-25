@@ -43,7 +43,7 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
    - Every `ValueError` must name the decorator (`@task.<service>`), the field, and show a working
      example: `"@task.<service> <field> must not be empty — e.g. <field>='<example>'."`.
    - Docstring examples must not use `:N` pinned suffixes on `task_definition` / `job_definition`
-     (ADR #35 applies to docstrings too).
+     (Principle #35 applies to docstrings too).
 3. **`polyris/generators.py`** — two dispatch sites, keep in sync. The split (dict + `if/elif`) is
    intentional for now — the registry refactor (paid emitters self-register without editing the free
    compiler) is deferred until the first paid AWS service. Until then, edit both sites together.

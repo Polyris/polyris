@@ -6,13 +6,19 @@ Its table of ADRs in force is generated from each file's front matter by
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from types import ModuleType
 
 import pytest
 
+from tests.docs import _adr
 from tests.docs._helpers import REPO_ROOT
+
+_COMMAND_RE = re.compile(
+    rf"^git show {re.escape(_adr.RETIRED_TAG)}:(?P<path>\S+)(?: \| sed -n '(?P<a>\d+),(?P<b>\d+)p')?$"
+)
 
 
 def _index_module() -> ModuleType:
@@ -49,3 +55,28 @@ def test_the_index_table_is_generated_from_the_files() -> None:
         cwd=REPO_ROOT, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_retired_number_has_no_file_and_its_row_prints_its_old_text() -> None:
+    adrs = _adr.load_adrs()
+    problems: list[str] = []
+    for n, row in _adr.load_retired().items():
+        if n in adrs:
+            problems.append(f"#{n}: retired, yet {adrs[n][0].where} exists")
+        if "ADR #" not in row.why and not row.why.startswith(("Change record", "Its subject is gone")):
+            problems.append(f"#{n}: the row names no successor and no reason")
+        m = _COMMAND_RE.match(row.command)
+        if not m:
+            problems.append(f"#{n}: `{row.command}` is not `git show {_adr.RETIRED_TAG}:<path>[ | sed -n 'a,bp']`")
+            continue
+        shown = subprocess.run(["git", "show", f"{_adr.RETIRED_TAG}:{m.group('path')}"],
+                               cwd=REPO_ROOT, capture_output=True, text=True)
+        if shown.returncode != 0:
+            problems.append(f"#{n}: {shown.stderr.strip()} (CI fetches the tag: git fetch --depth=1 origin tag {_adr.RETIRED_TAG})")
+            continue
+        lines = shown.stdout.splitlines()
+        first = lines[int(m.group("a")) - 1] if m.group("a") else lines[0]
+        if not re.match(rf"^#+ (?:ADR #)?{n}\b", first):
+            problems.append(f"#{n}: the command's first line is {first!r}, not ADR #{n}'s heading")
+    if problems:
+        pytest.fail("\n".join(problems))

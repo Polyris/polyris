@@ -91,8 +91,8 @@ Default to deletion when migrating — git preserves it. Don't add a `Deprecated
 Historical dev notes (`SPIKE_*.md`, `COMPLETENESS_REPORT_*.md`, maintainer plans) live in `docs/design/`, apart from the current reference in `docs/reference/`. A reader still can't tell from a filename alone whether a design note is current.
 
 **Rule:** every historical/frozen doc must open with a status line:
-- **Frozen-and-current:** `**Historical analysis @ v0.94. Behaviour changed in ADR #117 (see \`DSL.md\` for the current trigger rules).**`
-- **Frozen-and-superseded:** `**Superseded — this analysis pre-dates ADR #117. Do not use as reference. Kept for git-history readability only.**`
+- **Frozen-and-current:** `**Historical analysis @ v0.94. Behaviour changed in ADR #138 (see \`DSL.md\` for the current trigger rules).**`
+- **Frozen-and-superseded:** `**Superseded — this analysis pre-dates ADR #138. Do not use as reference. Kept for git-history readability only.**`
 
 Docs without one of these headers are treated as current reference by the next reader.
 

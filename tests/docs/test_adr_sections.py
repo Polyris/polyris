@@ -31,10 +31,13 @@ def _check(c: _adr.Citation, adrs: list[_adr.Adr]) -> list[str]:
 
 def test_every_cited_section_exists() -> None:
     known = _adr.load_adrs()
+    retired = _adr.load_retired()
     findings: list[tuple[str, int, str]] = []
     for path in _adr.tracked_text_files():
         for lineno, line in _adr.scanned_lines(path):
             for c in _adr.citations_in(path, lineno, line):
+                if c.number in retired and (c.sections or c.name or c.starred or c.sub):
+                    findings.append((rel(path), lineno, f"ADR #{c.number} is retired: cite the section that replaced it"))
                 if c.number in known:
                     for what in _check(c, known[c.number]):
                         findings.append((rel(path), lineno, f"{what}: no such section"))

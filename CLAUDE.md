@@ -807,12 +807,9 @@ Releases are cut from git tags. CE tag `vX.Y.Z` builds PyPI + self-hosted bundle
 | # | Topic | Decision |
 |---|-------|---------|
 | 22 | Data source | UI reads DynamoDB only, never SFN API |
-| 23 | DAG lookup | superseded by ADR #137 §8: the run's spec version (a 1.2 run's snapshot until 1.4) → registry → inferred |
-| 24 | Registration | `polyris-deploy` boto3 call, not EventBridge |
 | 26 | Testing | pytest-mock (`mocker`) everywhere |
 | 28 | Exceptions | `(ClientError, BotoCoreError)` for AWS calls; route-level catch-all OK |
 | 34 | Infrastructure | AWS SAM (not Terraform/OpenTofu/Pulumi) |
-| 35 | Pipeline deploy | `polyris-deploy` (CFN) replaces Pulumi |
 | 37 | SFN definitions | `DefinitionUri` + `AWS::Serverless::StateMachine` |
 | 38 | Error visibility | `_notify_warn_` records + always log `error=str(e)` |
 | 39 | Assets | pipeline_registry is source of truth, asset_registry removed |

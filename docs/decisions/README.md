@@ -5,7 +5,7 @@ An ADR (architecture decision record) records one decision that is hard to rever
 ## How to find one
 
 - `ADR #N` is the file `adr-N-<slug>.md` in this folder, and `§k` is its heading `k.`. Find the heading with `grep -n '^#\+ k\.' adr-N-*.md` and read that section.
-- Five numbers name two decisions each: 65, 94, 106, 107 and 108. A citation of one names its slug word, for example "ADR #65, view sync" or "ADR #65, API tokens".
+- Five numbers name two decisions each: 65, 94, 106, 107 and 108. A citation of one names its slug word, for example "ADR #65, view sync".
 - A number with no file here is retired: its row under *Retired* names what replaced it and the command that prints its old text.
 - Numbers are never reused or changed. A new ADR takes the highest number + 1. Number 129 was never used.
 - *Accepted* is the date of the decision; `by` a date means its first record, when the decision itself is not dated.
@@ -16,8 +16,6 @@ An ADR (architecture decision record) records one decision that is hard to rever
 
 | ADR | Decision | Accepted |
 |---|---|---|
-| [#2](adr-2-sfn-dependency-notification.md) | SFN-Based Dependency Notification (not polling, not EventBridge) | by 2026-02-24 |
-| [#3](adr-3-separate-helpers.md) | Separate Helpers (not monolithic wrapper) | by 2026-02-24 |
 | [#4](adr-4-asset-based-orchestration.md) | Asset-Based Orchestration (not ExternalTaskSensor) | by 2026-02-24 |
 | [#5](adr-5-dynamodb-for-state.md) | DynamoDB for State (not Step Functions native, not CloudWatch metrics) | by 2026-02-24 |
 | [#8](adr-8-jsonata-for-step-functions.md) | JSONata for Step Functions (not JSONPath) | by 2026-02-24 |
@@ -31,7 +29,6 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#20](adr-20-transparency-step-functions-over-eventbridge-orchestration.md) | Transparency: Step Functions over EventBridge for Orchestration | by 2026-02-24 |
 | [#21](adr-21-single-source-truth-date-variables.md) | Single Source of Truth for Date Variables | by 2026-02-24 |
 | [#22](adr-22-data-flow-sfn-executes-dynamodb-stores.md) | Data Flow: SFN Executes → DynamoDB Stores → UI Reads | by 2026-02-24 |
-| [#23](adr-23-dag-snapshot-per-execution-per-deploy.md) | DAG Snapshot Per Execution (not per deploy) | by 2026-02-24 |
 | [#38](adr-38-error-visibility-product-requirement.md) | Error Visibility — Product Requirement | by 2026-05-02 |
 | [#51](adr-51-backfill-unification-concept-endpoint-bulk-run.md) | Backfill Unification — one concept, one endpoint, one bulk-run SFN | 2026-05-20 |
 | [#54](adr-54-bulk-backfill-sfn-standard-map-based.md) | Bulk-Backfill SFN — Standard, Map-based, fire-and-wait architecture | 2026-05-20 |
@@ -41,12 +38,9 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#58](adr-58-partition-keys-granularity-aware-range-expansion.md) | Partition Keys & Granularity-Aware Range Expansion | 2026-05-20 |
 | [#59](adr-59-backfill-options-propagated-child-sfn-skip.md) | Backfill options propagated to child SFN — skip_tasks, force, cascade_all, suppress_asset_event | 2026-05-20 |
 | [#60](adr-60-runtime-enforcement-skip-backfill-task-flag.md) | Runtime enforcement of `skip_on_backfill` task flag | 2026-05-22 |
-| [#75](adr-75-dal-repository-pattern-all-4-helper.md) | DAL repository pattern for all 4 helper Lambdas | 2026-05-27 |
-| [#76](adr-76-print-structured-logger-all-helper-lambdas.md) | print() → structured logger in all helper Lambdas | 2026-05-27 |
 | [#81](adr-81-zombie-backfill-reconciliation-unblocks-concurrency-guard.md) | Zombie-backfill reconciliation unblocks the concurrency guard | 2026-05-28 |
 | [#82](adr-82-derived-status-premature-terminal-fix-backfill.md) | Derived-status premature-terminal fix + backfill audit | 2026-05-28 |
 | [#83](adr-83-backfill-status-consolidation-correctness-hardening.md) | Backfill status consolidation + correctness hardening | 2026-05-28 |
-| [#85](adr-85-fix-skip-task-jsonata-contains-array.md) | Fix skip-task JSONata (`$contains` on array) + evaluate template JSONata in CI | 2026-05-28 |
 | [#87](adr-87-partition-mapping-upstream-smart-fill-adopt.md) | Partition mapping + upstream smart-fill — adopt Dagster's model as prior art | by 2026-05-29 |
 | [#88](adr-88-upstream-smart-fill-implementation-architecture-python.md) | Upstream smart-fill — implementation architecture (Python-planned, SFN-trusted) | by 2026-05-29 |
 | [#89](adr-89-upstream-smart-fill-deferred-risk-register.md) | Upstream smart-fill — deferred-risk register (no-surprises contract) | by 2026-05-29 |
@@ -56,14 +50,10 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#112](adr-112-canonical-execution-status.md) | Canonical execution-status derivation and reconciliation | by 2026-08-17 |
 | [#114](adr-114-intervention-first-failure-model.md) | Intervention-first failure model | by 2026-08-17 |
 | [#115](adr-115-canonical-trigger-rules-and-skip-semantics.md) | Canonical trigger rules and skip semantics | by 2026-08-17 |
-| [#116](adr-116-cleanup-scoped-deabort.md) | Cleanup via scoped de-abort | by 2026-08-17 |
-| [#117](adr-117-trigger-rule-trim-11-to-5.md) | Trigger rules trimmed from 11 to 5 | by 2026-08-17 |
 | [#120](adr-120-manual-task-actions-recorded-input-synthetic.md) | Manual task actions: recorded input, output markers, asset events on Mark Successful, direct Restart | by 2026-08-17 |
 | [#121](adr-121-restart-correctness-two-level-wrapper-stop.md) | Restart correctness: two-level wrapper stop, `task_config`/`outlets` reconstruction, `restart-` name prefix | by 2026-08-17 |
-| [#122](adr-122-registration-fast-path-and-asset-coordination.md) | Registration fast-path resolves `deps_skip`/`deps_blocked`; `evaluate_deps` gates on `assets_ready` for wait_for coordination | by 2026-08-17 |
 | [#123](adr-123-xcom-reliable-data-passing.md) | XCom reliable data passing — separate input record, `xcom.push()` for service tasks | 2026-09-11 |
 | [#125](adr-125-in-sfn-retry-visibility.md) | In-SFN retry visibility (`retry_attempt` field + `TASK_RETRY_STARTED` event) | by 2026-11-12 |
-| [#128](adr-128-mark-success-wakes-wait-for.md) | `mark_success` wakes `wait_for` subscribers via direct Lambda invoke | by 2026-11-12 |
 | [#130](adr-130-coordination-reconciler.md) | Coordination layer: one reconciler, facts as state, stream-driven hints | 2026-11-12 |
 | [#133](adr-133-run-has-one-date.md) | A run has one date: the date it was started or scheduled for | by 2026-11-14 |
 | [#135](adr-135-whoever-ends-task-answers-run.md) | A run is told how its task ended by whoever ends it | by 2026-11-14 |
@@ -87,9 +77,7 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#46](adr-46-ddl-schema-export-phased-architecture.md) | DDL/Schema Export — Phased Architecture | by 2026-05-08 |
 | [#50](adr-50-asset-granularity-declarative-dsl-advisory-glue.md) | Asset Granularity — declarative DSL + advisory Glue auto-detect + drift detection | 2026-05-18 |
 | [#52](adr-52-pipeline-granularity-runtime-cron-cadence-inference.md) | Pipeline Granularity — runtime cron cadence inference, no DSL change | 2026-05-20 |
-| [#71](adr-71-executionstatus-case-normalization.md) | ExecutionStatus case normalization | 2026-05-27 |
 | [#72](adr-72-ssot-enums-codegen-single-canonical-source.md) | SSoT enums codegen — single canonical source for status/rule enums | 2026-05-27 |
-| [#77](adr-77-taskstatus-class-level-sets-generated-module.md) | TaskStatus class-level sets → generated module-level | 2026-05-27 |
 | [#91](adr-91-rename-backfill-cascade-downstream-deprecated-alias.md) | Rename backfill `cascade` → `downstream` (with deprecated alias) | by 2026-05-29 |
 | [#94](adr-94-backfill-error-codes.md) | BackfillUpstream + backfill error-code registry onto the generated SSoT | by 2026-05-31 |
 | [#106](adr-106-task-param-parity.md) | Parameter parity for `@task` decorators (the `task_config` ↔ `Run_Task_<X>` contract) | by 2026-08-17 |
@@ -102,17 +90,11 @@ An ADR (architecture decision record) records one decision that is hard to rever
 
 | ADR | Decision | Accepted |
 |---|---|---|
-| [#9](adr-9-pulumi-and-terraform.md) | Pulumi for Pipelines, Terraform for Shared | by 2026-02-24 |
-| [#24](adr-24-pulumi-dynamic-provider-pipeline-lifecycle-eventbridge.md) | Pulumi Dynamic Provider for Pipeline Lifecycle (not EventBridge) | by 2026-02-24 |
 | [#27](adr-27-unified-version-string-across-all-packages.md) | Unified Version String Across All Packages | by 2026-02-24 |
 | [#30](adr-30-ssm-parameter-store-instead-terraform-remote.md) | SSM Parameter Store instead of Terraform Remote State for Pipeline Configuration | by 2026-05-02 |
-| [#32](adr-32-opentofu-instead-terraform-native-s3-locking.md) | OpenTofu instead of Terraform + native S3 locking | by 2026-05-02 |
-| [#33](adr-33-terraform-as-public-module.md) | Terraform as a Public Module | by 2026-05-02 |
 | [#34](adr-34-aws-sam-instead-opentofu-shared-infrastructure.md) | AWS SAM instead of OpenTofu for Shared Infrastructure | by 2026-05-02 |
-| [#35](adr-35-polyris-deploy-as-parallel-alternative-pulumi.md) | `polyris-deploy` as a Parallel Alternative to Pulumi | by 2026-05-02 |
 | [#36](adr-36-ssm-as-cross-stack-bridge-instead.md) | SSM as a Cross-Stack Bridge (instead of `Fn::ImportValue`) | by 2026-05-02 |
 | [#37](adr-37-definitionuri-aws-serverless-statemachine-sfn-definitions.md) | `DefinitionUri` + `AWS::Serverless::StateMachine` for SFN Definitions | by 2026-05-02 |
-| [#84](adr-84-sdk-shared-constants-delivery-lambdas-guarded.md) | SDK / shared-constants delivery to Lambdas — guarded copy now, PyPI later | 2026-05-28 |
 | [#96](adr-96-cloudfront-security-response-headers-static-export.md) | CloudFront security response headers (static export) | by 2026-06-15 |
 | [#118](adr-118-polyris-deploy-all-only-bulk-deploy.md) | `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories | by 2026-08-17 |
 | [#126](adr-126-pre-deploy-resource-existence-check-polyris.md) | Pre-deploy resource existence check in `polyris-deploy` | by 2026-11-12 |
@@ -132,8 +114,6 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#47](adr-47-asset-lineage-last-updated-enrichment-two.md) | Asset Lineage `last_updated` Enrichment — Two Endpoints, Two Scopes | by 2026-05-08 |
 | [#53](adr-53-cost-preview-methodology-formula-sources-accuracy.md) | Cost Preview Methodology — formula, sources, accuracy disclaimer | 2026-05-20 |
 | [#65](adr-65-api-tokens-and-auth-enforcement.md) | API Tokens (PAT) & Auth Enforcement | by 2026-05-27 |
-| [#65](adr-65-api-tokens-summary.md) | API Tokens (PAT) & Auth Enforcement | by 2026-05-27 |
-| [#66](adr-66-per-token-scopes-summary.md) | Per-Token Scopes (Granular Authorization) | by 2026-05-27 |
 | [#66](adr-66-per-token-scopes.md) | Per-Token Scopes (Granular Authorization) | by 2026-05-27 |
 | [#73](adr-73-computation-moved-to-backend.md) | Computation moved to backend — derived status + per-partition aggregation | 2026-05-27 |
 | [#74](adr-74-per-partition-retry-failed.md) | Per-partition retry-failed | 2026-05-27 |
@@ -155,7 +135,6 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#48](adr-48-assetdetailpage-composition-tabs-as-independent-sub.md) | AssetDetailPage Composition — Tabs as Independent Sub-Components | by 2026-05-08 |
 | [#49](adr-49-asset-matrix-view-cross-asset-temporal.md) | Asset Matrix View — Cross-asset temporal grid | 2026-05-12 |
 | [#61](adr-61-task-subset-selection-backfill-ui.md) | Task-subset selection in backfill UI | 2026-05-22 |
-| [#62](adr-62-backfill-cost-estimate-removed-pending-pro.md) | Backfill cost estimate removed pending Pro tier | 2026-05-27 |
 | [#63](adr-63-backfill-detail-pipeline-dag-navigation.md) | Backfill detail → pipeline DAG navigation | 2026-05-27 |
 | [#64](adr-64-standard-keyboard-shortcut-convention.md) | Standard keyboard shortcut convention | 2026-05-27 |
 | [#65](adr-65-view-sync.md) | Top-level view registration — three-place sync | 2026-05-27 |
@@ -167,9 +146,7 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#79](adr-79-backfill-icon-single-source-truth.md) | Backfill icon single source of truth | 2026-05-27 |
 | [#80](adr-80-backfill-modal-viewport-overflow-dead-css.md) | Backfill modal viewport overflow + dead CSS cleanup | 2026-05-28 |
 | [#86](adr-86-asset-centric-ux-over-task-dsl.md) | Product concept: asset-centric UX over an unchanged task-based DSL | by 2026-05-29 |
-| [#93](adr-93-ui-status-vocabulary-consolidated-onto-generated.md) | UI status vocabulary consolidated onto generated enums (single source) | by 2026-05-29 |
 | [#94](adr-94-runtime-config-precedence.md) | Runtime config precedence (window.CONFIG over baked NEXT_PUBLIC_*) | by 2026-05-31 |
-| [#94](adr-94-runtime-config-summary.md) | Runtime config precedence (window-first) | by 2026-05-31 |
 | [#106](adr-106-assets-current-state-date-scope.md) | Assets are a current-state surface; per-date history lives only on the matrix | by 2026-08-17 |
 | [#111](adr-111-client-side-view-routing.md) | Client-side view routing via the History API | by 2026-08-17 |
 | [#119](adr-119-unified-dag-visualization-node-edge-builder.md) | Unified DAG visualization node/edge builder | by 2026-08-17 |
@@ -193,6 +170,33 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | ADR | Decision | Accepted |
 |---|---|---|
 | [#26](adr-26-pytest-mock-as-standard-test-mocking.md) | pytest-mock as Standard Test Mocking Library | by 2026-02-24 |
-| [#78](adr-78-sfn-template-drift-checker.md) | SFN template drift checker | 2026-05-27 |
 
 <!-- END GENERATED -->
+
+## Retired
+
+A retired ADR has no file. Its row says what replaced it, and the command prints its text as of the last release that had it.
+
+| ADR | Decision | Why retired | Text |
+|---|---|---|---|
+| 2 | SFN-Based Dependency Notification (not polling, not EventBridge) | Superseded by ADR #137 (§1, §7): a task is a row the dispatcher decides; no task token waits for a dependency. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '26,41p'` |
+| 3 | Separate Helpers (not monolithic wrapper) | Superseded by ADR #137 §1: the wrapper and the helpers it was split into are gone; `run_task` runs one attempt. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '45,67p'` |
+| 9 | Pulumi for Pipelines, Terraform for Shared | Superseded by ADR #34 and ADR #131: the platform is a SAM stack that `polyris-up` installs; Pulumi and Terraform are gone. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '168,184p'` |
+| 23 | DAG Snapshot Per Execution (not per deploy) | Superseded by ADR #137 §8: a run's graph is the spec version its run row names. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '475,492p'` |
+| 24 | Pulumi Dynamic Provider for Pipeline Lifecycle (not EventBridge) | Superseded: Pulumi is gone; `polyris-deploy` registers a pipeline with boto3 calls (ADR #137 §8). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '494,514p'` |
+| 32 | OpenTofu instead of Terraform + native S3 locking | Superseded by ADR #34: SAM replaced OpenTofu. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '670,683p'` |
+| 33 | Terraform as a Public Module | Superseded by ADR #34: SAM replaced the Terraform module. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '687,698p'` |
+| 35 | `polyris-deploy` as a Parallel Alternative to Pulumi | Superseded: Pulumi is gone, and `polyris-deploy` deploys through boto3 change sets (`polyris/cfn_changeset.py`, ADR #131). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '722,740p'` |
+| 62 | Backfill cost estimate removed pending Pro tier | Its subject is gone: the backfill cost estimate it removed has no code left. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '4800,4896p'` |
+| 71 | ExecutionStatus case normalization | Change record. The rule it set, one canonical `ExecutionStatus` vocabulary, is ADR #112's. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '5628,5733p'` |
+| 75 | DAL repository pattern for all 4 helper Lambdas | Change record. The helper Lambdas it moved onto DAL repositories are gone (ADR #137). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '6114,6254p'` |
+| 76 | print() → structured logger in all helper Lambdas | Change record. Lambdas log through `polyris/logger.py` (root `CLAUDE.md`, *Lambda Functions*). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '6256,6352p'` |
+| 77 | TaskStatus class-level sets → generated module-level | Change record. Status sets are generated by `sync_enums` (ADR #72, Principle #27). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '6354,6473p'` |
+| 78 | SFN template drift checker | Change record. The drift check is `polyris/codegen/check_sfn_templates.py` (`make check-sfn-templates`). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '6475,6603p'` |
+| 84 | SDK / shared-constants delivery to Lambdas — guarded copy now, PyPI later | Change record, superseded by ADR #102: the Lambdas install the SDK from `requirements.txt`. | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '7316,7410p'` |
+| 85 | Fix skip-task JSONata (`$contains` on array) + evaluate template JSONata in CI | Change record. Template JSONata is evaluated in CI, and `scripts/audit_jsonata.py` is the audit (`make audit-jsonata`). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '7412,7511p'` |
+| 93 | UI status vocabulary consolidated onto generated enums (single source) | Change record. The UI's status vocabulary is generated into `ui/src/generated/enums.ts` (ADR #72, Principle #27). | `git show v1.3.2:docs/reference/DESIGN_DECISIONS.md \| sed -n '8274,8321p'` |
+| 116 | Cleanup via scoped de-abort | Superseded by ADR #138: no de-abort is needed, since a final failure no longer aborts the run. | `git show v1.3.2:docs/reference/adr-116-cleanup-scoped-deabort.md` |
+| 117 | Trigger rules trimmed from 11 to 5 | Superseded by ADR #138: nine trigger rules over final outcomes. | `git show v1.3.2:docs/reference/adr-117-trigger-rule-trim-11-to-5.md` |
+| 122 | Registration fast-path resolves `deps_skip`/`deps_blocked`; `evaluate_deps` gates on `assets_ready` for wait_for coordination | Superseded by ADR #130 and ADR #137: readiness is decided from facts by the dispatcher. | `git show v1.3.2:docs/reference/adr-122-registration-fast-path-and-asset-coordination.md` |
+| 128 | `mark_success` wakes `wait_for` subscribers via direct Lambda invoke | Superseded by ADR #130 and ADR #137: an asset fact wakes its waiters through the stream and the sweeper. | `git show v1.3.2:docs/reference/adr-128-mark-success-wakes-wait-for.md` |

@@ -20,6 +20,9 @@ from typing import Iterator, Optional
 from tests.docs._helpers import REPO_ROOT
 
 ADR_DIR = REPO_ROOT / "docs" / "decisions"
+INDEX = ADR_DIR / "README.md"
+# The tag whose tree holds every retired ADR's text; its release is immutable.
+RETIRED_TAG = "v1.3.2"
 
 # Numbers that name two decisions, with the word a citation of each names right
 # after the number ("ADR #65, view sync"). No other number may collide.
@@ -191,6 +194,32 @@ def load_adrs() -> dict[int, list[Adr]]:
         _index_sections(adr)
         found.setdefault(adr.number, []).append(adr)
     return found
+
+
+@dataclass
+class Retired:
+    number: int
+    title: str
+    why: str
+    command: str
+
+
+_RETIRED_ROW_RE = re.compile(r"^\| (\d+) \| (.+?) \| (.+?) \| `(.+)` \|$")
+
+
+@lru_cache(maxsize=1)
+def load_retired() -> dict[int, Retired]:
+    """The *Retired* rows of the index: numbers with no file, kept resolvable."""
+    rows: dict[int, Retired] = {}
+    inside = False
+    for line in INDEX.read_text().splitlines():
+        if line.startswith("## "):
+            inside = line.strip() == "## Retired"
+            continue
+        m = _RETIRED_ROW_RE.match(line) if inside else None
+        if m:
+            rows[int(m.group(1))] = Retired(int(m.group(1)), m.group(2), m.group(3), m.group(4).replace("\\|", "|"))
+    return rows
 
 
 @lru_cache(maxsize=1)
