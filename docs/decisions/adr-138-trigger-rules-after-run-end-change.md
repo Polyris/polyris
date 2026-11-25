@@ -1,13 +1,12 @@
 ---
 area: engine
 accepted: 2026-11-17
+revised: 2026-11-23
 supersedes: "#116, #117, and in part #114, #115"
 amends: "#115"
 ---
 # ADR #138 — Trigger rules after the run-end change: nine rules over final outcomes
 
-> **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 7 (2026-11-23: the public `FAILURE_STATUSES` keeps its members, and the engine counts `stopped` as a final failure through its own set; revision 6, 2026-11-17, together with revision 7 of ADR #137: an action on a stopped task counts until a dependant is decided, through the run row's `run_version`). Target release: 1.3.0.
->
 > **Supersedes:** ADR #117 and ADR #116; ADR #115, decisions 1 and 4; ADR #114's statement that failure-reactive rules cannot be supported (*Supersedes*, at the end).
 >
 > **Amends:** ADR #115, decision 5: a skip that the run asked for gets an origin of its own, `run`, and passes like an operator's (§3).
@@ -22,11 +21,9 @@ ADR #137 removes the premise. A run ends only when every row is final, as in Air
 
 ADR #117's analysis was repeated for the new states, with Airflow 3.4 as the reference, read in its code and its documentation. In that space the names separate again: nine are distinct and reachable (§2). The current code was written for the old space:
 
-- `all_done`, `one_success` and `none_skipped` now run after a final failure, while `docs/features/DSL.md` says that `all_done` runs on the success path only.
-- The validation hints give wrong advice. "`none_failed`: use `all_done`, identical in every reachable state" is no longer true.
-- `trigger_rules.ALIASES` maps `none_failed` to `all_done` and `none_failed_min_one_success` to `one_success`, so a returning rule would silently run as another one.
-- `trigger_rules.count()` counts `stopped` as pending. A dependant of a stopped task would wait until its run's safety limit, a year.
-- Two more copies of the rules drift from the engine. The mock runner of `polyris-local` (`polyris/local.py`) records `skipped` where the engine records `upstream_failed`, and runs an unknown rule as `all_success`. The UI's copy (`ui/src/components/TaskDetailModal/helpers.ts`) calls an operator's skip blocking under `all_success`, while the engine runs the task, and still knows `always`.
+- `all_done`, `one_success` and `none_skipped` ran after a final failure while the docs said `all_done` ran on the success path only, and the validation hints called `none_failed` identical to `all_done`.
+- An alias table (`trigger_rules.ALIASES`) would have run a returning rule silently as another one, and counting `stopped` as pending would have held a stopped task's dependants for a year.
+- Two more copies of the rules had drifted from the engine: `polyris-local`'s mock runner and a TypeScript copy in the UI.
 
 Other orchestrators answer the question differently. Airflow has named rules, cascades every skip and takes a run's outcome from its leaf tasks. Argo Workflows writes a boolean `depends` expression per task, and Azure Data Factory puts a condition on each dependency edge. Dagster and Prefect have no rules, only data dependencies and hooks. Named rules are enough for 1.3.
 
@@ -137,7 +134,6 @@ Every skip records who made it, in `skip_origin`:
 - Until a dependant is decided, a Restart or Mark Successful of the stopped task still counts for it: a restarted task is pending again, and a task marked successful is a success. Both raise the run row's `run_version`, which every decision checks, so no dependant is decided from a read taken before the action (ADR #137 §1, §3).
 - Once a dependant is decided, a Restart or Mark Successful acts on the stopped task alone, and the dependant keeps its status. Restart with dependants (ADR #137 §3) also resets, in the background, the dependants that the Stop decided, those `upstream_failed` or skipped by a rule, so they wait for the task again.
 - Recovery after a Stop, a Fail or a decision timeout is therefore one action, as a Restart inside the decision window already was.
-- In 1.2 the dependants of a stopped task waited, so a later Restart or Mark Successful led them on.
 
 ### 5. Run outcome
 
@@ -160,25 +156,9 @@ Every skip records who made it, in `skip_origin`:
 
 ## Consequences
 
-**For the user**, the 1.3 CHANGELOG entries of this ADR, beside those of ADR #137:
-- *Breaking*:
-  - After a final failure, its dependants' rules decide. An `all_done`, `one_success` or `none_skipped` dependant now runs after a failed upstream; before, the failure ended the run first. The run still ends failed.
-  - A Stop is final for the dependants. A `one_failed` dependant runs at once, and an `all_success` dependant becomes `upstream_failed` once its other upstreams have finished. Until then, a Restart or Mark Successful of the stopped task still counts. Before, the dependants waited for the stopped task and followed it.
-- *Changed*:
-  - A trigger rule that the platform does not know fails its task with the cause; before, the task ran as `all_success`.
-  - The validation hints for the rejected rule names change.
-  - `polyris-local` evaluates trigger rules with the engine's code, so its mock runs record `upstream_failed` where the engine does.
-- *Added*:
-  - The rules `one_failed`, `all_failed`, `none_failed` and `none_failed_min_one_success`.
-  - Every skipped task records its origin in `skip_origin`: `manual`, `run` or `rule`.
+**For the user** (CHANGELOG 1.3.0): after a final failure its dependants' rules decide, and the run still ends failed; a Stop is final for the dependants; a rule the platform does not know fails its task with the cause; `polyris-local` evaluates rules with the engine's code; four rules return; every skipped task records its origin. `Choice`, `Map`, `Sensor` and `ShortCircuit` are gone (ADR #137 §1), so every skip with the origin `rule` comes from a trigger rule.
 
-**Steps without a generator.** Decided separately for the same release: `Choice`, `Map`, `Sensor` and `ShortCircuit`, with the `Condition` helper, are deleted (ADR #137 §1). None had a generator, so a DAG that used one failed at generation. Every skip with the origin `rule` therefore comes from a trigger rule.
-
-**Code.**
-- `polyris/constants.py`: the nine names, `SkipOrigin`, and comments that no longer cite the `Parallel` premise; `stopped` counts as a failure through `transitions.FINAL_FAILURES`. Then `python -m polyris.codegen.sync_enums`.
-- `polyris/coordination/trigger_rules.py`: the four rules, and the larger set of rules that need success or no failure. Final means `SETTLED_STATUSES`, `enabled_at` gains its `one_failed` clause and `ALIASES` goes. An unknown name raises an error before the upstreams are counted, so a task without upstreams gets it too, and the dispatcher writes it into the row.
-- `polyris/validation.py`: the four rejected names and their hints replace the six removed ones.
-- `polyris/local.py` follows §6, and `ui/src/components/TaskDetailModal/helpers.ts` is deleted. The console computes the verdicts of §6, and writes `SkipOrigin.MANUAL` on Skip, in the action's transaction.
+**Code.** `polyris/constants.py` holds the nine names and `SkipOrigin` (then `python -m polyris.codegen.sync_enums`); `stopped` counts as a failure through `transitions.FINAL_FAILURES`. In `polyris/coordination/trigger_rules.py` final means `SETTLED_STATUSES`, `enabled_at` has its `one_failed` clause, `ALIASES` is gone, and an unknown name raises before the upstreams are counted, so a task without upstreams gets it too and the dispatcher writes it into the row. `polyris/validation.py` holds the four rejected names and their hints.
 
 **Tests.**
 - The truth table, read by pytest. A test per clause. Validation tests for the nine names, each rejected name and an unknown one. The writers' census for `skip_origin`.
@@ -191,11 +171,6 @@ Every skip records who made it, in `skip_origin`:
   - a rule's skip cascades under `all_success`, and an operator's or a run's skip does not;
   - after a run that succeeded, a later run of the same date fails `load`: its `all_done` dependant sees the failure, and `xcom` raises for the output;
   - a run ends failed, then a Restart of its failed task succeeds: the console's status turns `success`, and the execution stays `FAILED`.
-
-**Docs**, in the same change:
-- `docs/features/DSL.md`: the nine rules with their examples, final failures, the skip origins with a part for readers who come from Airflow, and the run outcome.
-- `docs/architecture/ARCHITECTURE.md`, `docs/architecture/BACKEND.md`, `docs/operations/TROUBLESHOOTING.md`, `docs/features/DATA_PASSING.md` and `docs/tools/LOCAL_TESTING.md`; `docs/operations/UI.md`, which loses its two lines on the UI's copy; the examples `03_fan_in` and `09_trigger_rules`, and `examples/README.md`.
-- The status line of `docs/design/SPIKE_TRIGGER_RULES.md`, and root `CLAUDE.md` Principle #48, whose enabling time gains the `one_failed` clause.
 
 ## Alternatives considered
 
