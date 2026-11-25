@@ -1,5 +1,7 @@
 ## Unreleased
 
+## v1.3.1 - 2026-11-25
+
 ### Breaking
 
 - **`@hourly`, `@daily` and `@weekly` fire at the start of their period**: each hour, each day at 00:00 UTC, each ISO week on Monday at 00:00 UTC, as the docs said and as `@monthly` did. They were `rate(...)` expressions, which count from when the schedule was created: `@daily` ran at the time of day of the deploy. A scheduled run is dated by the UTC day it fires on, so a `@daily` run at 00:00 on 25 November is the run of 25 November, a day that has just begun. A task that processes the day before reads the run's date minus one day, or the pipeline schedules a later `cron(...)`. A pipeline takes the new time at its next `polyris-deploy`.
