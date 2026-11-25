@@ -1,5 +1,7 @@
 ## Unreleased
 
+## v1.3.2 - 2026-11-25
+
 ### Added
 
 - **A run or task whose execution ends without a write is stopped or failed within seconds (ADR #137 §7).** A new EventBridge rule on the account's default bus, `polyris-execution-end`, sends the dispatcher the end of a pipeline or `run_task` execution that ended `ABORTED`, `TIMED_OUT` or `FAILED`, unless the engine stopped it itself. A run stopped in the AWS console, timed out, or failed before its answer is stopped with the cause at once, and a task whose `run_task` ended so fails with how it ended. Both showed `running` until the sweeper's check, up to 35 minutes later. The event is a hint: the pass decides from the rows and `DescribeExecution`, and a lost event waits for that check. The dispatcher's role gains `states:DescribeExecution` on the executions of polyris state machines; a least-privilege installer role needs the `events` actions in [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md).
