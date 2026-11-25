@@ -157,7 +157,7 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 | console_api Lambda | `sam/lambdas/console_api/tests/` | `make test-lambdas` | API routes, query/scan pagination, validation |
 | UI hooks | `ui/src/hooks/*.test.{ts,tsx}` | `npm test` | React hooks, state management |
 
-**Note:** `pip install -e ".[dev]"` installs pytest, pytest-cov, pytest-mock, moto, ruff, mypy and the boto3 type stubs; the Lambda suites need nothing more.
+**Note:** `pip install -e ".[dev]"` installs pytest, pytest-cov, pytest-mock, pytest-xdist, moto, ruff, mypy and the boto3 type stubs; the Lambda suites need nothing more.
 
 ---
 

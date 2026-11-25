@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Changed
+
+- CI runs the Python tests once per version instead of twice, each run in parallel processes (pytest-xdist, now in the `dev` extra): Python 3.11 runs them without coverage, Python 3.12 under coverage (measured through `sys.monitoring`, `COVERAGE_CORE=sysmon`), the mutation probes have a job of their own, and pip's downloads are cached between runs. `make test` and `make test-cov` still run the tests one after another locally.
+
 ## v1.3.1 - 2026-11-25
 
 ### Breaking
