@@ -10,11 +10,12 @@
    ``polyris-artifacts-<account>-<region>``;
 5. deploy through a CloudFormation change set and print the console URL.
 
-On an existing platform it also makes the move from 1.2 to 1.3 (ADR #137,
-*Migration and upgrade*): it checks a platform below 1.3 before step 4, while
-nothing has changed, stops what 1.2 left running once the update has
-succeeded, waits for the index the console's run lists read, and lists the
-pipelines to redeploy. Those steps are in ``polyris/upgrade.py``.
+Before step 4, while nothing has changed, it checks the account and the
+platform (``preflight``, PLAN_IAM 1.4.0 §4.1): it refuses a platform below 1.3,
+a rollback below 1.4, a task of a deployed pipeline whose role is a role of
+this account outside ``/polyris-tasks/``, and a role named like a pipeline's
+scheduler role that polyris-deploy did not make. The template it deploys is
+checked against what it uploaded (§4.4).
 
 It runs from any directory and writes nothing there. The pure logic lives in
 ``polyris/platform.py``; this module is the AWS and terminal side.
@@ -22,32 +23,40 @@ It runs from any directory and writes nothing there. The pure logic lives in
 from __future__ import annotations
 
 import argparse
-import functools
 import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
+import uuid
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound, WaiterError
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound
 
-from . import __version__, upgrade
+from . import __version__
 from ._ansi import BOLD, BOLD_GREEN, CYAN, RED, YELLOW, colorize_parser
 from ._ansi import c as _c
-from .coordination import task_spec
+from .constants import ACCESS_DENIED_CODES
+from .coordination import spec_store, task_spec
+from .coordination.task_spec import K as SpecKey
 from .platform import (
     CAPABILITIES,
+    NO_ROLLBACK_BELOW,
     OUTPUT_CONSOLE_URL,
+    OUTPUT_DEPLOY_POLICY,
     OUTPUT_REGISTRY_TABLE,
+    OUTPUT_SPECS_TABLE,
     OUTPUT_TEST_SFN_ARN,
+    PIPELINE_MACHINE_LOGICAL_ID,
+    TASK_ROLE_PATH,
     PARAM_ADMIN_EMAIL,
     PARAM_ARTIFACTS_BUCKET,
     PARAM_ENABLE_COGNITO,
@@ -58,13 +67,16 @@ from .platform import (
     DEAD_STACK_STATUSES,
     AmbiguousPlatformStack,
     Manifest,
+    SchedulerRole,
     artifact_key,
     artifacts_bucket_name,
     default_stack_name,
+    default_task_role_name,
     is_downgrade,
-    leaves_tasks_as_rows,
     is_platform_shaped,
     is_platform_stack,
+    is_scheduler_role,
+    new_platform_name_errors,
     outputs_of,
     parameters_of,
     platform_prefix,
@@ -72,19 +84,23 @@ from .platform import (
     replaced_data_resources,
     parse_param_overrides,
     platform_bucket_names,
+    refused_task_role,
     release_asset_name,
     release_asset_url,
+    release_series,
     resolve_parameters,
     rewrite_template,
-    runs_tasks_as_rows,
+    rolls_back_below_floor,
+    schedule_role_export,
+    scheduler_role_problems,
     select_platform_stack,
     ui_prefix,
+    upgrades,
     validate_namespace_stage,
     version_from_description,
 )
 from .platform import MANIFEST_NAME
 from .cfn_changeset import (
-    CLEANUP_STATUS,
     ChangeSetError,
     all_stacks,
     create_change_set,
@@ -92,9 +108,9 @@ from .cfn_changeset import (
     describe_stack,
     execute_change_set,
     start_event_watcher,
-    wait_for_stack,
+    verify_change_set_template,
 )
-from .executions import STATE_MACHINE, stop_running
+from .executions import STATE_MACHINE, error_code, stop_running
 
 
 class UpError(Exception):
@@ -384,26 +400,8 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _object_exists(s3, bucket: str, key: str, *, owner: str) -> bool:
-    try:
-        s3.head_object(Bucket=bucket, Key=key, ExpectedBucketOwner=owner)
-        return True
-    except ClientError as e:
-        if str(e.response.get("Error", {}).get("Code", "")) in ("404", "NoSuchKey", "NotFound"):
-            return False
-        raise
-
-
 def _upload(s3, bucket: str, key: str, path: Path, *, owner: str) -> None:
     s3.upload_file(str(path), bucket, key, ExtraArgs={"ExpectedBucketOwner": owner})
-
-
-def _upload_once(s3, bucket: str, key: str, path: Path, *, owner: str) -> bool:
-    """Upload unless the key already exists. Keys carry a content digest, so existing = identical."""
-    if _object_exists(s3, bucket, key, owner=owner):
-        return False
-    _upload(s3, bucket, key, path, owner=owner)
-    return True
 
 
 def tree_digest(root: Path) -> str:
@@ -418,44 +416,49 @@ def tree_digest(root: Path) -> str:
 def upload_artifacts(
     s3, bucket: str, root: Path, manifest: Manifest, *, owner: str,
 ) -> Tuple[Dict[str, str], Dict[str, str], str]:
-    """Upload code, definitions and the UI. Returns (function keys, state machine keys, UI prefix)."""
-    uploaded = total = 0
+    """Upload code, definitions and the UI. Returns (function keys, state machine keys, UI prefix).
+
+    Every file is uploaded on every run, never skipped because its key exists: an object found under a
+    key is not known to be the one polyris-up put there (PLAN_IAM 1.4.0 §4.4). The keys still carry a
+    content digest, since CloudFormation updates a Lambda's code only when its key changes.
+    """
+    uploaded = 0
     function_keys: Dict[str, str] = {}
     for logical_id, rel in manifest.functions.items():
         path = root / rel
         key = artifact_key(manifest.version, "lambdas", _sha256_file(path), path.name)
-        uploaded += _upload_once(s3, bucket, key, path, owner=owner)
-        total += 1
+        _upload(s3, bucket, key, path, owner=owner)
+        uploaded += 1
         function_keys[logical_id] = key
     state_machine_keys: Dict[str, str] = {}
     for logical_id, rel in manifest.state_machines.items():
         path = root / rel
         key = artifact_key(manifest.version, "sfn", _sha256_file(path), path.name)
-        uploaded += _upload_once(s3, bucket, key, path, owner=owner)
-        total += 1
+        _upload(s3, bucket, key, path, owner=owner)
+        uploaded += 1
         state_machine_keys[logical_id] = key
     ui_root = root / manifest.ui
     prefix = ui_prefix(manifest.version, tree_digest(ui_root))
-    # The ROOT index.html goes last: its presence marks a complete upload for
-    # the check below. (Route pages are index.html files too — pipelines/index.html
-    # and so on — and must be uploaded before it.)
-    files = sorted((p for p in ui_root.rglob("*") if p.is_file()),
-                   key=lambda p: p.relative_to(ui_root).as_posix() == "index.html")
-    total += len(files)
-    if not _object_exists(s3, bucket, f"{prefix}/index.html", owner=owner):
-        for path in files:
-            _upload(s3, bucket, f"{prefix}/{path.relative_to(ui_root).as_posix()}", path, owner=owner)
-        uploaded += len(files)
-    reused = total - uploaded
-    print(f"   artifacts: {uploaded} uploaded" + (f", {reused} already in the bucket" if reused else ""))
+    for path in sorted(p for p in ui_root.rglob("*") if p.is_file()):
+        _upload(s3, bucket, f"{prefix}/{path.relative_to(ui_root).as_posix()}", path, owner=owner)
+        uploaded += 1
+    print(f"   artifacts: {uploaded} uploaded")
     return function_keys, state_machine_keys, prefix
 
 
-def _upload_template(s3, *, bucket: str, region: str, version: str, template: Dict[str, Any], owner: str) -> str:
-    body = json.dumps(template, sort_keys=True).encode()
-    key = artifact_key(version, "template", hashlib.sha256(body).hexdigest(), "template.json")
-    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json", ExpectedBucketOwner=owner)
-    return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+def _upload_template(s3, *, bucket: str, region: str, version: str, template: Dict[str, Any],
+                     owner: str) -> Tuple[str, str]:
+    """Upload the template under a key nobody can predict; (its URL, the text uploaded).
+
+    The change set's template is then checked against that text (``verify_change_set_template``):
+    another writer of the bucket cannot have CloudFormation run a template of theirs (PLAN_IAM 1.4.0 §4.4).
+    """
+    body = json.dumps(template, sort_keys=True)
+    key = artifact_key(version, "template", hashlib.sha256(body.encode()).hexdigest(),
+                       f"template-{uuid.uuid4().hex}.json")
+    s3.put_object(Bucket=bucket, Key=key, Body=body.encode(), ContentType="application/json",
+                  ExpectedBucketOwner=owner)
+    return f"https://{bucket}.s3.{region}.amazonaws.com/{key}", body
 
 
 def count_objects(s3, bucket: str, *, owner: str) -> int:
@@ -564,21 +567,20 @@ def run_up(args: argparse.Namespace) -> None:
     if existing:
         deployed = version_from_description(existing.get("Description"))
         print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {installing})")
-        # A stack whose last update succeeded and still deletes what it dropped is an upgrade to 1.3 that
-        # was interrupted: its cleanup waits for what 1.2 left running (ADR #137, *Migration and upgrade*).
-        cleaning_up = (existing.get("StackStatus") == CLEANUP_STATUS
-                       and runs_tasks_as_rows(deployed, outputs_of(existing)))
-        if existing.get("StackStatus", "").endswith("_IN_PROGRESS") and not cleaning_up:
+        if existing.get("StackStatus", "").endswith("_IN_PROGRESS"):
             raise UpError(f"Stack {stack_name} is busy ({existing['StackStatus']}). Try again when it finishes.")
         if not is_platform_shaped(existing):
             raise UpError(f"Stack {stack_name} is not a Polyris platform stack — refusing to change it.",
                           "Pick another --namespace / --stage, or name the right stack with --stack.")
+        if not upgrades(deployed, outputs_of(existing)):
+            # 1.2 support ends with 1.4 (D6): a platform on 1.2 goes through 1.3 first.
+            raise UpError(f"{stack_name} runs v{deployed or 'an unknown version below 1.3'}, and polyris "
+                          f"{installing} upgrades a platform from 1.3 only.",
+                          "Upgrade it to 1.3 first: install polyris 1.3, run its polyris-up, then run this one.")
         if not is_platform_stack(existing) and not args.yes:
             print(_c(f"   {stack_name} was not created by polyris-up; it will be adopted (tagged and "
                      "switched to release artifacts).", YELLOW))
             _confirm_yes("Continue?")
-        if cleaning_up:
-            existing = _finish_cleanup(session, cfn, str(existing["StackName"]), region=region, account=account)
         values: Dict[str, str] = {}
     else:
         if args.stack or args.namespace_from_flags:
@@ -586,9 +588,10 @@ def run_up(args: argparse.Namespace) -> None:
         namespace = args.namespace or _prompt("Namespace (unique prefix, e.g. your org)")
         stage = args.stage or _prompt("Stage", "dev")
         errors = validate_namespace_stage(namespace, stage)
+        stack_name = stack_name or default_stack_name(namespace, stage)
+        errors += new_platform_name_errors(stack_name)
         if errors:
             raise UpError(errors[0], *errors[1:])
-        stack_name = stack_name or default_stack_name(namespace, stage)
         for bucket in platform_bucket_names(namespace, stage):
             owner = bucket_owner_status(s3, bucket, owner=account)
             if owner == "taken":
@@ -619,31 +622,32 @@ def run_up(args: argparse.Namespace) -> None:
     root, manifest = local_archive or extract_archive(fetch_release(__version__))
     if manifest.version != __version__ and not args.archive:
         raise UpError(f"Release archive is v{manifest.version}, installed polyris is v{__version__}.")
+    template = json.loads((root / manifest.template).read_text())
+    if not upgrades(manifest.version, template.get("Outputs") or {}):
+        raise UpError(f"The release archive is v{manifest.version}; this polyris-up installs 1.3 or newer only.")
+    if rolls_back_below_floor(deployed, manifest.version):
+        floor = ".".join(str(part) for part in NO_ROLLBACK_BELOW)
+        raise UpError(
+            f"{stack_name} runs v{deployed}; no platform goes back below {floor}, and v{manifest.version} would.",
+            f"Its pipelines schedule with the platform's schedule role, which a release below {floor} does not "
+            f"have. No flag allows this; CloudFormation also keeps the role while a pipeline imports it.")
     if is_downgrade(deployed, manifest.version) and not args.allow_downgrade:
         raise UpError(
             f"{stack_name} runs v{deployed}; this would roll it back to v{manifest.version}.",
             "Install the newer polyris (re-run install.sh) — or pass --allow-downgrade if the rollback is intended.",
         )
-    template = json.loads((root / manifest.template).read_text())
-    # A release that runs tasks as rows deletes 1.2's engine, and nothing adopts a 1.2 run (ADR #137).
-    rows_engine = runs_tasks_as_rows(manifest.version, template.get("Outputs") or {})
-    if existing and leaves_tasks_as_rows(deployed, outputs_of(existing), manifest.version, template.get("Outputs") or {}):
-        raise UpError(f"{stack_name} runs v{deployed or 'unknown'}, which runs tasks as rows; v{manifest.version} would "
-                      "put 1.2's engine back, and no pipeline deployed for 1.3 would run on it.",
-                      "No flag allows this. Install polyris 1.3 or newer (re-run install.sh). A failed update "
-                      "rolls itself back.")
-    upgrading = bool(existing) and rows_engine and not runs_tasks_as_rows(deployed, outputs_of(existing or {}))
-    if upgrading:
-        _check_before_upgrade(session, existing or {}, region=region, account=account, deployed=deployed,
-                              override=args.accept_stopped_runs)
+
+    _header("Checks")
+    preflight(session, existing, region=region, account=account)
+
     bucket = artifacts_bucket_name(account, region)
     ensure_artifacts_bucket(s3, bucket, region=region, owner=account)
     function_keys, sfn_keys, prefix = upload_artifacts(s3, bucket, root, manifest, owner=account)
 
     template = rewrite_template(template, bucket=bucket, function_keys=function_keys,
                                 state_machine_keys=sfn_keys, version=manifest.version)
-    template_url = _upload_template(s3, bucket=bucket, region=region, version=manifest.version,
-                                    template=template, owner=account)
+    template_url, template_body = _upload_template(s3, bucket=bucket, region=region, version=manifest.version,
+                                                   template=template, owner=account)
     values.update({PARAM_ARTIFACTS_BUCKET: bucket, PARAM_UI_PREFIX: prefix})
     values.update(overrides)
     try:
@@ -657,15 +661,12 @@ def run_up(args: argparse.Namespace) -> None:
 
     _header("CloudFormation")
     assert stack_name  # set on both branches above
-    # The update from 1.2 deletes 1.2's state machines: their executions are stopped as its cleanup begins (ADR #137,
-    # *Migration and upgrade*). Any other update, 1.3 to 1.3 among them, stops nothing then.
-    stop_leftovers = (functools.partial(_stop_leftovers, session, cfn, stack_name, region=region, account=account)
-                      if upgrading else None)
-    after_update = existing is not None and rows_engine
     try:
         change_set = create_change_set(cfn, stack_name=stack_name, capabilities=CAPABILITIES,
                                        template_url=template_url, parameters=parameters,
                                        tags=platform_tags(existing))
+        if change_set is not None:
+            verify_change_set_template(cfn, stack_name=stack_name, change_set=change_set, uploaded=template_body)
     except ChangeSetError as e:
         raise UpError(str(e))
     if change_set is None:
@@ -678,9 +679,8 @@ def run_up(args: argparse.Namespace) -> None:
                           "then run polyris-up again.")
         print(_c(f"\n✅ {stack_name} is already up to date (v{manifest.version}).", BOLD_GREEN))
         _print_outputs(existing or {})
-        if after_update:
-            _after_update(session, cfn, stack_name, region=region, account=account,
-                          flags=next_step_flags(args, stack_name), upgrading=upgrading)
+        if existing is not None:
+            _after_update(session, cfn, stack_name, flags=next_step_flags(args, stack_name))
         return
     _summarize_change_set(change_set)
     risky = replaced_data_resources(change_set)
@@ -697,9 +697,7 @@ def run_up(args: argparse.Namespace) -> None:
     keep_on_failure = bool(args.disable_rollback) and existing is not None
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        # The cleanup that deletes 1.2's state machines waits for their executions: stop them as it begins.
-        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=keep_on_failure,
-                           on_cleanup=stop_leftovers)
+        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=keep_on_failure)
     except ChangeSetError as e:
         if keep_on_failure:
             raise UpError(str(e), "Nothing was rolled back (--disable-rollback): fix the cause, then run the "
@@ -714,109 +712,188 @@ def run_up(args: argparse.Namespace) -> None:
     if PARAM_ADMIN_EMAIL in values and values[PARAM_ADMIN_EMAIL] and existing is None:
         print(f"   Login:    {values[PARAM_ADMIN_EMAIL]} — Cognito has emailed a temporary password.")
     flags = next_step_flags(args, stack_name)
-    if after_update and _after_update(session, cfn, stack_name, region=region, account=account, flags=flags,
-                                      upgrading=upgrading):
-        return                  # what comes next is the redeploy of those pipelines, not a first one
     if existing is not None:
+        if _crosses_into_1_4(deployed, manifest.version):
+            _print_deploy_policy_notice(stack)
+        _after_update(session, cfn, stack_name, flags=flags)
         return                  # an update: the platform's pipelines run as before, none is a first one
     print("\n   Next — a first pipeline, ready to deploy and run:")
     print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
     print(f"     {_c(f'cd hello-world && polyris-deploy{flags}', CYAN)}   then press Run in the console")
 
 
-def _target(session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str) -> upgrade.Target:
-    return upgrade.Target.of(stack, partition=session.get_partition_for_region(region), region=region,
-                             account=account)
+def _crosses_into_1_4(deployed: Optional[str], installing: str) -> bool:
+    """Whether this update takes a platform below 1.4 to 1.4 or newer: its authors need the new deploy policy."""
+    old, new = release_series(deployed), release_series(installing)
+    return new is not None and new >= NO_ROLLBACK_BELOW and (old is None or old < NO_ROLLBACK_BELOW)
 
 
-def _check_before_upgrade(
-    session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str, deployed: Optional[str],
-    override: bool,
-) -> None:
-    """Check a platform below 1.3 before it is upgraded, while nothing has changed (ADR #137, *Migration and upgrade*)."""
-    print("   checking the platform before its upgrade to 1.3")
+def _print_deploy_policy_notice(stack: Dict[str, Any]) -> None:
+    """Message A (PLAN_IAM 1.4.0 §4.6): what the platform's update asks of its pipeline authors, in order."""
+    arn = outputs_of(stack).get(OUTPUT_DEPLOY_POLICY, "")
+    name = arn.rsplit("/", 1)[-1] if arn else "the platform's deploy policy"
+    print(_c(f"\n⚠ Pipeline authors need the new deploy policy: attach {name} ({arn or 'see the stack outputs'}) to "
+             "their role or CI role and detach the old one.", YELLOW))
+    print("   Running pipelines keep running; a scheduled pipeline moves to the shared schedule role at its next "
+          "polyris-deploy.")
+    print("   Order: platform (done) → attach the new policy → authors' CLI 1.4 → detach the old policy → run "
+          "polyris-up once more (its preflight checks again that no scheduler role was planted meanwhile).")
+
+
+# ── The checks before any change (PLAN_IAM 1.4.0 §4.1) ───────────────────────
+
+
+@contextmanager
+def _permission(action: str, resource: str) -> Iterator[None]:
+    """An access-denied error of the call inside stops polyris-up and names the permission.
+
+    The checks run before anything changes, so a role that lacks a permission learns it here, not
+    halfway through the update.
+    """
+    try:
+        yield
+    except ClientError as e:
+        if error_code(e) not in ACCESS_DENIED_CODES:
+            raise
+        raise UpError(f"polyris-up may not call {action} on {resource}, which its checks before any change need.",
+                      "Grant it to the role that runs polyris-up (docs/deployment/IAM_PERMISSIONS.md), then run "
+                      "it again.") from e
+
+
+def preflight(session: boto3.Session, existing: Optional[Dict[str, Any]], *, region: str, account: str) -> None:
+    """Refuse, with the list to fix, what 1.4 must not take over (PLAN_IAM 1.4.0 §4.1); changes nothing.
+
+    - On an existing platform, a task of a deployed pipeline whose ``role=`` is a role of this account
+      outside ``/polyris-tasks/`` (D11), read from each pipeline's current spec version.
+    - In the account, a role named like a pipeline's scheduler role that is not exactly what
+      polyris-deploy made: the authors' deploy policy may pass and delete such roles for one release.
+    """
+    problems: List[str] = []
+    hints: List[str] = []
+    if existing:
+        refused = _refused_task_roles(session, existing, account=account)
+        if refused:
+            problems.append(f"{len(refused)} task(s) of deployed pipelines run as a role of this account outside "
+                            f"{TASK_ROLE_PATH}, which polyris {__version__} refuses:")
+            problems.extend(f"  pipeline {pipeline}, task {task}: {role}" for pipeline, task, role in refused)
+            example = refused[0][2]
+            name = example.rsplit("/", 1)[-1]
+            hints.append(
+                f"IAM cannot move a role to another path: create each one again under {TASK_ROLE_PATH} with the same "
+                f"trust and permissions (e.g. {_c(f'aws iam create-role --path {TASK_ROLE_PATH} --role-name {name} --assume-role-policy-document file://trust.json', CYAN)}), "
+                f"point the task's role= at the new ARN ({example.rsplit(':', 1)[0]}:role{TASK_ROLE_PATH}{name}) and "
+                "redeploy the pipeline.")
+    planted = _foreign_scheduler_roles(session, region=region)
+    if planted:
+        problems.append(f"{len(planted)} role(s) named like a pipeline's scheduler role are not what polyris-deploy "
+                        "made:")
+        problems.extend(f"  {arn}: {'; '.join(reasons)}" for arn, reasons in planted)
+        hints.append("The authors' deploy policy may pass and delete such roles for one release, so polyris-up "
+                     "refuses while one is left. Review each: CloudTrail's CreateRole, PutRolePolicy, "
+                     "AttachRolePolicy and UpdateAssumeRolePolicy events name who made or changed it. Delete or "
+                     "rename a role that is not a pipeline's.")
+    if problems:
+        raise UpError("Nothing was changed: the checks before the update found what to fix first.",
+                      *problems, *hints, "Then run polyris-up again.")
+    print("   no task runs as a role it may not, and no scheduler role was planted")
+
+
+def _refused_task_roles(session: boto3.Session, existing: Dict[str, Any], *, account: str) -> List[Tuple[str, str, str]]:
+    """(pipeline, task, role) of every task of a deployed pipeline whose role this platform refuses (D11)."""
+    specs_table = outputs_of(existing).get(OUTPUT_SPECS_TABLE, "")
+    registry = outputs_of(existing).get(OUTPUT_REGISTRY_TABLE, "")
+    if not specs_table or not registry:
+        return []
+    params = parameters_of(existing)
+    default_role = default_task_role_name(params.get(PARAM_NAMESPACE, ""), params.get(PARAM_STAGE, ""))
     dynamodb = session.client("dynamodb")
-    registry = outputs_of(stack).get(OUTPUT_REGISTRY_TABLE, "")
+    with _permission("dynamodb:Scan", registry):
+        pipelines = deployed_pipelines(session, session.client("cloudformation"), existing,
+                                       str(existing.get("StackName", "")))
+    refused: List[Tuple[str, str, str]] = []
+    for pipeline in pipelines:
+        if not pipeline.spec_id:
+            continue                    # deployed before 1.3: it has no specs, and its runs fail until a redeploy
+        try:
+            with _permission("dynamodb:BatchGetItem", specs_table):
+                specs = spec_store.read(dynamodb, specs_table, pipeline.spec_id, expected_count=pipeline.task_count)
+        except task_spec.SpecError as e:
+            raise UpError(f"Could not read the task specs of pipeline {pipeline.name}: {e}",
+                          f"Redeploy {pipeline.name}, then run polyris-up again.") from e
+        for task_id in sorted(specs):
+            role = specs[task_id].fields.get(SpecKey.CROSS_ACCOUNT_ROLE)
+            if isinstance(role, str) and refused_task_role(role, account=account, default_task_role=default_role):
+                refused.append((pipeline.name, task_id, role))
+    return refused
+
+
+def _document(value: Any) -> Any:
+    """A policy document as IAM returns it: boto3 decodes it, a raw answer is URL-encoded JSON (Principle #37)."""
+    if isinstance(value, str):
+        try:
+            return json.loads(urllib.parse.unquote(value))
+        except ValueError as e:
+            raise UpError(f"IAM returned a policy document polyris-up cannot read: {e}")
+    return value
+
+
+def _foreign_scheduler_roles(session: boto3.Session, *, region: str) -> List[Tuple[str, List[str]]]:
+    """(ARN, what is wrong) of every role named like a pipeline's scheduler role that polyris-deploy did not make."""
+    iam = session.client("iam")
+    found: List[Tuple[str, List[str]]] = []
+    with _permission("iam:ListRoles", "*"):
+        roles = [role for page in iam.get_paginator("list_roles").paginate() for role in page.get("Roles", [])
+                 if is_scheduler_role(str(role.get("Arn", "")))]
+    for role in roles:
+        name, arn = str(role["RoleName"]), str(role["Arn"])
+        with _permission("iam:GetRole, ListRolePolicies, GetRolePolicy, ListAttachedRolePolicies", arn):
+            described = iam.get_role(RoleName=name)["Role"]
+            inline = {policy: _document(iam.get_role_policy(RoleName=name, PolicyName=policy)["PolicyDocument"])
+                      for page in iam.get_paginator("list_role_policies").paginate(RoleName=name)
+                      for policy in page.get("PolicyNames", [])}
+            attached = [str(policy.get("PolicyArn", ""))
+                        for page in iam.get_paginator("list_attached_role_policies").paginate(RoleName=name)
+                        for policy in page.get("AttachedPolicies", [])]
+        stack, logical_id, machine = _owning_stack(session, name, described, region=region)
+        problems = scheduler_role_problems(SchedulerRole(
+            arn=arn, path=str(described.get("Path", "")), trust=_document(described.get("AssumeRolePolicyDocument")),
+            inline=inline, attached=attached, stack=stack, logical_id=logical_id, machine=machine))
+        if problems:
+            found.append((arn, problems))
+    return found
+
+
+def _owning_stack(session: boto3.Session, name: str, role: Mapping[str, Any], *,
+                  region: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """(stack name, the role's logical id there, the stack's pipeline state machine) of the stack that holds the
+    role, in the region its CloudFormation tag names (a pipeline of a platform in another region); Nones when no
+    stack holds it."""
+    stack_id = next((str(tag.get("Value", "")) for tag in role.get("Tags") or []
+                     if tag.get("Key") == "aws:cloudformation:stack-id"), "")
+    parts = stack_id.split(":")
+    cfn = session.client("cloudformation", region_name=parts[3] if len(parts) > 3 and parts[3] else region)
     try:
-        upgrade.check(sfn=session.client("stepfunctions"), dynamodb=dynamodb,
-                      target=_target(session, stack, region=region, account=account), deployed=deployed,
-                      override=override, now=datetime.now(timezone.utc))
-        if registry:
-            # After the update, the stop of 1.2's executions reads the registry: a role that may not read
-            # it is refused now, while nothing has changed.
-            with upgrade.permission("dynamodb:Scan", registry):
-                _registry_rows(dynamodb, registry)
-    except upgrade.Refused as e:
-        raise UpError(str(e), *e.todo)
-    if override:
-        print(_c(f"   {upgrade.OVERRIDE_FLAG}: 1.2's adoption and the runs in flight were not checked.", YELLOW))
+        with _permission("cloudformation:DescribeStackResources", name):
+            resources = cfn.describe_stack_resources(PhysicalResourceId=name).get("StackResources", [])
+    except ClientError as e:
+        if error_code(e) == "ValidationError":
+            return None, None, None     # "Stack for <name> does not exist": no stack holds the role
+        raise
+    own: Mapping[str, Any] = next((r for r in resources if r.get("PhysicalResourceId") == name), {})
+    machine = next((str(r.get("PhysicalResourceId", "")) for r in resources
+                    if r.get("LogicalResourceId") == PIPELINE_MACHINE_LOGICAL_ID), None)
+    return own.get("StackName"), own.get("LogicalResourceId"), machine
 
 
-def _stop_leftovers(
-    session: boto3.Session, cfn, stack_name: str, *, region: str, account: str,
-    pipelines: Optional[Sequence["DeployedPipeline"]] = None,
-) -> None:
-    """Stop what 1.2 left running on a platform that runs 1.3, and print the runs to start again.
-
-    polyris-up calls it as the cleanup of the update from 1.2 begins, so that
-    the deletion of 1.2's state machines does not wait for their executions;
-    at the end of that run; and at the end of a later run while 1.2's state
-    machines are still there, or at its start while the stack still cleans up,
-    so that an interrupted upgrade is finished (ADR #137, *Migration and
-    upgrade*). ``pipelines`` are the platform's, when the caller has read them
-    already.
-    """
-    try:
-        stack = describe_stack(cfn, stack_name) or {}
-        target = _target(session, stack, region=region, account=account)
-        sfn = session.client("stepfunctions")
-        since = upgrade.rows_engine_since(session.client("dynamodb"), target)
-        machines: List[str] = []
-        if since:
-            if pipelines is None:
-                pipelines = deployed_pipelines(session, cfn, stack, stack_name)
-            machines = _pipeline_machines(sfn, pipelines, target)
-        stopped = upgrade.stop_leftovers(sfn, target=target, pipelines=machines, started_before=since)
-    except (ClientError, BotoCoreError) as e:
-        raise UpError(
-            f"{stack_name} is updated, but polyris-up could not stop what 1.2 left running: {e}",
-            "While an execution of 1.2 runs, CloudFormation's cleanup of 1.2's state machines waits for it.",
-            "Fix the cause (docs/deployment/IAM_PERMISSIONS.md lists the permissions), then run polyris-up "
-            "again: it stops them and goes on.")
-    if not (stopped.runs or stopped.engine):
-        return
-    print(_c(f"   Stopped what 1.2 left running: {len(stopped.runs)} run(s), and {stopped.engine} execution(s) "
-             "of the engine's state machines.", YELLOW))
-    for run in stopped.runs:
-        print(f"     {run.machine}  {run.name}  (started {run.started.astimezone(timezone.utc):%Y-%m-%d %H:%M} UTC)")
-    if stopped.runs:
-        print("   Nothing adopts a 1.2 run: start these again once their pipelines are redeployed.")
-
-
-def _after_update(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str, flags: str,
-                  upgrading: bool) -> bool:
-    """What polyris-up does on a platform that runs 1.3, once its stack has settled (ADR #137, *Migration and
-    upgrade*). True when it listed pipelines to redeploy.
-
-    After the update from 1.2, or while 1.2's state machines are still there,
-    it stops what 1.2 left running once more: the listings at the cleanup may
-    not have shown everything, and an upgrade interrupted after its update is
-    finished here. A platform that finished its upgrade is asked nothing more
-    (``upgrade.left_by_1_2``). It waits for the index that the console's run
-    lists read, and lists the pipelines that still need a redeploy.
-    """
+def _after_update(session: boto3.Session, cfn, stack_name: str, *, flags: str) -> bool:
+    """Lists the pipelines that still need a redeploy once an update has settled; True when it listed any."""
     stack = describe_stack(cfn, stack_name) or {}
-    target = _target(session, stack, region=region, account=account)
     try:
         pipelines = deployed_pipelines(session, cfn, stack, stack_name)
-        left = upgrading or upgrade.left_by_1_2(session.client("stepfunctions"), target)
     except (ClientError, BotoCoreError) as e:
-        raise UpError(f"{stack_name} is updated, but polyris-up could not read its pipelines and state machines: {e}",
+        raise UpError(f"{stack_name} is updated, but polyris-up could not read its pipelines: {e}",
                       "Fix the cause (docs/deployment/IAM_PERMISSIONS.md lists the permissions), then run "
                       "polyris-up again.")
-    if left:
-        _stop_leftovers(session, cfn, stack_name, region=region, account=account, pipelines=pipelines)
-    upgrade.wait_for_index(session.client("dynamodb"), target)
     return _list_redeploys(pipelines, flags)
 
 
@@ -824,8 +901,8 @@ def _list_redeploys(pipelines: Sequence["DeployedPipeline"], flags: str) -> bool
     """Print the pipelines that still need a redeploy, with the command for each; False when none does.
 
     polyris-deploy writes the pipeline format it deployed with to the registry.
-    A pipeline deployed before 1.3 names none, and its runs fail at once: the
-    wrapper they start is gone.
+    A pipeline deployed with an older format, or before 1.3, which names none,
+    fails its runs until it is redeployed.
     """
     stale = [pipeline.name for pipeline in pipelines if task_spec.needs_redeploy(pipeline.format_version)]
     if not stale:
@@ -837,32 +914,6 @@ def _list_redeploys(pipelines: Sequence["DeployedPipeline"], flags: str) -> bool
     print(f"   Run each in its pipeline's folder, with the --stage you deploy it with. "
           f"{_c('polyris-deploy --all', CYAN)} in the folder above them redeploys every pipeline.")
     return True
-
-
-def _pipeline_machines(sfn, pipelines: Sequence["DeployedPipeline"], target: upgrade.Target) -> List[str]:
-    """The ARNs of the pipelines' state machines: the registry names them, and ListStateMachines
-    finds by its name the one the registry does not name."""
-    arns = [pipeline.sfn_arn for pipeline in pipelines if pipeline.sfn_arn]
-    unnamed = {target.name_prefix + pipeline.name for pipeline in pipelines if not pipeline.sfn_arn}
-    if unnamed:
-        for page in sfn.get_paginator("list_state_machines").paginate():
-            arns.extend(m["stateMachineArn"] for m in page.get("stateMachines", []) if m.get("name") in unnamed)
-    return arns
-
-
-def _finish_cleanup(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str) -> Dict[str, Any]:
-    """Finish an update whose cleanup still runs: stop what holds it up, wait for the stack, return it."""
-    print(f"   {stack_name} is still cleaning up after its last update: stopping what 1.2 left running, "
-          "then waiting for it")
-    _stop_leftovers(session, cfn, stack_name, region=region, account=account)
-    stop_narration = start_event_watcher(cfn, stack_name)
-    try:
-        wait_for_stack(cfn, stack_name=stack_name, waiter="stack_update_complete")
-    except WaiterError as e:
-        raise UpError(f"Stack {stack_name} did not finish its cleanup: {e}")
-    finally:
-        stop_narration()
-    return describe_stack(cfn, stack_name) or {}
 
 
 def next_step_flags(args: argparse.Namespace, stack_name: str) -> str:
@@ -881,6 +932,9 @@ def _print_outputs(stack: Dict[str, Any]) -> None:
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
     if OUTPUT_CONSOLE_URL in outputs:
         print(f"   Console:  {_c(outputs[OUTPUT_CONSOLE_URL], CYAN)}")
+    if OUTPUT_DEPLOY_POLICY in outputs:
+        # What the role that runs polyris-deploy holds: polyris-deploy's AccessDenied hint points here.
+        print(f"   Deploy policy for pipeline authors:  {_c(outputs[OUTPUT_DEPLOY_POLICY], CYAN)}")
 
 
 # ── polyris-down ─────────────────────────────────────────────────────────────
@@ -895,13 +949,16 @@ class DeployedPipeline:
     sfn_arn: str = ""
     #: The pipeline format it was deployed with, as the registry holds it; None for one deployed before 1.3.
     format_version: Optional[str] = None
+    #: Its current spec version and the number of its tasks, as the registry names them; empty before 1.3.
+    spec_id: str = ""
+    task_count: int = 0
 
 
 def _registry_rows(dynamodb, table: str) -> List[Dict[str, Any]]:
     """Every row of the pipeline registry; none when the table is gone."""
     try:
         pages = dynamodb.get_paginator("scan").paginate(
-            TableName=table, ProjectionExpression="pipeline_name, sfn_arn, #format",
+            TableName=table, ProjectionExpression="pipeline_name, sfn_arn, #format, spec_id, task_count",
             ExpressionAttributeNames={"#format": task_spec.REGISTRY_FORMAT_FIELD})
         return [item for page in pages for item in page.get("Items", [])]
     except ClientError as e:
@@ -942,7 +999,9 @@ def deployed_pipelines(session, cfn, stack: Dict[str, Any], stack_name: str) -> 
             # No ARN yet (registration still running or failed) or an unknown
             # state: count it as live — a false "still deployed" is recoverable
             # with --yes, deleting the platform under a live pipeline is not.
-            found[name] = DeployedPipeline(name, arn, row.get(task_spec.REGISTRY_FORMAT_FIELD, {}).get("N"))
+            found[name] = DeployedPipeline(name, arn, row.get(task_spec.REGISTRY_FORMAT_FIELD, {}).get("N"),
+                                           row.get("spec_id", {}).get("S", ""),
+                                           int(row.get("task_count", {}).get("N", "0") or 0))
     return sorted(found.values(), key=lambda pipeline: pipeline.name)
 
 
@@ -950,6 +1009,21 @@ def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) 
     """The names of the pipelines still deployed on this platform (``deployed_pipelines``)."""
     return [pipeline.name for pipeline in deployed_pipelines(session, cfn, stack, stack_name)]
 
+
+
+def _schedule_role_importers(cfn, stack: Dict[str, Any]) -> List[str]:
+    """The stacks that import the platform's schedule role (``schedule_role_export``); none for a platform below 1.4."""
+    params = parameters_of(stack)
+    export = schedule_role_export(params.get(PARAM_NAMESPACE, ""), params.get(PARAM_STAGE, ""))
+    try:
+        return sorted(name for page in cfn.get_paginator("list_imports").paginate(ExportName=export)
+                      for name in page.get("Imports", []))
+    except ClientError as e:
+        # ListImports answers "Export '<name>' is not imported by any stack." for an export nobody imports, and
+        # for one that does not exist.
+        if error_code(e) == "ValidationError" and "is not imported by any stack" in str(e):
+            return []
+        raise
 
 
 #: What the history of an execution that polyris-down stopped says.
@@ -988,6 +1062,14 @@ def run_down(args: argparse.Namespace) -> None:
             elif r["ResourceType"] == STATE_MACHINE:
                 machines.append((physical, None))
 
+    importers = _schedule_role_importers(cfn, stack)
+    if importers:
+        # CloudFormation would refuse to delete the schedule role's export, and the stack with it (D8).
+        raise UpError(
+            f"{len(importers)} pipeline stack(s) still schedule with this platform's schedule role: "
+            f"{', '.join(importers)}.",
+            f"Destroy the scheduled pipelines first ({_c('polyris-destroy', CYAN)} in each pipeline's directory). "
+            "--yes does not cover this: CloudFormation keeps the role's export while a stack imports it.")
     pipelines = pipelines_on_platform(session, cfn, stack, stack_name)
     if pipelines and not args.yes:
         raise UpError(
@@ -1090,17 +1172,13 @@ def build_up_parser() -> argparse.ArgumentParser:
                         help="Set a template parameter (repeatable). Unset parameters keep their current value.")
     parser.add_argument("--archive", help="Deploy a local release archive instead of downloading one (for testing builds)")
     parser.add_argument("--allow-downgrade", action="store_true",
-                        help="Allow installing an older release than the stack runs (a rollback)")
+                        help="Allow installing an older release than the stack runs (a rollback; never below 1.4)")
     parser.add_argument("--accept-data-loss", action="store_true",
                         help="Allow a change that replaces or removes a table, bucket, user pool or admin user "
                              "(--yes alone never does)")
     parser.add_argument("--disable-rollback", action="store_true",
                         help="If the update fails, keep what it already changed instead of rolling back "
                              "(for an upgrade whose release notes ask for it; a first install always rolls back)")
-    parser.add_argument("--accept-stopped-runs", action="store_true",   # upgrade.OVERRIDE_FLAG, which the refusals name
-                        help="Upgrade a 1.2 platform to 1.3 although a run may be in flight, or 1.2 finished adopting "
-                             "older rows less than 48 hours ago. polyris-up stops what 1.2 left running "
-                             "(a platform older than 1.2 is never upgraded)")
     colorize_parser(parser)
     return parser
 

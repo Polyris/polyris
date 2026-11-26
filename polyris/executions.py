@@ -3,9 +3,8 @@
 CloudFormation deletes a state machine only once its running executions have ended, and a run of 1.3
 keeps its execution open until every task of it is final; a paused run never ends by itself (ADR #137
 §1, §5). So a command that deletes a stack with state machines stops their executions until the stack
-is gone: ``polyris-destroy`` a pipeline's runs, ``polyris-down`` the platform's own executions, and
-``polyris-up`` what 1.2 left running (``upgrade.stop_leftovers``). The engine stops the tasks of a run
-whose execution was stopped at its next check of the run (ADR #137 §4).
+is gone: ``polyris-destroy`` a pipeline's runs, ``polyris-down`` the platform's own executions. The
+engine stops the tasks of a run whose execution was stopped at its next check of the run (ADR #137 §4).
 """
 from __future__ import annotations
 

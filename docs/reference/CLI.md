@@ -55,13 +55,12 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
 | `--yes` | Don't ask for confirmation |
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
-| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
+| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback), never below 1.4. A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
 | `--disable-rollback` | If the update fails, keep what it already changed (`UPDATE_FAILED`) instead of rolling back. Fix the cause and run the same command again; if the release has nothing more to change, retry the failed update from the CloudFormation console. A first install always rolls back. Use it when the release notes ask for it |
-| `--accept-stopped-runs` | Only for the upgrade from 1.2: [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md) |
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`). At the end of an upgrade, `polyris-up` lists the pipelines that need a redeploy, with the command for each.
 
-Upgrading from 1.2: see [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md).
+`polyris-up` updates a platform from 1.3 or newer. A platform on 1.2 upgrades to 1.3 first with the polyris-up of 1.3: see [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md).
 
 ---
 

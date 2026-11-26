@@ -42,6 +42,5 @@ def test_the_engine_s_handling_of_1_2_rows_goes_in_1_4():
 
 def test_the_guards_read_the_files_that_hold_the_code_today():
     """So a move of the code cannot leave the guards checking nothing."""
-    assert UPGRADE.exists()
     assert "LEGACY_ROW_CONDITION" in ROW_WRITE.read_text()
     assert "OLDER_NOT_FINAL" in TRANSITIONS.read_text()
