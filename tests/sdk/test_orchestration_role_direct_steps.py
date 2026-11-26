@@ -79,14 +79,34 @@ def _template() -> dict:
     return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
 
 
+#: The one resource a step may need its actions on that is narrower than any: HttpTask reads the credentials of
+#: the EventBridge connection it names, which AWS keeps in a secret of the connection's own (PLAN_IAM 1.4.0 §3.2).
+CONNECTION_SECRETS = "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:events!connection/*"
+
+
 def _allowed_on_any_resource() -> set:
     policy = _template()["Resources"]["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]
     allowed: set = set()
     for statement in policy["Statement"]:
-        if statement.get("Effect") == "Allow" and statement.get("Resource") == "*" and "Condition" not in statement:
-            actions = statement["Action"]
-            allowed.update([actions] if isinstance(actions, str) else actions)
+        actions = statement["Action"]
+        actions = [actions] if isinstance(actions, str) else actions
+        if statement.get("Effect") != "Allow" or "Condition" in statement:
+            continue
+        if statement.get("Resource") == "*":
+            allowed.update(actions)
+        elif statement.get("Resource") == CONNECTION_SECRETS:
+            allowed.update(a for a in actions if a.startswith("secretsmanager:"))
     return allowed
+
+
+def test_the_role_reads_no_secret_but_a_connections():
+    """Secrets on any resource let every pipeline author read every secret of the account with one state
+    (IAM_HOLES_VERIFIED, claim 6a)."""
+    policy = _template()["Resources"]["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]
+    resources = [st["Resource"] for st in policy["Statement"]
+                 if any(a.startswith("secretsmanager:") for a in ([st["Action"]] if isinstance(st["Action"], str)
+                                                                  else st["Action"]))]
+    assert resources == [CONNECTION_SECRETS]
 
 
 @pytest.mark.parametrize("step", STEPS, ids=lambda s: f"{type(s).__name__}:{getattr(s, 'operation', '')}")
@@ -106,18 +126,22 @@ def test_every_direct_step_class_is_checked():
     assert services == {type(step).__name__ for step in STEPS}
 
 
-def test_the_direct_steps_never_reach_the_platforms_own_data():
-    """AllowDirectSteps reaches any table and bucket. The console's tokens, the task specs, the
-    dependency pointers, the console's files and the release's artifacts stay out of reach: a
-    DynamoDBTask could write the console an admin token, an S3Task the console's files or the
-    artifacts the next platform update deploys (the break review of ADR #140). The role uses none."""
-    statements = {s.get("Sid"): s for s in
-                  _template()["Resources"]["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]["Statement"]}
+@pytest.mark.parametrize("policy", ["OrchestrationRolePolicy", "CrossAccountPipelinePolicy"])
+def test_the_direct_steps_never_reach_the_platforms_own_data(policy):
+    """AllowDirectSteps reaches any table and bucket, and the default task role any bucket. The console's
+    tokens, the task specs, the dependency pointers, the console's files, the release's artifacts and the
+    pipeline templates a deployer is about to run stay out of reach, of every platform in the account (D9): a
+    DynamoDBTask could write the console an admin token, an S3Task the console's files or the artifacts the
+    next platform update deploys (the break review of ADR #140). Neither role uses them."""
+    statements = {s.get("Sid"): s for s in _template()["Resources"][policy]["Properties"]["PolicyDocument"]["Statement"]}
     tables, files = statements["DenyDirectStepsOnPlatformData"], statements["DenyDirectStepsOnPlatformFiles"]
     assert tables["Effect"] == files["Effect"] == "Deny"
-    assert {a for a in statements["AllowDirectSteps"]["Action"] if a.startswith("dynamodb:")} <= set(tables["Action"])
+    item_actions = {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+                    "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem"}
+    assert set(tables["Action"]) == item_actions
     assert {"s3:PutObject", "s3:DeleteObject"} <= set(files["Action"])
-    for table in ("ApiTokensTable", "PipelineSpecsTable", "DependencySubscriptionsTable"):
-        assert sum(table in str(r) for r in tables["Resource"]) == 2, f"{table} and its indexes"
-    assert any("ConsoleUiBucket" in str(r) for r in files["Resource"])
+    assert sorted(tables["Resource"]) == sorted(f"arn:aws:dynamodb:*:*:table/*-polyris-{t}*"
+                                                for t in ("api-tokens", "pipeline-specs", "dep-subscriptions"))
+    assert {"arn:aws:s3:::*-polyris-console-ui/*", "arn:aws:s3:::polyris-artifacts-*/*",
+            "arn:aws:s3:::*-polyris-results/cfn-pipeline-templates/*"} <= {r for r in files["Resource"] if isinstance(r, str)}
     assert any("ArtifactsBucket" in str(r) for r in files["Resource"])

@@ -672,12 +672,17 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
+          # Every work state of run_task runs under this role; tests/sdk/test_run_task_work_iam.py
+          # holds each one's calls to a grant here (same-account EMR failed for lack of one).
           - Effect: Allow
             Action:
               - states:StartExecution
+            Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+          - Effect: Allow
+            Action:
               - states:DescribeExecution
               - states:StopExecution
-            Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+            Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*"
           - Effect: Allow
             Action:
               - lambda:InvokeFunction
@@ -686,6 +691,7 @@ Resources:
             Action:
               - glue:StartJobRun
               - glue:GetJobRun
+              - glue:GetJobRuns
               - glue:BatchStopJobRun
             Resource: "*"
           - Effect: Allow
@@ -693,8 +699,22 @@ Resources:
               - ecs:RunTask
               - ecs:StopTask
               - ecs:DescribeTasks
+            Resource: "*"
+          # ECS RunTask passes the task definition's roles; no other call here passes one.
+          - Effect: Allow
+            Action:
               - iam:PassRole
             Resource: "*"
+            Condition:
+              StringEquals:
+                iam:PassedToService: ecs-tasks.amazonaws.com
+          # The managed rules through which a .sync work state learns its job ended (V-S).
+          - Effect: Allow
+            Action:
+              - events:PutTargets
+              - events:PutRule
+              - events:DescribeRule
+            Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctions*"
           - Effect: Allow
             Action:
               - athena:StartQueryExecution
@@ -756,11 +776,13 @@ Resources:
               - s3:GetObject
               - s3:PutObject
             Resource: "*"
+          # A step on an existing cluster (Run_Task_EMR); creating or ending a cluster is not a task's.
           - Effect: Allow
             Action:
-              - elasticmapreduce:RunJobFlow
+              - elasticmapreduce:AddJobFlowSteps
+              - elasticmapreduce:DescribeStep
+              - elasticmapreduce:CancelSteps
               - elasticmapreduce:DescribeCluster
-              - elasticmapreduce:TerminateJobFlows
             Resource: "*"
           - Effect: Allow
             Action:
@@ -768,6 +790,68 @@ Resources:
               - batch:DescribeJobs
               - batch:TerminateJob
             Resource: "*"
+          # A pipeline invokes start-run and notify; the platform's other functions are its own, of
+          # every platform in the account (UiBootstrap takes what it writes from its event). The
+          # qualified ARNs (:*) cover a version or alias (V-I).
+          - Sid: NeverThePlatformsFunctions
+            Effect: Deny
+            Action: lambda:InvokeFunction
+            Resource:
+              - "arn:aws:lambda:*:*:function:*-polyris-console-api"
+              - "arn:aws:lambda:*:*:function:*-polyris-console-api:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-reconcile"
+              - "arn:aws:lambda:*:*:function:*-polyris-reconcile:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-asset-fanout"
+              - "arn:aws:lambda:*:*:function:*-polyris-asset-fanout:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-sweeper"
+              - "arn:aws:lambda:*:*:function:*-polyris-sweeper:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-ui-bootstrap"
+              - "arn:aws:lambda:*:*:function:*-polyris-ui-bootstrap:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-bucket-cleanup"
+              - "arn:aws:lambda:*:*:function:*-polyris-bucket-cleanup:*"
+          # run_task and bulk_backfill take what they act on from their input: only the dispatcher
+          # and the console start them.
+          - Sid: NeverTheEngineMachines
+            Effect: Deny
+            Action:
+              - states:StartExecution
+              - states:StopExecution
+              - states:RedriveExecution
+            Resource:
+              - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper:*"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill:*"
+              - "arn:aws:states:*:*:execution:*-polyris-dep-run-task-helper:*"
+              - "arn:aws:states:*:*:execution:*-polyris-bulk-backfill:*"
+          # The platform's own data that no pipeline uses, of every platform in the account: a
+          # DynamoDBTask could write the console an admin token, an S3Task the console's files, the
+          # release's artifacts or a pipeline template that a deployer is about to run (ADR #140).
+          - Sid: DenyDirectStepsOnPlatformData
+            Effect: Deny
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - "arn:aws:dynamodb:*:*:table/*-polyris-api-tokens*"
+              - "arn:aws:dynamodb:*:*:table/*-polyris-pipeline-specs*"
+              - "arn:aws:dynamodb:*:*:table/*-polyris-dep-subscriptions*"
+          - Sid: DenyDirectStepsOnPlatformFiles
+            Effect: Deny
+            Action:
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - "arn:aws:s3:::*-polyris-console-ui/*"
+              - "arn:aws:s3:::polyris-artifacts-*/*"
+              - "arn:aws:s3:::*-polyris-results/cfn-pipeline-templates/*"
+              - !If [HasUiArtifacts, !Sub "arn:aws:s3:::${ArtifactsBucket}/*", !Ref AWS::NoValue]
 
   OrchestrationRole:
     Type: AWS::IAM::Role
@@ -778,12 +862,11 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - states.amazonaws.com
-                - apigateway.amazonaws.com
-                - events.amazonaws.com
-                - scheduler.amazonaws.com
+              Service: states.amazonaws.com
             Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
       Description: >
         Step Functions execution role: states + lambda invoke + sts assume-role +
         EventBridge managed rules + DynamoDB + CloudWatch logs
@@ -866,7 +949,8 @@ Resources:
               - logs:CreateLogStream
               - logs:PutLogEvents
             Resource: "*"
-          - Sid: AllowEventBridge
+          # The managed rules of the .sync integrations only; no other rule of the account.
+          - Sid: AllowManagedRules
             Effect: Allow
             Action:
               - events:PutTargets
@@ -874,6 +958,10 @@ Resources:
               - events:DescribeRule
               - events:DeleteRule
               - events:RemoveTargets
+            Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctions*"
+          - Sid: AllowEventBridge
+            Effect: Allow
+            Action:
               - events:PutEvents
               - events:InvokeApiDestination
               - events:RetrieveConnectionCredentials
@@ -883,6 +971,20 @@ Resources:
             Action:
               - sts:AssumeRole
             Resource: "*"
+          # A task's role= may name a role in another account, or a role of this account under
+          # the path /polyris-tasks/, which only whoever creates IAM roles can give (D11).
+          # IfExists denies when the request carries no aws:ResourceAccount, so a gap fails
+          # closed (V-C).
+          - Sid: DenyAssumeRoleInThisAccount
+            Effect: Deny
+            Action:
+              - sts:AssumeRole
+            NotResource:
+              - !GetAtt CrossAccountPipelineRole.Arn
+              - !Sub "arn:aws:iam::${AWS::AccountId}:role/polyris-tasks/*"
+            Condition:
+              StringEqualsIfExists:
+                aws:ResourceAccount: !Ref AWS::AccountId
           - Sid: AllowXRay
             Effect: Allow
             Action:
@@ -890,17 +992,15 @@ Resources:
               - xray:GetSamplingRules
               - xray:GetSamplingTargets
             Resource: "*"
+          # ECSTask's direct step passes the task definition's roles; nothing else passes a role.
           - Sid: AllowIamPassRole
             Effect: Allow
             Action:
               - iam:PassRole
             Resource: "*"
             Condition:
-              StringLike:
-                iam:PassedToService:
-                  - states.amazonaws.com
-                  - ecs-tasks.amazonaws.com
-                  - batch.amazonaws.com
+              StringEquals:
+                iam:PassedToService: ecs-tasks.amazonaws.com
           - Sid: AllowTaskServices
             Effect: Allow
             Action:
@@ -928,12 +1028,13 @@ Resources:
               - elasticmapreduce:CancelSteps
               - elasticmapreduce:DescribeStep
             Resource: "*"
+          # HttpTask: an EventBridge connection keeps its credentials in a secret of its own (V-E).
           - Sid: AllowSecrets
             Effect: Allow
             Action:
               - secretsmanager:GetSecretValue
               - secretsmanager:DescribeSecret
-            Resource: "*"
+            Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:events!connection/*"
           # A pipeline's direct steps (polyris.steps) run in its state machine under this role,
           # on the resources the pipeline names, as its tasks' services do above.
           # tests/sdk/test_orchestration_role_direct_steps.py holds every step to a grant here.
@@ -953,9 +1054,43 @@ Resources:
               - dynamodb:Query
               - dynamodb:Scan
             Resource: "*"
-          # AllowDirectSteps reaches any table and bucket. The platform's own data that this role
-          # never uses stays out of a step's reach: a DynamoDBTask could write the console an admin
-          # token, an S3Task the console's files or the release's artifacts (ADR #140).
+          # A pipeline invokes start-run and notify; the platform's other functions are its own, of
+          # every platform in the account (UiBootstrap takes what it writes from its event). The
+          # qualified ARNs (:*) cover a version or alias (V-I).
+          - Sid: NeverThePlatformsFunctions
+            Effect: Deny
+            Action: lambda:InvokeFunction
+            Resource:
+              - "arn:aws:lambda:*:*:function:*-polyris-console-api"
+              - "arn:aws:lambda:*:*:function:*-polyris-console-api:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-reconcile"
+              - "arn:aws:lambda:*:*:function:*-polyris-reconcile:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-asset-fanout"
+              - "arn:aws:lambda:*:*:function:*-polyris-asset-fanout:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-sweeper"
+              - "arn:aws:lambda:*:*:function:*-polyris-sweeper:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-ui-bootstrap"
+              - "arn:aws:lambda:*:*:function:*-polyris-ui-bootstrap:*"
+              - "arn:aws:lambda:*:*:function:*-polyris-bucket-cleanup"
+              - "arn:aws:lambda:*:*:function:*-polyris-bucket-cleanup:*"
+          # run_task and bulk_backfill take what they act on from their input: only the dispatcher
+          # and the console start them.
+          - Sid: NeverTheEngineMachines
+            Effect: Deny
+            Action:
+              - states:StartExecution
+              - states:StopExecution
+              - states:RedriveExecution
+            Resource:
+              - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper:*"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill:*"
+              - "arn:aws:states:*:*:execution:*-polyris-dep-run-task-helper:*"
+              - "arn:aws:states:*:*:execution:*-polyris-bulk-backfill:*"
+          # The platform's own data that no pipeline uses, of every platform in the account: a
+          # DynamoDBTask could write the console an admin token, an S3Task the console's files, the
+          # release's artifacts or a pipeline template that a deployer is about to run (ADR #140).
           - Sid: DenyDirectStepsOnPlatformData
             Effect: Deny
             Action:
@@ -968,19 +1103,18 @@ Resources:
               - dynamodb:BatchGetItem
               - dynamodb:BatchWriteItem
             Resource:
-              - !GetAtt ApiTokensTable.Arn
-              - !Sub "${ApiTokensTable.Arn}/index/*"
-              - !GetAtt PipelineSpecsTable.Arn
-              - !Sub "${PipelineSpecsTable.Arn}/index/*"
-              - !GetAtt DependencySubscriptionsTable.Arn
-              - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
+              - "arn:aws:dynamodb:*:*:table/*-polyris-api-tokens*"
+              - "arn:aws:dynamodb:*:*:table/*-polyris-pipeline-specs*"
+              - "arn:aws:dynamodb:*:*:table/*-polyris-dep-subscriptions*"
           - Sid: DenyDirectStepsOnPlatformFiles
             Effect: Deny
             Action:
               - s3:PutObject
               - s3:DeleteObject
             Resource:
-              - !Sub "${ConsoleUiBucket.Arn}/*"
+              - "arn:aws:s3:::*-polyris-console-ui/*"
+              - "arn:aws:s3:::polyris-artifacts-*/*"
+              - "arn:aws:s3:::*-polyris-results/cfn-pipeline-templates/*"
               - !If [HasUiArtifacts, !Sub "arn:aws:s3:::${ArtifactsBucket}/*", !Ref AWS::NoValue]
 
   # ---------------------------------------------------------------------------
@@ -1790,6 +1924,53 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt SweeperFunction.Arn
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  # The role every scheduled pipeline's schedule starts its state machine with (PLAN_IAM 1.4.0 §3.1):
+  # pipeline stacks import its ARN, so the platform cannot drop it while a pipeline uses it.
+  PipelineScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-schedule-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: StartPipelines
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StartPipelines
+                Effect: Allow
+                Action: states:StartExecution
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"
+              - Sid: NeverThePlatformsMachines
+                Effect: Deny
+                Action: states:StartExecution
+                Resource:
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper:*"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill:*"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-test-quick"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-test-quick:*"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-test-success"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-test-success:*"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-test-failure"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-test-failure:*"
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -2612,6 +2793,176 @@ Resources:
                 "dynamodb:LeadingKeys":
                   - "output#*"
 
+  # The policy a pipeline author's role or CI role holds for polyris-deploy (PLAN_IAM 1.4.0 §5):
+  # the infrastructure engineer attaches it once. No IAM write action but the migration grant
+  # below; each role it may pass is named with the one service it goes to. Never change its
+  # name or Description: CloudFormation would replace it (Principle #33).
+  PipelineDeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-deploy-policy"
+      Description: What polyris-deploy needs to deploy, update and destroy the pipelines of this platform
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PipelineStackManagement
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplate
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListStackResources
+            Resource: "arn:aws:cloudformation:*:*:stack/*-polyris-*/*"
+          - Sid: ReadThePlatformStack
+            Effect: Allow
+            Action: cloudformation:DescribeStacks
+            Resource: "*"
+          - Sid: NeverThePlatformStack
+            Effect: Deny
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+            Resource: !Ref AWS::StackId
+          - Sid: LargeTemplates
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub "${ResultsBucket.Arn}/cfn-pipeline-templates/*"
+          - Sid: PipelineStateMachines
+            Effect: Allow
+            Action:
+              - states:CreateStateMachine
+              - states:UpdateStateMachine
+              - states:DeleteStateMachine
+              - states:DescribeStateMachine
+              - states:StartExecution
+              - states:ListExecutions
+              - states:TagResource
+              - states:UntagResource
+              - states:ListTagsForResource
+            Resource: "arn:aws:states:*:*:stateMachine:*-polyris-*"
+          - Sid: PipelineExecutions
+            Effect: Allow
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource: "arn:aws:states:*:*:execution:*-polyris-*:*"
+          # The pre-deploy check reads the state machines a pipeline's tasks name.
+          - Sid: ReadAnyStateMachineForTheResourceCheck
+            Effect: Allow
+            Action: states:DescribeStateMachine
+            Resource: "*"
+          - Sid: NeverThePlatformsMachines
+            Effect: Deny
+            Action:
+              - states:CreateStateMachine
+              - states:UpdateStateMachine
+              - states:DeleteStateMachine
+              - states:StartExecution
+              - states:StopExecution
+              - states:TagResource
+              - states:UntagResource
+            Resource:
+              - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper:*"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-bulk-backfill:*"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-test-quick"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-test-quick:*"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-test-success"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-test-success:*"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-test-failure"
+              - "arn:aws:states:*:*:stateMachine:*-polyris-test-failure:*"
+              - "arn:aws:states:*:*:execution:*-polyris-dep-run-task-helper:*"
+              - "arn:aws:states:*:*:execution:*-polyris-bulk-backfill:*"
+          - Sid: PassTheOrchestrationRoleToStepFunctionsOnly
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt OrchestrationRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: states.amazonaws.com
+          - Sid: PassTheScheduleRoleToSchedulerOnly
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt PipelineScheduleRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: scheduler.amazonaws.com
+          # The migration grant, for 1.4 only (PLAN_IAM 1.4.0 §5.3): a pipeline deployed before 1.4
+          # has a scheduler role of its own, which its first redeploy deletes, and which a failed
+          # redeploy passes back to its schedule. polyris-up refuses to install 1.4 unless every
+          # such role is the form polyris-deploy generated. tests/sdk/test_deploy_policy.py fails
+          # from 1.5.0 until both statements go.
+          - Sid: MigrationPassTheOldSchedulerRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/*-polyris-*-scheduler-role"
+            Condition:
+              StringEquals:
+                iam:PassedToService: scheduler.amazonaws.com
+          - Sid: MigrationRemoveTheOldSchedulerRoles
+            Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:DeleteRole
+              - iam:DeleteRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+            Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/*-polyris-*-scheduler-role"
+          - Sid: PipelineRegistryStamp
+            Effect: Allow
+            Action:
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+            Resource: !GetAtt PipelineRegistryTable.Arn
+          - Sid: PipelineAssetSubscriptions
+            Effect: Allow
+            Action: dynamodb:DeleteItem
+            Resource: !GetAtt AssetSubscriptionsTable.Arn
+          - Sid: PipelineTaskSpecs
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+            Resource: !GetAtt PipelineSpecsTable.Arn
+          - Sid: PipelineLogGroups
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+              - logs:TagResource
+              - logs:UntagResource
+              - logs:ListTagsForResource
+            Resource: "arn:aws:logs:*:*:log-group:/*/*/polyris/*"
+          - Sid: ListLogGroups
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: "*"
+          - Sid: PipelineSchedule
+            Effect: Allow
+            Action:
+              - scheduler:CreateSchedule
+              - scheduler:UpdateSchedule
+              - scheduler:DeleteSchedule
+              - scheduler:GetSchedule
+            Resource: "arn:aws:scheduler:*:*:schedule/default/*-polyris-*-schedule"
+
 
 # =============================================================================
 # Outputs
@@ -2635,6 +2986,16 @@ Outputs:
     Value: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-console-api-url"
+
+  PipelineScheduleRoleArn:
+    Description: The role every scheduled pipeline's schedule starts its state machine with; pipeline stacks import it
+    Value: !GetAtt PipelineScheduleRole.Arn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-schedule-role-arn"
+
+  PipelineDeployPolicyArn:
+    Description: Attach this managed policy to the role or CI role that runs polyris-deploy
+    Value: !Ref PipelineDeployPolicy
 
   OrchestrationRoleArn:
     Description: ARN of the orchestration IAM role

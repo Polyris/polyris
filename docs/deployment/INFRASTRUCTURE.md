@@ -16,7 +16,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
   - [Cognito (1 user pool + 1 client)](#cognito-1-user-pool--1-client)
   - [CloudFront + API Gateway (Console UI)](#cloudfront--api-gateway-console-ui)
   - [CloudWatch log groups (10)](#cloudwatch-log-groups-10)
-  - [IAM (11 roles + 3 managed policies)](#iam-11-roles--3-managed-policies)
+  - [IAM (12 roles + 4 managed policies)](#iam-12-roles--4-managed-policies)
 - [Tags](#tags)
 - [Where does each pipeline run's state live?](#where-does-each-pipeline-runs-state-live)
 - [Stack outputs to read after deploy](#stack-outputs-to-read-after-deploy)
@@ -141,11 +141,11 @@ One per state machine (the test machines share one) and one per Lambda, except b
 
 Your workload logs (Lambdas / Glue jobs / ECS tasks that your pipelines invoke) are NOT in this list — they go to wherever YOU configured them.
 
-### IAM (11 roles + 3 managed policies)
+### IAM (12 roles + 4 managed policies)
 
 Roles the stack creates during install, all named `${Namespace}-${Stage}-polyris-*-role`. Full inventory + purpose per role in [IAM_PERMISSIONS.md#iam-roles-polyris-creates](IAM_PERMISSIONS.md#iam-roles-polyris-creates).
 
-Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam). The third, `polyris-reconcile`, holds the dispatcher's own grants; the stack attaches it to its reconcile, asset-fanout and sweeper roles.
+Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam). The third, `polyris-reconcile`, holds the dispatcher's own grants; the stack attaches it to its reconcile, asset-fanout and sweeper roles. The fourth, `polyris-deploy-policy`, is for the roles that run `polyris-deploy`.
 
 ## Tags
 
