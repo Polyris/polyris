@@ -1,5 +1,48 @@
 ## Unreleased
 
+1.4.0 separates who installs the platform from who deploys pipelines, closes the IAM holes of 1.3.2 (ADR #142), and ends support for 1.2.
+
+### Action required: upgrading to 1.4.0
+
+For the infrastructure engineer, who runs `polyris-up`. Do the steps in this order: [manage-the-platform.md → Upgrade to 1.4.0](docs/how-to/manage-the-platform.md#upgrade-to-140).
+
+1. **Update the platform** with `polyris-up` 1.4.0. Its checks run before it changes anything; fix what they list and run it again. A platform on 1.2 upgrades to 1.3 first.
+2. **Attach the deploy policy** `<namespace>-<stage>-polyris-deploy-policy` (stack output `PipelineDeployPolicyArn`; `polyris-up` prints it) to every pipeline author's role and to each CI role that deploys pipelines. Keep the policy they hold now attached for the moment.
+3. **Move the authors to polyris 1.4.0**, and pin it in CI.
+4. **Detach the old deploy policy**, then run `polyris-up` once more: its checks look again for a planted scheduler role. Redeploy the pipelines at your pace; each scheduled pipeline moves to the platform's schedule role at its next `polyris-deploy`.
+
+### Breaking
+
+- **The role that runs `polyris-deploy` needs the platform's deploy policy** (ADR #142 §2). The platform stack now creates it; the JSON policy of `IAM_PERMISSIONS.md` is gone. It grants no IAM write but the 1.4 migration grant: a `polyris-deploy` of 1.3 under it cannot create its scheduler role, and a scheduled pipeline fails with CloudFormation's `not authorized to perform: iam:CreateRole`. A deploy refused `iam:PassRole` prints the policy to attach.
+- **A pipeline's stack holds no IAM role.** Its schedule starts it with the platform's `<namespace>-<stage>-polyris-schedule-role`, imported from the platform's export `<namespace>-<stage>-polyris-schedule-role-arn`; a pipeline's first redeploy on 1.4 deletes its own `…-scheduler-role`. `polyris-deploy` asks for no IAM capability. A `polyris-deploy` of 1.4 refuses to deploy a scheduled pipeline to a platform of 1.3 (`Missing outputs: PipelineScheduleRoleArn … Ask whoever installs the platform to run polyris-up 1.4.0`); a pipeline without a schedule deploys as before.
+- **A task's `role=` may name a role of the platform's account only under the IAM path `/polyris-tasks/`** (ADR #142 §6); a role in another account works as before. `polyris-deploy` refuses any other role of the platform's account, `polyris-validate` does when `config.py` sets the stage's `account_id`, and `polyris-up` refuses to update while a deployed pipeline has such a task. IAM cannot move a role: create it again under the path ([give-a-pipeline-its-own-permissions.md](docs/how-to/give-a-pipeline-its-own-permissions.md)).
+- **The orchestration role is assumable by Step Functions of the platform's account alone.** A rule, schedule or API of your own that reused it (EventBridge, EventBridge Scheduler, API Gateway) needs a role of its own.
+- **The roles a pipeline runs as are fenced off from the platform** (ADR #142 §5): no invoke of the platform's internal functions, no start, stop or redrive of `run_task` or `bulk_backfill`, no write of the platform's tables and files of any platform in the account; the orchestration role reads only EventBridge connections' secrets and changes only the rules Step Functions manages, and both roles pass a role only to ECS tasks. A pipeline that relied on any of these fails with `AccessDenied`.
+- **A `dag_id` whose state machine would end like one of the platform's** (`dep-run-task-helper`, `bulk-backfill`, `test-quick`, `test-success`, `test-failure`) is refused by `polyris-validate`.
+- **The schedule's name caps the `dag_id`:** `<namespace>-<stage>-polyris-<dag_id>-schedule` may be 64 characters, so namespace, stage and `dag_id` together at most 45; `polyris-deploy` says how long the `dag_id` may be.
+- **Console Run starts only a registered pipeline.** For any other name `/api/pipeline-run` answers 404, `Pipeline '…' is not registered on this platform. A pipeline registers within a minute of polyris-deploy; deploy it, then run it.`, and 500 when the registry cannot be read. The console no longer looks for a state machine whose name is close to the pipeline's.
+- A DAG variable or a key of the run's input named `pipeline_name` or `_polyris_table` no longer reaches a Lambda or `@task.sfn` task: the platform's values win.
+- **Upgrades start from 1.3:** `polyris-up` refuses a platform below 1.3; upgrade it with the `polyris-up` of 1.3 first ([upgrade-1.2-to-1.3.md](docs/how-to/upgrade-1.2-to-1.3.md)). A row a 1.2 run left in flight is skipped and expires; such a run shows `running` until then, and the console draws a 1.2 run with the pipeline's current graph.
+- **No way back below 1.4:** no `polyris-up` installs a release below 1.4 over a platform of 1.4 or newer, also with `--allow-downgrade`, and CloudFormation keeps the schedule role's export while a pipeline imports it.
+- **`polyris-down` refuses while a pipeline stack imports the schedule role**, also with `--yes`: destroy the scheduled pipelines first.
+- A new platform's stack name may not contain `-polyris-`, the form of a pipeline's stack.
+
+### Fixed
+
+- **An author could escalate in IAM.** The deploy permissions allowed `iam:CreateRole`, `PutRolePolicy` and `UpdateAssumeRolePolicy` on `*-polyris-*-scheduler-role` and passing that role, so whoever deployed a pipeline could create a role with any trust and policy. Authors now hold no IAM write but the 1.4 migration grant, and `polyris-up` refuses to update while a role of that name is not the one `polyris-deploy` made (ADR #142 §7).
+- The orchestration role could assume any role of its account, read any secret, change any EventBridge rule, invoke the platform's internal functions (directly or through a rule), and start `run_task` or `bulk_backfill` with input it chose; the default task role could write the console's files. A `DynamoDBTask` or `S3Task` could reach the tables and files of another platform in the account.
+- The console's role could start `run_task`, and Run could start any state machine whose name was close to the pipeline's.
+- `start-run` refuses an execution that is not one of its pipeline's registered state machine, so a forged payload cannot make the engine stop or answer another execution; `notify` takes a pipeline's channels and their config from the registry, and `ui-bootstrap` every value it acts on from its environment, never from their event.
+- `polyris-up` uploads every artifact and the console's files on every run (it skipped an existing key, and the UI when `index.html` existed), puts the template under a key nobody can predict, and deletes a change set whose template is not the one it uploaded; `polyris-deploy` checks a template it uploads the same way.
+- **An EMR task in the platform's account failed:** the default task role had `RunJobFlow` and `TerminateJobFlows`, which no task calls, and lacked the `AddJobFlowSteps`, `DescribeStep` and `CancelSteps` its step needs. A test now holds every work state of `run_task` to the default task role's grants. The role's `states:DescribeExecution` and `StopExecution` name executions, and it gains `glue:GetJobRuns` and the managed rules of the `.sync` calls.
+- `TROUBLESHOOTING.md` simulated the orchestration role for a task whose work starts as the default task role or the task's `role=`; the docstrings of `task.sfn` and of the assets showed `${...}` ARNs that nothing substitutes.
+
+### Removed
+
+- 1.2 support: `polyris/upgrade.py`, `polyris-up --accept-stopped-runs`, and the console's reader of 1.2 DAG snapshots.
+- `ExecutionStatus.STALE`, the `stale` status of a 1.2 run or task in the API and the console.
+- `polyris.generate_eventbridge_schedule` (`generators.generate_eventbridge_schedule`): it built a schedule with placeholders that nothing filled. `polyris-deploy` writes the schedule.
+
 ### Changed
 
 - **The design decisions (ADRs) moved to `docs/decisions/`, one file each, with a generated index (ADR #141).** `docs/reference/DESIGN_DECISIONS.md` and `adr-index.md` are gone: every ADR in force is `docs/decisions/adr-N-<slug>.md` with front matter, and `docs/decisions/README.md` lists them by area. Superseded ADRs and change records (#2, #3, #9, #23, #24, #32, #33, #35, #62, #71, #75–#78, #84, #85, #93, #116, #117, #122, #128) have no file any more; the index's *Retired* table names what replaced each and prints its text from the `v1.3.2` tag. ADR #103 (alert config in the registry, the notify Lambda, the decision timeout) has a text for the first time. ADRs #137, #130 and #138 keep every cited section and lose their revision logs, review records and probe logs. `docs/CLAUDE.md`, *Design decisions*, is the writing rule, and the tests in `tests/docs/test_adr_*.py` check every citation of an ADR or of its section across the repository, the index, and the size limits.

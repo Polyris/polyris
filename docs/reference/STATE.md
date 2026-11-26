@@ -11,9 +11,9 @@ Update it when something moves. Paths here are checked by
 
 ## In flight
 
-- **1.4.0: separation of duties and the end of 1.2** (branch `feat/iam-separation-of-duties`). The platform
-  upgrades from 1.3 only; the code that served 1.2 runs is gone (ADR #137, *Migration and upgrade*). Docs, the
-  ADR and the CHANGELOG come with the rest of the release.
+- **1.4.0: separation of duties and the end of 1.2** (branch `feat/iam-separation-of-duties`, ADR #142). Code,
+  docs, the ADR and the CHANGELOG are in; the reviews and the live smoke before the tag (with a cross-account
+  `role=` and the negative IAM probes) remain.
 
 ## Decided, not done
 
