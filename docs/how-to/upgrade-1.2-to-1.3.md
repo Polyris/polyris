@@ -4,7 +4,7 @@ How to upgrade a platform that runs polyris 1.2 to 1.3. This upgrade has steps o
 
 ## Before you start
 
-Use polyris 1.3 for every step: the `polyris-up` of 1.4 and later refuses a platform below 1.3. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until 1.2 has finished adopting the older rows for 48 hours.
+Use polyris 1.3 for every step: the `polyris-up` of 1.4 and later refuses a platform below 1.3. A platform older than 1.2.0 goes to 1.2 first. Install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until 1.2 has finished adopting the older rows for 48 hours.
 
 ## Steps
 

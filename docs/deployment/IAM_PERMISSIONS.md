@@ -73,7 +73,7 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 
 ### The checks before any change
 
-`polyris-up` updates a platform from 1.3 or newer; a platform on 1.2 upgrades to 1.3 first with the `polyris-up` of 1.3 ([upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md)). Before it uploads or changes anything, it checks the account: the roles that the tasks of the deployed pipelines name in `role=`, and every role named like a pipeline's old scheduler role ([manage-the-platform.md](../how-to/manage-the-platform.md#what-the-checks-may-refuse)). The two managed policies above cover these reads; a least-privilege installer role needs these actions beside the ones listed above:
+`polyris-up` updates a platform from 1.3 or newer; a platform on 1.2 upgrades to 1.3 first with the `polyris-up` of 1.3 ([upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md)). Before it uploads or changes anything, it checks the account ([what the checks may refuse](../how-to/manage-the-platform.md#what-the-checks-may-refuse)). It reads the roles that the deployed pipelines' tasks name in `role=`, and every role named like a pipeline's old scheduler role. The two managed policies above cover these reads; a least-privilege installer role needs these actions beside the ones listed above:
 
 | AWS service | Actions | Resource | Why |
 |-------------|---------|----------|-----|
@@ -224,7 +224,8 @@ What each role may do:
   - it reads only the secrets of EventBridge connections (`events!connection/*`), which `HttpTask` needs;
   - it changes only the EventBridge rules that Step Functions manages for its `.sync` calls (`StepFunctions*`);
   - it passes a role only to ECS tasks (`iam:PassedToService` = `ecs-tasks.amazonaws.com`);
-  - it never invokes the platform's own functions but `start-run` and `notify`, never starts, stops or redrives `run_task` or `bulk_backfill`, and never reaches the platform's own data: the console's tokens, the task specs, the dependency pointers, the console's files, the release's artifacts and the pipeline templates.
+  - it invokes none of the platform's own functions but `start-run` and `notify`, and never starts, stops or redrives `run_task` or `bulk_backfill`;
+  - it never reaches the platform's own data: the console's tokens, the task specs, the dependency pointers, the console's files, the release's artifacts and the pipeline templates.
 - **default-task** covers Athena, the Glue Data Catalog, S3 and each task service's start call (`StartJobRun`, `RunTask`, `SubmitJob` and the like); on EMR it adds and watches steps on an existing cluster, and creates or ends none. It has the orchestration role's limits on the platform's functions, state machines, data and files, and passes a role only to ECS tasks. For a task in another account, see [CROSS_ACCOUNT_ROLES.md](CROSS_ACCOUNT_ROLES.md).
 - **schedule** starts the state machines named `*-polyris-*`, never the platform's own. Its ARN is exported as `${Namespace}-${Stage}-polyris-schedule-role-arn`, and every scheduled pipeline's stack imports it, so CloudFormation keeps the role while one does.
 - **console-api** reads the DynamoDB tables, starts a registered pipeline's run, writes operator actions and stops a stopped task's `run_task`. It starts state machines named `*-polyris-*` and never `run_task`. It asks Step Functions nothing about a run: the run's status is in DynamoDB.

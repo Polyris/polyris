@@ -309,10 +309,10 @@ botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s 
 The tags are `polyris:namespace`, `polyris:stage` and `polyris:component` (`platform` or `pipeline`), plus `polyris:pipeline` on a pipeline's resources (ADR #132). No other keys. In `sam/template.yaml` the Lambda functions take them from `Globals`, and every other resource spells them; `polyris-deploy` uses `resource_tags.pipeline_tags`. A resource without them is missing from every cost report and IAM condition that selects by them. `tests/sdk/test_resource_tags.py` learns from cfn-lint's resource schemas which types AWS can tag and checks every resource after the SAM transform, so a new resource fails it until it is tagged.
 
 **56. Every work state of `run_task` has its actions on the default task role**
-A task in the platform's account starts its work as the default task role, so each call a work state makes (and the managed rules of a `.sync` call) needs its grant there. `tests/sdk/test_run_task_work_iam.py` holds every work state to that role; a new task type joins it. Same-account EMR tasks failed until 1.4 for lack of `AddJobFlowSteps` (ADR #142 §9).
+A same-account task starts its work as the default task role. Each call of a work state needs its grant there, `.sync` rules included. `tests/sdk/test_run_task_work_iam.py` holds every work state to that role; a new task type joins it. Same-account EMR tasks failed until 1.4 for lack of `AddJobFlowSteps` (ADR #142 §9).
 
 **57. An author holds no IAM write action, and passes only roles the deploy policy names with their one service**
-Each `iam:PassRole` in `PipelineDeployPolicy` names one role and one `iam:PassedToService`; no IAM write action is granted, except a time-limited migration grant whose guard test fails when its release passes (`tests/sdk/test_deploy_policy.py`, ADR #142 §2, §3, §7). The deploy permissions of 1.3.2 let an author create the scheduler role they then passed, with any trust and policy.
+Each `iam:PassRole` in `PipelineDeployPolicy` names one role and one `iam:PassedToService`. No IAM write action is granted but a time-limited migration grant, whose guard test fails once its release passes (`tests/sdk/test_deploy_policy.py`, ADR #142 §2, §3, §7). The deploy permissions of 1.3.2 let an author create the scheduler role they then passed, with any trust and policy.
 
 ---
 
