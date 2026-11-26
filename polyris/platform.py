@@ -124,6 +124,60 @@ class PlatformNames:
 
 PLATFORM_NAMES = PlatformNames()
 
+
+def reserved_machine(dag_id: str) -> Optional[str]:
+    """The platform state machine whose name a pipeline named ``dag_id`` would end in, or None.
+
+    A pipeline's state machine is ``{namespace}-{stage}-polyris-{dag_id}``; every role and policy that a
+    pipeline or its author holds denies the platform's machines by the end of their names, of any
+    namespace (``*-polyris-{name}``), so such a pipeline could be neither deployed nor scheduled.
+    """
+    name = f"-polyris-{dag_id}"
+    return next((machine for machine in PLATFORM_NAMES.state_machines if name.endswith(f"-polyris-{machine}")), None)
+
+
+# ── The roles a task may run as (D11) ───────────────────────────────────────
+
+#: The IAM path of the roles of the platform's account that a task's ``role=`` may name. Only whoever creates
+#: IAM roles can give a role a path, so an author reaches no role that nobody made for pipelines.
+TASK_ROLE_PATH = "/polyris-tasks/"
+#: The end of the name of the platform's default task role, which runs a task whose ``role=`` is ``"same"``.
+DEFAULT_TASK_ROLE = "default-task-role"
+
+
+def default_task_role_name(namespace: str, stage: str) -> str:
+    """The name of the default task role of the platform ``{namespace}-{stage}``."""
+    return f"{platform_prefix(namespace, stage)}{DEFAULT_TASK_ROLE}"
+
+
+def refused_task_role(role: Optional[str], *, account: str, default_task_role: Optional[str] = None) -> bool:
+    """Whether a task's ``role=`` names a role of the platform's ``account`` that polyris may not use (D11).
+
+    A role of another account, a role under ``TASK_ROLE_PATH`` and the platform's default task role
+    (``default_task_role``, its name) pass; so does anything that is no IAM ARN (``"same"``). With
+    ``default_task_role`` None, the platform is unknown (``polyris-validate``), and the default task
+    role of any platform passes; ``polyris-deploy`` knows it and checks again.
+    """
+    parts = (role or "").split(":", 5)
+    if len(parts) != 6 or parts[0] != "arn" or parts[2] != "iam" or parts[4] != account:
+        return False
+    resource = parts[5]
+    if resource.startswith("role" + TASK_ROLE_PATH):
+        return False
+    if default_task_role is None:
+        return re.fullmatch(rf"role/[^/]+-polyris-{DEFAULT_TASK_ROLE}", resource) is None
+    return resource != f"role/{default_task_role}"
+
+
+def task_role_refusal(task_id: str, role: str) -> str:
+    """Why ``refused_task_role`` refused a task's role, and what to do about it."""
+    parts = role.split(":", 5)
+    partition, account, name = parts[1], parts[4], parts[5].rsplit("/", 1)[-1]
+    return (f"Task '{task_id}': role {role} is in the platform's account, and polyris may use only roles of this "
+            f"account under the path {TASK_ROLE_PATH}. Ask your platform admin to create the role under that path "
+            f"(docs: Give one pipeline its own permissions) and use its ARN, e.g. "
+            f"arn:{partition}:iam::{account}:role{TASK_ROLE_PATH}{name}. Roles in other accounts work as before.")
+
 # AWS caps IAM role names at 64 characters. The longest role in the template
 # is "{Namespace}-{Stage}-polyris-sweeper-schedule-role" (31 fixed
 # characters), so Namespace + Stage may use at most 33. Every other named

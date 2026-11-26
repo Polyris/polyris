@@ -34,7 +34,7 @@ ENVIRONMENTS = {
         "account_id": "222222222222",
         # "profile": "my-prod-profile",
         # "roles": {
-        #     "etl": "arn:aws:iam::123456789012:role/etl-role",
+        #     "etl": "arn:aws:iam::222222222222:role/polyris-tasks/etl-role",
         # },
     },
 }
@@ -54,8 +54,8 @@ The stage is the key (`"dev"`, `"prod"`); there is no `stage` field. Inside each
 | `namespace` | `polyris-deploy` | The prefix of the pipeline stacks: `{namespace}-{stage}-polyris-{dag_id}`. Usually the namespace you gave `polyris-up` |
 | `region` | `polyris-deploy` | The region of the platform stack. Every AWS call uses it |
 | `profile` | `polyris-deploy` | A named AWS profile. Optional |
-| `account_id` | `polyris-deploy` | A guard: `polyris-deploy` checks the account of your credentials (`sts:GetCallerIdentity`) and refuses to deploy to another. Optional, recommended |
-| `roles` | `polyris-deploy`, `polyris-validate` | Role ARNs a task names by key (`@task.sfn(role="etl")`). `polyris-deploy` puts the ARN in the generated pipeline; `polyris-validate` rejects a key that is not here. `POLYRIS_ROLE_<KEY>` overrides one |
+| `account_id` | `polyris-deploy`, `polyris-validate` | A guard: `polyris-deploy` checks the account of your credentials (`sts:GetCallerIdentity`) and refuses to deploy to another. `polyris-validate` uses it to check `role=` (below). Optional, recommended |
+| `roles` | `polyris-deploy`, `polyris-validate` | Role ARNs a task names by key (`@task.sfn(role="etl")`): a role in another account, or a role of the platform's account under the path `/polyris-tasks/`. `polyris-deploy` puts the ARN in the generated pipeline; `polyris-validate` rejects a key that is not here. `POLYRIS_ROLE_<KEY>` overrides one |
 
 At the module level, `DEFAULT_STAGE` is the stage picked when `--stage` is not passed; it must be one of the `ENVIRONMENTS` keys.
 
@@ -95,7 +95,9 @@ Every deploy prints the resolved target before its first AWS write:
 
 ---
 
-## Roles for tasks in other accounts
+## Roles for tasks
+
+A task's `role=` names one of two kinds of role: a role in another account, or a role of the platform's account whose IAM path is `/polyris-tasks/`. `polyris-deploy` refuses any other role of the platform's account, and so does `polyris-validate` when the stage sets `account_id`.
 
 ```python
 ENVIRONMENTS = {
@@ -103,8 +105,11 @@ ENVIRONMENTS = {
         "stack_name": "mycompany-prod",
         "namespace": "mycompany",
         "region": "us-east-1",
+        "account_id": "222222222222",
         "roles": {
-            "etl": "arn:aws:iam::123456789012:role/etl-execution-role",
+            # a role of the platform's account, under /polyris-tasks/
+            "etl": "arn:aws:iam::222222222222:role/polyris-tasks/etl-execution-role",
+            # a role in another account
             "analytics": "arn:aws:iam::456789012345:role/analytics-role",
         },
     },

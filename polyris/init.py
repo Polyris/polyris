@@ -534,8 +534,11 @@ ENVIRONMENTS = {{
         "region": "us-east-1",
         # "account_id": "111111111111",  # optional guard against wrong account
         # "profile": "my-dev-profile",   # optional AWS profile
-        # "roles": {{
-        #     "etl": "arn:aws:iam::123456789012:role/etl-role",
+        # "roles": {{                    # what a task's role= names, e.g. role="etl"
+        #     # a role of the platform's account: only under the path /polyris-tasks/
+        #     "etl": "arn:aws:iam::111111111111:role/polyris-tasks/etl-role",
+        #     # a role in another account
+        #     "warehouse": "arn:aws:iam::333333333333:role/warehouse-role",
         # }},
     }},
     "prod": {{
@@ -545,7 +548,8 @@ ENVIRONMENTS = {{
         # "account_id": "222222222222",
         # "profile": "my-prod-profile",
         # "roles": {{
-        #     "etl": "arn:aws:iam::123456789012:role/etl-role",
+        #     "etl": "arn:aws:iam::222222222222:role/polyris-tasks/etl-role",
+        #     "warehouse": "arn:aws:iam::333333333333:role/warehouse-role",
         # }},
     }},
 }}

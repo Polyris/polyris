@@ -75,6 +75,7 @@ from .platform import (
     PARAM_NAMESPACE,
     PARAM_STAGE,
     AmbiguousPlatformStack,
+    default_task_role_name,
     is_platform_stack,
     parameters_of,
     schedule_role_export,
@@ -84,6 +85,7 @@ from . import __version__
 from .config import ConfigError, use_stage
 from .config import config as polyris_config
 from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN
+from .validation import same_account_role_errors
 from .resource_check import (
     check_resource_references,
     print_resource_check_result,
@@ -879,6 +881,17 @@ def deploy_pipeline(
             print(f"[dry-run] Would delete stack: {_c(stack_name, CYAN)}, stop its running runs, "
                   f"and remove {_c(dag.dag_id, CYAN)} from the console")
         return
+
+    # A task's role= of the platform's account outside /polyris-tasks/ (D11): the account is known now,
+    # and so is the platform's own default task role.
+    role_errors = same_account_role_errors(
+        dag, account=caller_identity["Account"],
+        default_task_role=default_task_role_name(platform_params.get(PARAM_NAMESPACE, ""),
+                                                 platform_params.get(PARAM_STAGE, "")))
+    if role_errors:
+        for message in role_errors:
+            print(f"\n❌ {message}")
+        sys.exit(1)
 
     # Check that referenced AWS resources exist before committing to a deploy.
     # Runs in both normal and --dry-run paths (consistent with STS + CFN calls

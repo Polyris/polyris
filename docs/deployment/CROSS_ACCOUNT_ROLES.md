@@ -42,7 +42,9 @@ def run_glue():
     pass
 ```
 
-A value that is already a full `arn:aws:iam::...:role/...` is used as it is; otherwise it is a key of `roles` in `config.py`. `role="same"` (the default) runs in the platform's account.
+A value that is already a full `arn:aws:iam::...:role/...` is used as it is; otherwise it is a key of `roles` in `config.py`. `role="same"` (the default) runs in the platform's account, as its default task role.
+
+A role of the platform's own account works only under the IAM path `/polyris-tasks/`, which only whoever creates IAM roles can give a role, for example `arn:aws:iam::123456789012:role/polyris-tasks/finance-writer` next to the roles of other accounts above. `polyris-deploy` refuses any other role of the platform's account, and so does `polyris-validate` when `config.py` sets the stage's `account_id`.
 
 ### 3. IAM trust policy in target account
 
@@ -75,4 +77,4 @@ Priority: env var > `config.py`.
 
 ## Verify the configuration
 
-`polyris-validate`, in the pipeline's folder, refuses a `role=` key that `config.py` does not define.
+`polyris-validate`, in the pipeline's folder, refuses a `role=` key that `config.py` does not define, and, when the stage sets `account_id`, a role of that account outside `/polyris-tasks/`.

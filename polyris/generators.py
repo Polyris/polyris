@@ -964,7 +964,7 @@ def _build_step_config_and_arn(step: Step) -> Tuple[Dict[TaskConfigKey, Any], st
 
 def _resolved_role(task: Task) -> str:
     """The task's cross_account_role: a config.roles key resolved to its ARN, anything else as written."""
-    if task.role and task.role != 'same' and task.role in config.roles:  # pragma: no cover -- cross-account role->ARN resolution depends on a populated config.roles, exercised by deploy e2e
+    if task.role and task.role != 'same' and task.role in config.roles:
         return config.roles[task.role]
     return task.role
 
