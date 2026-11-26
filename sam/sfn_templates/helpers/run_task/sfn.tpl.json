@@ -1266,7 +1266,6 @@
         "Payload": {
           "action": "interactive_slack",
           "pipeline_name": "{% $states.context.Execution.Input.pipeline_name %}",
-          "console_api_endpoint": "${console_api_endpoint}",
           "failure": {
             "pipeline_name": "{% $states.context.Execution.Input.pipeline_name %}",
             "task_name": "{% $states.context.Execution.Input.task_name %}",

@@ -791,7 +791,7 @@ Resources:
               - batch:TerminateJob
             Resource: "*"
           # A pipeline invokes start-run and notify; the platform's other functions are its own, of
-          # every platform in the account (UiBootstrap takes what it writes from its event). The
+          # every platform in the account. The
           # qualified ARNs (:*) cover a version or alias (V-I).
           - Sid: NeverThePlatformsFunctions
             Effect: Deny
@@ -1055,7 +1055,7 @@ Resources:
               - dynamodb:Scan
             Resource: "*"
           # A pipeline invokes start-run and notify; the platform's other functions are its own, of
-          # every platform in the account (UiBootstrap takes what it writes from its event). The
+          # every platform in the account. The
           # qualified ARNs (:*) cover a version or alias (V-I).
           - Sid: NeverThePlatformsFunctions
             Effect: Deny
@@ -1262,6 +1262,9 @@ Resources:
       Environment:
         Variables:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+          # The console's API, which an action's message links to. From here, never from the event: a
+          # pipeline's roles may invoke this function (PLAN_IAM 1.4.0 §6.9).
+          CONSOLE_API_ENDPOINT: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
 
   ReconcileFunction:
     Type: AWS::Serverless::Function
@@ -1312,6 +1315,8 @@ Resources:
           TOKENS_TABLE: !Ref PipelineTokensTable
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           SPECS_TABLE: !Ref PipelineSpecsTable
+          # The pipeline's registered state machine, which the payload's execution must be one of.
+          PIPELINES_TABLE: !Ref PipelineRegistryTable
 
   # ADR #130 §6.1: wakes the tasks waiting on each new asset fact.
   AssetFanoutFunction:
@@ -1526,7 +1531,8 @@ Resources:
           POLYRIS_TIER: !Ref PolyrisTier
           RESULTS_BUCKET: !Ref ResultsBucket
           ASSET_EVENT_TTL_DAYS: "365"
-          NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
+          # By name, not !GetAtt: NotifyFunction names the console's API, and a !GetAtt would close a cycle.
+          NOTIFY_FUNCTION_ARN: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Namespace}-${Stage}-polyris-notify"
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
         ApiProxy:
@@ -1748,6 +1754,11 @@ Resources:
                   - dynamodb:BatchGetItem
                 Resource:
                   - !GetAtt PipelineSpecsTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -2079,7 +2090,7 @@ Resources:
                 Action:
                   - lambda:InvokeFunction
                 Resource:
-                  - !GetAtt NotifyFunction.Arn
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Namespace}-${Stage}-polyris-notify"
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -2342,7 +2353,6 @@ Resources:
         task_events_table: !Ref TaskEventsTable
         asset_events_table: !Ref AssetEventsTable
         notify_function_arn: !GetAtt NotifyFunction.Arn
-        console_api_endpoint: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
         asset_event_ttl_days: "365"
         same_account_role_arn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-default-task-role"
       DefinitionUri: sfn_templates/helpers/run_task/sfn.tpl.json
@@ -2626,6 +2636,18 @@ Resources:
       LoggingConfig:
         LogFormat: Text
         LogGroup: !Ref UiBootstrapLogGroup
+      # What it acts on, from here and never from its event (PLAN_IAM 1.4.0 §6.9). UiBootstrap's
+      # properties repeat these values so that CloudFormation sends an Update when one changes.
+      Environment:
+        Variables:
+          DEST_BUCKET: !Ref ConsoleUiBucket
+          SOURCE_BUCKET: !Ref ArtifactsBucket
+          SOURCE_PREFIX: !Ref UiArtifactsPrefix
+          API_URL: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/api"
+          COGNITO_USER_POOL_ID: !If [EnableCognitoAuthCondition, !Ref CognitoUserPool, ""]
+          COGNITO_CLIENT_ID: !If [EnableCognitoAuthCondition, !Ref CognitoUserPoolClient, ""]
+          DISTRIBUTION_ID: !Ref ConsoleUiDistribution
+          STACK_ID: !Ref AWS::StackId
 
   UiBootstrap:
     Type: AWS::CloudFormation::CustomResource

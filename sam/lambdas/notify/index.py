@@ -21,12 +21,16 @@ Delivers failure alerts to a pipeline's enabled channels. Three input shapes:
    ->
    { "delivered": true, "channels": [ {channel, delivered, status}, ... ] }
 
-2. **Single channel** (legacy / direct): deliver one channel given its config.
-   Kept so a caller can still target exactly one channel.
+2. **Single channel**: deliver one of the pipeline's enabled channels.
 
-   { "channel": "slack", "config": {...}, "failure": {...} }
+   { "pipeline_name": "acme-daily", "channel": "webhook", "failure": {...} }
    ->
-   { "channel": "slack", "delivered": true, "status": 200 }
+   { "channel": "webhook", "delivered": true, "status": 200 }
+
+Channels and their config come from the platform (the registry's alert_config, the
+secrets from SSM), never from the event: a pipeline's roles may invoke this
+function, so an event's config would let it point an alert anywhere (PLAN_IAM
+1.4.0 §6.9). A ``config`` in the event is ignored.
 
 Delivery never raises out of the handler: a channel failing is captured in the
 result, not propagated, so one bad channel never blocks the others.
@@ -49,7 +53,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
       PagerDuty alert, or PagerDuty resolve. These move the HTTP+SSM posting that
       used to live in dedicated helper SFNs into this Lambda (ADR #103 Stage 2).
     - ``pipeline_name`` (no ``channel``): batch — read alert_config + fan out.
-    - ``channel``: single — deliver exactly one channel.
+    - ``channel``: single — deliver exactly one of the pipeline's enabled channels.
     """
     try:
         action = event.get('action')
@@ -103,16 +107,20 @@ def _handle_batch(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _handle_single(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Deliver exactly one channel given its config (legacy/direct shape)."""
+    """Deliver exactly one of the pipeline's enabled channels, with its config from the registry."""
     channel = event.get('channel', '')
-    config = event.get('config') or {}
+    pipeline_name = event.get('pipeline_name', '')
     failure = event.get('failure') or {}
 
     if not channel:
         log.warn('notify', 'No channel in event; skipping')
         return {'channel': 'unknown', 'delivered': False, 'reason': 'no_channel'}
-
-    return _deliver_one(channel, config, failure)
+    cfg = get_alert_config(pipeline_name) if pipeline_name else {}
+    if channel not in (cfg.get('enabled_channels') or []):
+        log.warn('notify', 'Channel not enabled for the pipeline; skipping', channel=channel, pipeline=pipeline_name)
+        return {'channel': channel, 'delivered': False, 'reason': 'not_enabled'}
+    failure.setdefault('pipeline_name', pipeline_name)
+    return _deliver_one(channel, cfg.get(channel) or {}, failure)
 
 
 def _deliver_one(channel: str, config: Dict[str, Any], failure: Dict[str, Any]) -> Dict[str, Any]:

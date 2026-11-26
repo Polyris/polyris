@@ -78,7 +78,7 @@ def rows(ddb, sfn, monkeypatch):
 
     import env
     import start_run
-    from coordination_testkit import DATE, RUN, STARTED_AT
+    from coordination_testkit import DATE, RUN, STARTED_AT, register
     from dispatcher import Dispatcher
     from polyris.coordination import spec_store, task_spec
 
@@ -96,9 +96,11 @@ def rows(ddb, sfn, monkeypatch):
     def start(specs, *, execution: str = RUN, pipeline: str = "orders", **inputs):
         version = task_spec.build_version(pipeline, specs)
         spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+        execution_arn = f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:{execution}"
+        register(ddb, pipeline, execution_arn)
         start_run.handler({"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id,
                            "task_count": version.task_count, "pipeline_name": pipeline, "execution_name": execution,
-                           "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:{execution}", "execution_start": STARTED_AT, "token": f"{execution}-token", "retry_count": 0,
+                           "execution_arn": execution_arn, "execution_start": STARTED_AT, "token": f"{execution}-token", "retry_count": 0,
                            "redrive_count": 0, "date": DATE, "input": inputs}, None)
         return version
 

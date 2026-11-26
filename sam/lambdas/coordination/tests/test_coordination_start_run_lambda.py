@@ -5,10 +5,11 @@ import pytest
 import env
 import failures
 import start_run as lambda_start_run
-from coordination_testkit import TABLES, client_error
+from coordination_testkit import TABLES, client_error, register
 from polyris.coordination import run_row, spec_store, start_run, task_row, task_spec
 
 EXECUTION = "orders-run-2026-11-19-abcd1234"
+EXECUTION_ARN = f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:{EXECUTION}"
 START = "2026-11-19T06:00:00.123Z"
 SPECS = [
     {"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
@@ -26,12 +27,13 @@ def stack(ddb, monkeypatch):
     monkeypatch.setattr(env, "_dynamodb_client", client)
     version = task_spec.build_version("orders", SPECS)
     spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+    register(ddb, "orders", EXECUTION_ARN)
     return ddb, version
 
 
 def event(version, **changes):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": version.task_count,
-               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{EXECUTION}", "execution_start": START, "token": "token-1",
+               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_arn": EXECUTION_ARN, "execution_start": START, "token": "token-1",
                "retry_count": 0, "redrive_count": 0, "date": "2026-11-18", "input": {"triggered_by": "schedule"}}
     payload.update(changes)
     return payload
@@ -147,3 +149,26 @@ def test_specs_dynamodb_leaves_unread_are_transient_so_the_states_retry_repeats_
     monkeypatch.setattr(spec_store, "_backoff", lambda attempt: 0.0)       # the waits between rounds, not the rounds
     with pytest.raises(failures.CoordinationTransient):
         lambda_start_run.handler(event(version), None)
+
+
+# ── A forged payload (PLAN_IAM 1.4.0 §6.9) ──────────────────────────────────
+
+
+@pytest.mark.parametrize("execution_arn", [
+    f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-bulk-backfill:{EXECUTION}",
+    f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:another-run",
+    f"arn:aws:states:us-east-1:123456789012:stateMachine:acme-dev-polyris-orders:{EXECUTION}",
+])
+def test_an_execution_that_is_not_one_of_the_pipelines_registered_machine_gets_no_row(stack, execution_arn):
+    """The engine stops and answers the execution the run row names: a forged one must never get there."""
+    ddb, version = stack
+    with pytest.raises(start_run.ForeignExecution, match="is not an execution of the pipeline's state machine"):
+        lambda_start_run.handler(event(version, execution_arn=execution_arn), None)
+    assert "Item" not in tokens(ddb).get_item(Key={"execution_name": run_row.key(EXECUTION)})
+
+
+def test_a_pipeline_the_registry_names_no_machine_of_gets_no_row(stack):
+    ddb, version = stack
+    with pytest.raises(start_run.ForeignExecution, match="the registry names no state machine of this pipeline"):
+        lambda_start_run.handler(event(version, pipeline_name="unregistered"), None)
+    assert "Item" not in tokens(ddb).get_item(Key={"execution_name": run_row.key(EXECUTION)})

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ..constants import SkipOrigin, TaskSpecKey, TaskStatus
 from . import asset_spec, attention, deadlines, ownership, partition, records, retention, run_input, run_row, task_row
@@ -150,6 +150,27 @@ def call_from(payload: Mapping[str, Any]) -> Call:
     if call.task_count < 1:
         raise ValueError(f"{call.pipeline}: a run of no task has no Start_Run")
     return call
+
+
+class ForeignExecution(ValueError):
+    """The execution named in the payload is not one of its pipeline's registered state machine.
+
+    The functions a pipeline's state machine invokes stay invocable by the roles a pipeline holds (PLAN_IAM 1.4.0
+    §3.2), so a payload may be forged: Start_Run must not hand the engine an execution it would then stop or answer,
+    such as one of ``bulk_backfill`` (§6.9).
+    """
+
+
+def check_execution(call: Call, registered_machine: Optional[str]) -> None:
+    """Refuse a call whose ``execution_arn`` is not the execution ``execution`` of the state machine that the
+    registry names for its pipeline (``registered_machine``, None when it names none)."""
+    if not registered_machine or ":stateMachine:" not in registered_machine:
+        raise ForeignExecution(f"{call.pipeline}: the registry names no state machine of this pipeline, so Start_Run "
+                               f"cannot tell that execution {call.execution_arn} is one of its: redeploy the pipeline")
+    expected = f"{registered_machine.replace(':stateMachine:', ':execution:', 1)}:{call.execution}"
+    if call.execution_arn != expected:
+        raise ForeignExecution(f"{call.pipeline}: execution {call.execution_arn} is not an execution of the "
+                               f"pipeline's state machine {registered_machine}; Start_Run writes no row for it")
 
 
 def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:

@@ -8,7 +8,8 @@ reads back what a condition refused.
 
 A transient AWS error raises ``CoordinationTransient``, which the state's
 ``Retry`` repeats with a new token. Anything else fails the state into its
-``Catch``, which writes the warning: a format this platform does not run, specs
+``Catch``, which writes the warning: a format this platform does not run, an
+execution that is not one of the pipeline's registered state machine, specs
 that are missing or do not match, a row of another run, or the stop mark.
 """
 
@@ -45,6 +46,11 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
 
 def _start(call: core.Call, now: datetime) -> Dict[str, Any]:
     ddb = env.dynamodb()
+    # The payload names the execution the engine will stop and answer: it must be one of the pipeline's own
+    # registered state machine, whatever invoked this function (PLAN_IAM 1.4.0 §6.9).
+    registered = ddb.Table(env.PIPELINES_TABLE).get_item(
+        Key={"pipeline_name": call.pipeline}, ConsistentRead=True, ProjectionExpression="sfn_arn").get("Item") or {}
+    core.check_execution(call, registered.get("sfn_arn"))
     specs = spec_store.read(env.dynamodb_client(), env.SPECS_TABLE, call.spec_id, expected_count=call.task_count)
     tokens = ddb.Table(env.TOKENS_TABLE)
     # Everything is built before the first write, so a call refused (a skip list naming no task) writes nothing.

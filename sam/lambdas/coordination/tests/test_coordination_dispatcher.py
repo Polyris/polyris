@@ -10,7 +10,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 import env
 import start_run as start_run_lambda
-from coordination_testkit import TABLES, FakeSfn, client_error, fact
+from coordination_testkit import TABLES, FakeSfn, client_error, fact, register
 from dispatcher import RESERVE_MS, Dispatcher
 from polyris.coordination import attention, run_name, run_row, spec_store, start_run, sweep, task_row, task_spec
 from polyris.coordination.records import DECISION_EVENT_ORDER, DEPS_BLOCKED, DEPS_READY
@@ -72,6 +72,7 @@ def world(ddb, monkeypatch):
 def start(world, specs: List[Dict[str, Any]], **inputs: Any) -> None:
     version = task_spec.build_version("orders", specs)
     spec_store.write(world.client, table("SPECS_TABLE"), version, sleep=lambda _: None)
+    register(world.ddb, "orders", PIPELINE_EXECUTION)
     start_run_lambda.handler({"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id,
                               "task_count": version.task_count, "pipeline_name": "orders", "execution_name": EXECUTION,
                               "execution_arn": PIPELINE_EXECUTION, "execution_start": START, "token": "run-token", "retry_count": 0, "redrive_count": 0,

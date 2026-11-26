@@ -18,6 +18,13 @@ Delete:
   switched to a from-source ``sam deploy``); then the bucket is left alone,
   because ``ui/deploy.sh`` now owns its contents.
 
+Every value it acts on comes from its environment, which the template sets
+(``SETTINGS``), never from the event: a ``Custom::`` resource of another stack can
+name this function as its ServiceToken, and its event would otherwise choose the
+buckets, the distribution and the parent stack (PLAN_IAM 1.4.0 §6.9). The custom
+resource's properties carry the same values only so that CloudFormation sends an
+Update when one changes; the template test holds them equal.
+
 The PhysicalResourceId is stable (derived from ``DestBucket``). If it changed
 between invocations, CloudFormation would follow every Update with a Delete
 of the "old" resource and wipe the UI it had just installed.
@@ -25,6 +32,7 @@ of the "old" resource and wipe the UI it had just installed.
 from __future__ import annotations
 
 import mimetypes
+import os
 
 import boto3
 import cfnresponse
@@ -55,6 +63,27 @@ _CONTENT_TYPES = {
     ".woff2": "font/woff2",
     ".ico": "image/x-icon",
 }
+
+
+#: Each value the function acts on, by the custom resource's property that carries it, and the environment
+#: variable it is read from.
+SETTINGS = {
+    "DestBucket": "DEST_BUCKET",
+    "SourceBucket": "SOURCE_BUCKET",
+    "SourcePrefix": "SOURCE_PREFIX",
+    "ApiUrl": "API_URL",
+    "CognitoUserPoolId": "COGNITO_USER_POOL_ID",
+    "CognitoClientId": "COGNITO_CLIENT_ID",
+    "DistributionId": "DISTRIBUTION_ID",
+    "StackId": "STACK_ID",
+}
+
+
+def settings() -> dict:
+    """The values this function acts on, from its environment; the region is the function's own."""
+    values = {prop: os.environ.get(var, "") for prop, var in SETTINGS.items()}
+    values["Region"] = os.environ.get("AWS_REGION", "")
+    return values
 
 
 def physical_resource_id(dest_bucket: str) -> str:
@@ -173,10 +202,10 @@ def stack_is_being_torn_down(stack_id: str) -> bool:
 
 
 def handler(event, context):
-    props = event.get("ResourceProperties", {})
+    props = settings()
     request_type = event.get("RequestType", "")
-    phys_id = physical_resource_id(props.get("DestBucket", ""))
-    account = account_of(event.get("StackId", ""))
+    phys_id = physical_resource_id(props["DestBucket"])
+    account = account_of(props["StackId"])
     print(f"UiBootstrap event: {request_type}")
 
     if request_type == "Delete":
@@ -184,7 +213,7 @@ def handler(event, context):
         # in DELETE_FAILED. If emptying fails, the bucket's own deletion then
         # fails with a clear "bucket not empty" reason.
         try:
-            if stack_is_being_torn_down(event.get("StackId", "")):
+            if stack_is_being_torn_down(props["StackId"]):
                 keys = _list_keys(props["DestBucket"], account=account)
                 _delete_keys(props["DestBucket"], keys, account=account)
                 print(f"Emptied {len(keys)} objects from {props['DestBucket']}")

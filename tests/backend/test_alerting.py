@@ -331,14 +331,15 @@ class TestSlackMentionsTemplateFlow:
     def test_run_task_interactive_slack_invokes_notify(self):
         """Interactive_Slack now invokes the notify Lambda (Stage 2). Mentions and
         channel come from alert_config read by the Lambda, so the payload carries
-        pipeline_name + console_api_endpoint + failure, not mentions inline."""
+        pipeline_name + failure, not mentions inline. The console's endpoint is the
+        Lambda's own setting, never the event's (PLAN_IAM 1.4.0 §6.9)."""
         rt = load('run_task')
         state = rt['States']['Interactive_Slack']
         assert state['Resource'] == 'arn:aws:states:::lambda:invoke'
         payload = state['Arguments']['Payload']
         assert payload['action'] == 'interactive_slack'
         assert 'pipeline_name' in payload
-        assert 'console_api_endpoint' in payload
+        assert 'console_api_endpoint' not in payload
 
     def test_no_hardcoded_responsible_for_anywhere(self):
         """No template references responsible_for_data_pipeline_ops."""

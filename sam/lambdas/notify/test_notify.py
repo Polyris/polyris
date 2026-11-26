@@ -100,14 +100,39 @@ class TestActionFramework:
 # ── handler dispatch ──────────────────────────────────────────────────────
 
 class TestHandler:
-    def test_dispatches_to_channel(self, mocker, failure):
+    """Single shape: one of the pipeline's enabled channels, its config from the registry, never the event."""
+
+    @staticmethod
+    def _config(mocker, **channels):
+        return mocker.patch('index.get_alert_config', return_value={'enabled_channels': list(channels), **channels})
+
+    def test_dispatches_to_channel_with_the_registrys_config(self, mocker, failure):
         import index
+        self._config(mocker, webhook={'url_param': '/p'})
+        secret = mocker.patch('notifiers._get_secret', return_value='https://hooks.example.com/x')
         mocker.patch('notifiers._http_post_json', return_value=200)
-        out = index.handler({'channel': 'webhook',
-                             'config': {'url_param': '/p'},
-                             'failure': failure}, None)
+        out = index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'failure': failure}, None)
         assert out['channel'] == 'webhook'
         assert out['delivered'] is True
+        secret.assert_called_once_with('/p')
+
+    def test_a_config_in_the_event_is_ignored(self, mocker, failure):
+        """A pipeline's roles may invoke the function: an event must not point an alert anywhere (§6.9)."""
+        import index
+        self._config(mocker, webhook={'url_param': '/polyris/alerts/acme/dev/p/webhook-url'})
+        secret = mocker.patch('notifiers._get_secret', return_value=None)
+        index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'config': {'url_param': '/elsewhere'},
+                       'failure': failure}, None)
+        secret.assert_called_once_with('/polyris/alerts/acme/dev/p/webhook-url')
+
+    def test_a_channel_the_pipeline_has_not_enabled_is_not_delivered(self, mocker, failure):
+        import index
+        self._config(mocker)
+        post = mocker.patch('notifiers._http_post_json', return_value=200)
+        out = index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'config': {'url_param': '/p'},
+                             'failure': failure}, None)
+        assert (out['delivered'], out['reason']) == (False, 'not_enabled')
+        assert not post.called
 
     def test_no_channel_is_safe(self):
         import index
@@ -115,16 +140,18 @@ class TestHandler:
         assert out['delivered'] is False
         assert out['reason'] == 'no_channel'
 
-    def test_unknown_channel_is_safe(self):
+    def test_unknown_channel_is_safe(self, mocker):
         import index
-        out = index.handler({'channel': 'telegram', 'config': {}, 'failure': {}}, None)
+        self._config(mocker, telegram={})
+        out = index.handler({'pipeline_name': 'p', 'channel': 'telegram', 'failure': {}}, None)
         assert out['delivered'] is False
         assert out['reason'] == 'unknown_channel'
 
     def test_channel_error_does_not_raise(self, mocker, failure):
         import index
+        self._config(mocker, webhook={})
         mocker.patch('index.get_notifier', side_effect=RuntimeError('boom'))
-        out = index.handler({'channel': 'webhook', 'config': {}, 'failure': failure}, None)
+        out = index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'failure': failure}, None)
         assert out['delivered'] is False
         assert out['reason'] == 'delivery_error'
 
