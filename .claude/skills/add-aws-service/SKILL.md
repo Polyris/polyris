@@ -9,8 +9,8 @@ Polyris compiles a Python DSL → Amazon States Language → Step Functions. "Ad
 usually **a library change first** (a new task type the DSL emits), then infra (SAM/IAM). Every
 service is standing cost + operational surface — read the SFN-direction ADRs first: #18 (Standard
 vs Express), #19 (zero-cost waiting), #20 (Step Functions over EventBridge), #137 §1 and its *Cost*
-(how a task runs and what it costs). Find a section with `grep -n '^#\+ k\.' docs/decisions/adr-N-*.md`
-and read only it. The stack is deliberately small (~$31/month).
+(how a task runs and what it costs). Find a section with `grep -nE '^#+ k[. ]' docs/decisions/adr-N-*.md` (write `6\.1` for §6.1); with
+no such heading, §k is item `k.` of the decision list (`grep -nE '^k\. '`). Read only that section. The stack is deliberately small (~$31/month).
 
 ## Step 1 — Fit + pick the integration shape
 

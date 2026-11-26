@@ -9,9 +9,6 @@ accepted: by 2026-05-27
 > and e2e uses a PAT, so the Principle #4 preconditions are met and the gate is
 > enabled from the initial deploy. Disabling is operator-side
 > (`AUTH_ENABLED=false`).
-> **Indexed** as ADR #65, API tokens (summary in `DESIGN_DECISIONS.md`; note its headers
-> top out at #64 while `CLAUDE.md` references higher numbers — reconcile the
-> numbering at your convenience).
 > Affected DDB schema + API contract + auth → per Core Principle #6 this needed
 > alignment before code; this document was that alignment + the build plan.
 >
@@ -218,8 +215,8 @@ enforcement **once, covering both auth types** through a single gate.
   not copy the preamble into each file.
 - **E2E docs:** `tests/e2e/README.md` + `scripts/get-e2e-token.sh` story — add
   PAT as the recommended path (keep JWT as an option).
-- Merge this ADR into `DESIGN_DECISIONS.md`; add a CHANGELOG entry; bump version
-  in `pyproject.toml`, `polyris/__init__.py`, `ui/package.json` (kept in sync).
+- Add a CHANGELOG entry; bump the version in `pyproject.toml`,
+  `polyris/__init__.py`, `ui/package.json` (kept in sync).
 
 ### Phase 6 — rollout (done in v0.89.x)
 - `AUTH_ENABLED=true` is the template default (enforcement on from initial deploy).
@@ -248,7 +245,7 @@ added with that feature if ever needed.
 
 The console's Cognito app client also allows `ALLOW_ADMIN_USER_PASSWORD_AUTH`. That flow is reached only through `AdminInitiateAuth`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` on the pool, so it opens no password endpoint to the internet; `ALLOW_USER_PASSWORD_AUTH` stays off. Operator tooling uses it: `scripts/get-e2e-token.sh`, and `make e2e-coordination`, which signs in as a temporary console user and deletes it after the run. `tests/sdk/test_coordination_smoke_runner.py` pins both flows on the client.
 
-## Update — v1.2.0: `/api/health` shows its details only to a verified caller
+## Health details for verified callers (v1.2.0)
 
 `/api/health*` stays public in the gate, so probes and monitors work without a token. The handler decides how much to show:
 - **Verified caller.** With a valid token, or with `AUTH_ENABLED=false`, the answer carries everything: messages, the sweeper's report, and the `findings` the console's System status shows.

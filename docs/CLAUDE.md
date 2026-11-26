@@ -100,14 +100,14 @@ Docs without one of these headers are treated as current reference by the next r
 
 An ADR records one hard-to-reverse decision and states it as the rule in force today. It is written for contributors: a tutorial, how-to or reference doc never links one, it explains the reason in a sentence instead; an explanation doc may link one.
 
-Before writing an ADR, ask Principle #24's question: does this repository ship what it governs? If not, write it in `polyris-ee/docs/decisions/`, numbered from 1001; this repository neither stores, indexes nor cites it (`tests/docs/test_adr_limits.py` fails if it does).
+Before writing an ADR, ask where it lives: root `CLAUDE.md` Principle #24 says.
 
 - **One file**, `docs/decisions/adr-N-<slug>.md`. N is the highest number + 1. Numbers are never reused, changed or gap-filled.
 - **Front matter:** `area` (one of `engine`, `sdk`, `deploy`, `console-api`, `ui`, `open-core`, `docs`, `process`), `accepted`, and when they apply `revised`, `supersedes`, `amends`. Then the H1, `# ADR #N — <the decision>`, at most 120 characters. Run `python scripts/adr_index.py` to update the index.
 - **Body:** *Context* (short), *Decision* (numbered sections `### k. Title`, each a rule; name the test that pins it next to the rule), *Consequences*, *Alternatives* (each with the reason it was rejected).
 - **Out of an ADR:** revision history (git and the CHANGELOG), review findings and who found what (the PR), probe and smoke logs, implementation plans, UI walkthroughs and API payloads (the reference docs), private ids.
 - **Revising:** edit the ADR so it states the current rule, update `revised`, and say why in the commit and the CHANGELOG.
-- **Superseding:** a fully replaced ADR is deleted and gets a row under *Retired* in `docs/decisions/README.md` (its successor and the `git show <last release tag>:<path>` command that prints its text). A replaced section that something cites keeps its heading with one line, `Superseded by ADR #M §k.`, pointing at a live section; one that nothing cites is deleted.
+- **Superseding:** a fully replaced ADR is deleted and gets a row under *Retired* in `docs/decisions/README.md`: its successor (for a change record, the rule that stands) and where its text is, as `` `<release tag>:<path>` `` and, for part of a file, `lines a–b`. A replaced section that something cites keeps its heading with one line, `Superseded by ADR #M §k.`, pointing at a live section; one that nothing cites is deleted.
 - **Limits:** 20 KB per file and 1,000 characters per line (`tests/docs/test_adr_limits.py`). To go bigger, split by sub-decision first; a larger cap is the maintainer's decision, written next to it.
 
 ## What's a "doc" for these rules

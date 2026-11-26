@@ -333,7 +333,7 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
             continue
         counts = run_end.summary(group['statuses'])
         # 1.3 finishes no row of a run from before it, and the upgrade stopped its execution: a run with a row left
-        # unfinished is stale until its rows expire, not running (ADR #137, Migration).
+        # unfinished is stale until its rows expire, not running (ADR #137, *Migration and upgrade*).
         stale = any(str(s) not in transitions.FINAL for s in group['statuses'])
         status = ExecutionStatus.STALE if stale else run_end.shown_status(counts, step_failed=False)
         started_at = group['started_at'] or None
@@ -385,7 +385,7 @@ def wait_for_text(item: Mapping[str, Any], readiness: Mapping[str, Any]) -> str:
 
 def is_stale(item: Mapping[str, Any]) -> bool:
     """A task row of a run from before 1.3 (it has no ``readiness``) that is not final. 1.3 finishes no such row,
-    and the upgrade stopped its run's execution, so it stays so until it expires (ADR #137, Migration)."""
+    and the upgrade stopped its run's execution, so it stays so until it expires (ADR #137, *Migration and upgrade*)."""
     return not item.get(task_row.READINESS) and str(item.get('status', '')) not in transitions.FINAL
 
 

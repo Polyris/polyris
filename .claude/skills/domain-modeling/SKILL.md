@@ -25,7 +25,7 @@ Create files lazily: only when you have something to write. `GLOSSARY.md` is cre
 
 ### Challenge against existing docs first
 
-Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md` and `docs/decisions/README.md`, the ADR index; then the ADRs of the area under discussion, section by section (find one with `grep -n '^#\+ k\.'`). A decision already settled there is a constraint, not a question.
+Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md` and `docs/decisions/README.md`, the ADR index; then the ADRs of the area under discussion, section by section (find one as root `CLAUDE.md`, *Design decisions*, says). A decision already settled there is a constraint, not a question.
 
 ### Challenge against the glossary
 
@@ -77,7 +77,7 @@ If any of the three is missing, skip it.
 
 ## ADR format
 
-The rules are in `docs/CLAUDE.md`, *Design decisions*: one file, `docs/decisions/adr-N-<slug>.md`, N the highest number + 1. A decision that governs only the paid overlay is written in `polyris-ee/docs/decisions/`, numbered from 1001, never here.
+The rules are in `docs/CLAUDE.md`, *Design decisions*: one file, `docs/decisions/adr-N-<slug>.md`, N the highest number + 1. Where an ADR lives: root `CLAUDE.md` Principle #24.
 
 ```md
 ---

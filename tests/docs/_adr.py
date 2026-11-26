@@ -5,8 +5,8 @@ sections are, and what counts as a citation of one. Root `CLAUDE.md`
 Principle #29 states the rule these tests enforce.
 
 An ADR is cited as `ADR #N`, `ADR-N`, `adr-N-slug` or `ADR #64.1`; a section of
-it as `ADR #N §k` (a list: `§1, §5`, `§§1, 5`, a range `§3–§5`), `ADR #N §Name`
-or `ADR #N, *Name*`. A bare `§k` belongs to an ADR the same file cites.
+it as `ADR #N §k` (a list: `§1, §5`, `§§1, 5`, a range `§3–§5`), `ADR #N §Name`,
+`ADR #N, *Name*` or `ADR #N, Name`.
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from tests.docs._helpers import REPO_ROOT
 
 ADR_DIR = REPO_ROOT / "docs" / "decisions"
 INDEX = ADR_DIR / "README.md"
-# The tag whose tree holds every retired ADR's text; its release is immutable.
-RETIRED_TAG = "v1.3.2"
+# A retired ADR's text is read from the release tag its row names; releases are immutable.
+RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
 # Numbers that name two decisions, with the word a citation of each names right
 # after the number ("ADR #65, view sync"). No other number may collide.
@@ -66,15 +66,13 @@ SECTION_TAIL_RE = re.compile(
     rf"|[ \t]*,?[ \t]*§[ \t]*(?P<list>{_SEC}(?:{_SEP}§[ \t]*{_SEC})*)"
     r"|[ \t]*,?[ \t]*§[ \t]*(?P<name>[A-Z][A-Za-z]*(?:[ \t]+[A-Za-z]+)*)"
     r"|[ \t]*,?[ \t]+\*(?P<starred>[^*\s][^*]*?)\*(?!\*)"
+    # `ADR #130, Migration)`: a capitalised name that closes the citation.
+    r"|,[ \t]+(?P<plain>[A-Z][A-Za-z]*(?:[ \t]+[A-Za-z0-9][A-Za-z0-9-]*){0,5})(?=[ \t]*(?:\)|;|:|$|\())"
     r")"
 )
-BARE_SECTION_RE = re.compile(
-    rf"§§[ \t]*(?P<multi>{_SEC}(?:{_SEP}§?[ \t]*{_SEC})*)"
-    rf"|§[ \t]*(?P<one>{_SEC})(?!\w)"  # `§7c` is another document's label
-)
-# A document named right before a bare `§`: `PLAN §2`, `SPIKE_X.md §9.5`,
-# `Apache 2.0 §6`. That `§` is the document's, not an ADR's.
-_DOC_BEFORE_RE = re.compile(r"(?:\.md`?|\b[A-Z][A-Z0-9_]{2,}|\b\d+\.\d+)[ \t]*$")
+# A plain name after a citation that is no section: another citation, a slug
+# word of a colliding number, or a rule of root CLAUDE.md.
+_NOT_A_SECTION_RE = re.compile(r"^(?:ADR|Principle|Rule|TR|B|D|R|CR)\b")
 _SEC_ITEM_RE = re.compile(_SEC)
 
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
@@ -199,10 +197,15 @@ class Retired:
     number: int
     title: str
     why: str
-    command: str
+    tag: str
+    path: str
+    lines: Optional[tuple[int, int]]
 
 
-_RETIRED_ROW_RE = re.compile(r"^\| (\d+) \| (.+?) \| (.+?) \| `(.+)` \|$")
+# `| 2 | Title | Why | `v1.3.2:docs/reference/DESIGN_DECISIONS.md`, lines 26–41 |`
+_RETIRED_ROW_RE = re.compile(
+    r"^\| (\d+) \| (.+?) \| (.+?) \| `([^`:]+):([^`]+)`(?:, lines (\d+)–(\d+))? \|$"
+)
 
 
 @lru_cache(maxsize=1)
@@ -216,7 +219,8 @@ def load_retired() -> dict[int, Retired]:
             continue
         m = _RETIRED_ROW_RE.match(line) if inside else None
         if m:
-            rows[int(m.group(1))] = Retired(int(m.group(1)), m.group(2), m.group(3), m.group(4).replace("\\|", "|"))
+            span = (int(m.group(6)), int(m.group(7))) if m.group(6) else None
+            rows[int(m.group(1))] = Retired(int(m.group(1)), m.group(2), m.group(3), m.group(4), m.group(5), span)
     return rows
 
 
@@ -268,6 +272,7 @@ class Citation:
     sections: list[str]
     name: Optional[str]
     starred: Optional[str]
+    exact: Optional[str]
     text: str
     span: tuple[int, int]
     form: str
@@ -278,7 +283,7 @@ def citations_in(path: Path, lineno: int, line: str) -> list[Citation]:
     for m in CITE_RE.finditer(line):
         tail = None if m.group("slug") else SECTION_TAIL_RE.match(line, m.end())
         sections: list[str] = []
-        name = starred = None
+        name = starred = exact = None
         end = m.end()
         if tail:
             end = tail.end()
@@ -287,10 +292,15 @@ def citations_in(path: Path, lineno: int, line: str) -> list[Citation]:
                 # A range `§3–§5` names its ends; the ends are what must exist.
                 sections = _SEC_ITEM_RE.findall(items)
             name, starred = tail.group("name"), tail.group("starred")
+            plain = tail.group("plain")
+            words = COLLIDING.get(int(m.group("num")), ())
+            if plain and not _NOT_A_SECTION_RE.match(plain) \
+                    and not any(w.lower() in plain.lower() for w in words):
+                exact = plain
         form = "DESIGN_DECISIONS" if m.group(0).startswith("DESIGN_DECISIONS") else "ADR"
         found.append(Citation(
             path, lineno, int(m.group("num")), m.group("sub"), m.group("slug"),
-            sections, name, starred, line, (m.start(), end), form,
+            sections, name, starred, exact, line, (m.start(), end), form,
         ))
     return found
 
@@ -298,29 +308,3 @@ def citations_in(path: Path, lineno: int, line: str) -> list[Citation]:
 def is_own_title(c: Citation) -> bool:
     """The heading of an ADR's own file names its number without a slug word."""
     return c.text.startswith("#") and bool(re.match(rf"adr-{c.number}-", c.path.name))
-
-
-def own_numbered_headings(lines: list[tuple[int, str]]) -> set[str]:
-    keys: set[str] = set()
-    for _, line in lines:
-        m = _HEADING_RE.match(line)
-        if m:
-            n = _NUMBERED_HEADING_RE.match(m.group(2).lstrip("§ "))
-            if n:
-                keys.add(n.group(1))
-    return keys
-
-
-def bare_sections(line: str, taken: list[tuple[int, int]], previous: str = "") -> list[str]:
-    """The `§k` keys of a line that no citation took and no document name owns."""
-    keys: list[str] = []
-    for m in BARE_SECTION_RE.finditer(line):
-        if any(a <= m.start() < b for a, b in taken):
-            continue
-        before = line[:m.start()]
-        if not before.strip():
-            before = previous
-        if _DOC_BEFORE_RE.search(before):
-            continue
-        keys.extend(_SEC_ITEM_RE.findall(m.group(0)))
-    return keys

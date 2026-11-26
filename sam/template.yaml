@@ -2130,7 +2130,7 @@ Resources:
   RunTaskHelperSfn:
     Type: AWS::Serverless::StateMachine
     # A fact recorded by the new definition must find the mapping that wakes
-    # its waiters (ADR #130, Migration).
+    # its waiters (ADR #130 §6.1).
     DependsOn:
       - OrchestrationRolePolicy
       - AssetEventsFanoutMapping

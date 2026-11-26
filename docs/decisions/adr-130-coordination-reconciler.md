@@ -1,7 +1,7 @@
 ---
 area: engine
 accepted: 2026-11-12
-revised: 2026-11-25 (v1.3.2)
+revised: 2026-11-26
 supersedes: "#122, #128"
 amends: "#57"
 ---
@@ -121,6 +121,8 @@ A DynamoDB stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 | `FunctionResponseTypes` | `ReportBatchItemFailures` |
 | on-failure destination | none (§9) |
 
+The mapping exists before any definition that records facts: `run_task`'s state machine depends on it (`DependsOn: AssetEventsFanoutMapping` in `sam/template.yaml`), so a fact a new definition records finds the mapping that wakes its waiters.
+
 **Per-record work, with a time budget.** Records are processed one at a time, and so is the work inside a record. Records not reached within the budget are reported as batch-item failures and redelivered; the work is idempotent. Inside a record the work stops with 5 s of the invocation left: the waiters not reached are lost hints, which the sweeper's checks recover, and the push consumers not reached wait for the hourly catch-up. So one record with more waiters than fit in an invocation never times the function out and blocks its shard (Rule 52). Push runs before pull: a record's consumers are few and only the catch-up replays a missed one, while its waiters may be many and the sweeper checks each again.
 - **Pull:** query the `asset:{name}` pointers (consistent) and make one narrow pass of the dispatcher over each run with a waiting task (ADR #137 §7).
 - **Push** (unless `cascade = none`):
@@ -195,7 +197,7 @@ Amended by ADR #137: the pause-release step and the adoption scans are gone, and
 3. **Engine health is shown in the console.** This covers the case where no code runs at all (schedule removed, event source mapping disabled, stream disabled).
    - The sweeper writes `_engine_health`: last run, each event source mapping's state, last result and last change, the streams' state, the oldest overdue row, the push retry backlog, the steps that failed, its catch-up progress, and the names of the resources it checked (with the region). A reading it cannot take is listed with the failed steps, so the row is still written. A coordination error reaches the bell as a warning, not this row.
    - `/api/health` adds a `coordination` section and judges staleness itself: no sweeper run for 15 minutes means the engine is unhealthy.
-   - One pure function, `sweep.engine_findings`, turns the report into findings, each with a title, the resource it concerns, its impact, its fix and, when every name is known, a command. `/api/health` returns them to a verified caller; anyone else gets the status words only (ADR #65, API tokens, v1.2.0 update).
+   - One pure function, `sweep.engine_findings`, turns the report into findings, each with a title, the resource it concerns, its impact, its fix and, when every name is known, a command. `/api/health` returns them to a verified caller; anyone else gets the status words only (ADR #65, API tokens, *Health details for verified callers*).
    - The console shows a **System** pill in its header: green, amber "needs attention" with one toast per new problem, or grey "status unknown" when it cannot read the answer. Its panel lists the findings.
    - The rules that keep it honest: the core writes the final English and the UI never branches on the kind of finding; the pill takes its level from the status words, never from the length of a list the short answer leaves out; DynamoDB latency (`degraded`) and task failures do not colour it, because task failures belong to the bell; a mapping that a deploy is creating or updating counts only after 15 minutes in that state; the anonymous answer is built from an allowlist. "Since when" is shown only where AWS keeps the time (the mapping's `LastModified`); no state is kept across runs for it. A banner on every page was rejected: it alarmed without saying what it concerned or what to do.
 

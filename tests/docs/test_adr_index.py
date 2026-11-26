@@ -16,9 +16,6 @@ import pytest
 from tests.docs import _adr
 from tests.docs._helpers import REPO_ROOT
 
-_COMMAND_RE = re.compile(
-    rf"^git show {re.escape(_adr.RETIRED_TAG)}:(?P<path>\S+)(?: \| sed -n '(?P<a>\d+),(?P<b>\d+)p')?$"
-)
 
 
 def _index_module() -> ModuleType:
@@ -57,26 +54,26 @@ def test_the_index_table_is_generated_from_the_files() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_a_retired_number_has_no_file_and_its_row_prints_its_old_text() -> None:
+def test_a_retired_number_has_no_file_and_its_row_finds_its_old_text() -> None:
     adrs = _adr.load_adrs()
+    retired = _adr.load_retired()
     problems: list[str] = []
-    for n, row in _adr.load_retired().items():
+    assert retired, "no row under *Retired* parsed: `| N | title | why | `<tag>:<path>`[, lines a–b] |`"
+    for n, row in retired.items():
         if n in adrs:
             problems.append(f"#{n}: retired, yet {adrs[n][0].where} exists")
         if "ADR #" not in row.why and not row.why.startswith(("Change record", "Its subject is gone")):
             problems.append(f"#{n}: the row names no successor and no reason")
-        m = _COMMAND_RE.match(row.command)
-        if not m:
-            problems.append(f"#{n}: `{row.command}` is not `git show {_adr.RETIRED_TAG}:<path>[ | sed -n 'a,bp']`")
+        if not _adr.RELEASE_TAG_RE.match(row.tag):
+            problems.append(f"#{n}: {row.tag!r} is not a release tag (vX.Y.Z)")
             continue
-        shown = subprocess.run(["git", "show", f"{_adr.RETIRED_TAG}:{m.group('path')}"],
-                               cwd=REPO_ROOT, capture_output=True, text=True)
+        shown = subprocess.run(["git", "show", f"{row.tag}:{row.path}"], cwd=REPO_ROOT, capture_output=True, text=True)
         if shown.returncode != 0:
-            problems.append(f"#{n}: {shown.stderr.strip()} (CI fetches the tag: git fetch --depth=1 origin tag {_adr.RETIRED_TAG})")
+            problems.append(f"#{n}: {shown.stderr.strip()} (in a shallow clone: git fetch origin tag {row.tag})")
             continue
         lines = shown.stdout.splitlines()
-        first = lines[int(m.group("a")) - 1] if m.group("a") else lines[0]
+        first = lines[row.lines[0] - 1] if row.lines else lines[0]
         if not re.match(rf"^#+ (?:ADR #)?{n}\b", first):
-            problems.append(f"#{n}: the command's first line is {first!r}, not ADR #{n}'s heading")
+            problems.append(f"#{n}: the first line of its text is {first!r}, not ADR #{n}'s heading")
     if problems:
         pytest.fail("\n".join(problems))

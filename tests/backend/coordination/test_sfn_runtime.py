@@ -306,7 +306,7 @@ def test_error_matching(error, names, expected):
     assert matches(error, names) is expected
 
 
-# ── behaviour observed live in TR-0 (ADR #137, To verify in TR-0) ─────────
+# ── behaviour observed live in TR-0 (ADR #137, *Probed AWS behaviour*) ─────────
 
 TOKEN_PAYLOAD = {"token": "{% $states.context.Task.Token %}", "retry": "{% $states.context.State.RetryCount %}",
                  "redrive": "{% $states.context.Execution.RedriveCount %}", "entered": "{% $states.context.State.EnteredTime %}"}

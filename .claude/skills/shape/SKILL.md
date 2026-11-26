@@ -45,7 +45,7 @@ Status: shaping | settled
 - <thing> — because <reason>
 ```
 
-For genuinely one-way decisions, draft the ADR now in `docs/decisions/` (the rules: `docs/CLAUDE.md`, *Design decisions*; one that governs only the paid overlay goes to `polyris-ee/docs/decisions/`) and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 97+; most shaping sessions should add zero.
+For genuinely one-way decisions, draft the ADR now in `docs/decisions/` (the rules: `docs/CLAUDE.md`, *Design decisions*; where it lives: root `CLAUDE.md` Principle #24) and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 97+; most shaping sessions should add zero.
 
 ## Done when
 

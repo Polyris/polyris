@@ -33,7 +33,7 @@ RECENT_WRITES = timedelta(minutes=15)
 #: Every AWS call fails fast, well inside the Lambda's own timeout: botocore's
 #: standard retry mode with three attempts, a 2 s connect and a 5 s read timeout.
 #: Its defaults (ten DynamoDB attempts, a 60 s read) outlast a 30 s reconcile, and
-#: a Lambda that times out cannot report CoordinationTransient (ADR #130 §6.3).
+#: a Lambda that times out cannot report CoordinationTransient (ADR #137 §1, Principle #53).
 CLIENT_RETRIES = {"mode": "standard", "total_max_attempts": 3}
 CONNECT_TIMEOUT_SECONDS = 2
 READ_TIMEOUT_SECONDS = 5

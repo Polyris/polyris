@@ -69,7 +69,7 @@ CASES = [
     (['success', 'aborted', 'stopped'], 'aborted'),
     (['failed', 'aborted'], 'failed'),              # a genuine failure outranks the stop
     # A run from before 1.3 (these have no run row) with a row left unfinished: 1.3 finishes none, so it is stale
-    # (ADR #137, Migration; the review of TR-6d).
+    # (ADR #137, *Migration and upgrade*; the review of TR-6d).
     (['running'], 'stale'),
     (['running', 'success'], 'stale'),
     (['waiting_decision', 'failed'], 'stale'),

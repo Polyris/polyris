@@ -369,7 +369,7 @@ describe('formatDecisionDeadline', () => {
     });
 });
 
-describe('shownTaskStatus (ADR #137, Migration; the review of TR-6d)', () => {
+describe('shownTaskStatus (ADR #137, *Migration and upgrade*; the review of TR-6d)', () => {
     it('shows a row of a run from before 1.3 left unfinished as stale, any other row by its status', () => {
         expect(shownTaskStatus({ status: 'running', stale: true })).toBe('stale');
         expect(shownTaskStatus({ status: 'running' })).toBe('running');

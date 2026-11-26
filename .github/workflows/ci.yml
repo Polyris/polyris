@@ -71,9 +71,9 @@ jobs:
           PYTEST_ADDOPTS: -n auto
         run: make test-integration
 
-      # The retired ADRs' rows print their text from this tag (tests/docs/test_adr_index.py).
-      - name: Fetch the tag that holds the retired ADRs
-        run: git fetch --depth=1 origin tag v1.3.2
+      # A retired ADR's row names the release tag that holds its text (tests/docs/test_adr_index.py).
+      - name: Fetch the release tags that hold the retired ADRs
+        run: git fetch --depth=1 origin 'refs/tags/v*:refs/tags/v*'
 
       - name: Run docs drift tests
         run: make test-docs

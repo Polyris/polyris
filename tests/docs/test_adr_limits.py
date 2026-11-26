@@ -5,9 +5,10 @@ decisions*): a file over 20 KB is split by sub-decision first. The files over
 it are listed below with a cap at their size; a cap goes down with its file and
 goes up only by the maintainer's decision, written next to it.
 
-An ADR that governs only the paid overlay lives in `polyris-ee/docs/decisions/`,
-numbered from 1001, and is neither stored, indexed nor cited here (root
-`CLAUDE.md` Principle #24).
+No ADR numbered from 1001, the overlay's numbers (root `CLAUDE.md`
+Principle #24), is stored or cited here. The seam ADRs, which describe the
+free/paid boundary itself, are named once, in `scripts/check-oss-purity.sh`;
+`.config/vale.ini` must name the same ones.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import re
 import pytest
 
 from tests.docs import _adr
-from tests.docs._helpers import format_findings, rel
+from tests.docs._helpers import REPO_ROOT, format_findings, rel
 
 FILE_LIMIT = 20_000
 LINE_LIMIT = 1_000
@@ -27,16 +28,17 @@ CAP_SLACK = 1_024
 
 # Files over FILE_LIMIT, each capped at its size when the limit came in (1.3.2).
 OVER_THE_LIMIT = {
-    "adr-137-tasks-as-rows.md": 128_000,  # hub of the engine; compressed from 179 KB
-    "adr-130-coordination-reconciler.md": 34_600,  # hub; compressed from 67 KB
-    "adr-51-backfill-unification-concept-endpoint-bulk-run.md": 24_800,  # era spec, not yet split
+    # hub of the engine; compressed from 179 KB, then raised by the review of the branch to
+    # keep the probed AWS behaviour that code and tests cite (*Probed AWS behaviour*)
+    "adr-137-tasks-as-rows.md": 131_300,
+    # hub; compressed from 67 KB, then raised by the same review for §6.1's DependsOn rule
+    "adr-130-coordination-reconciler.md": 34_900,
+    "adr-51-backfill-unification.md": 24_800,  # era spec, not yet split
     "adr-138-trigger-rules-after-run-end-change.md": 23_400,  # its two truth tables are the decision
 }
 
-# The first number an ADR of the paid overlay takes, and the ADRs that moved
-# there with the numbers they had here.
+# The first number an ADR of the paid overlay takes (root CLAUDE.md Principle #24).
 FIRST_OVERLAY_NUMBER = 1001
-MOVED_TO_OVERLAY = frozenset({48, 67, 69, 70})
 
 
 def _adr_files() -> list:
@@ -77,7 +79,7 @@ def test_the_allowlist_names_only_files_over_the_limit() -> None:
 
 
 def _is_overlay(number: int) -> bool:
-    return number >= FIRST_OVERLAY_NUMBER or number in MOVED_TO_OVERLAY
+    return number >= FIRST_OVERLAY_NUMBER
 
 
 def test_no_adr_of_the_paid_overlay_lives_here() -> None:
@@ -94,3 +96,14 @@ def test_no_adr_of_the_paid_overlay_lives_here() -> None:
                                                         "this repository neither stores, indexes nor cites it"))
     if findings:
         pytest.fail(format_findings("adr_overlay", findings))
+
+
+def test_vale_exempts_the_seam_adrs_the_purity_check_names() -> None:
+    script = (REPO_ROOT / "scripts" / "check-oss-purity.sh").read_text()
+    vale = (REPO_ROOT / ".config" / "vale.ini").read_text()
+    m = re.search(r"^SEAM_ADRS=\(([\d ]+)\)", script, re.M)
+    v = re.search(r"^\[docs/decisions/adr-\{([\d,]+)\}-\*\.md\]\nPolyrisDocs\.PaidFeatureLeaks = NO", vale, re.M)
+    assert m and v, "SEAM_ADRS in check-oss-purity.sh, or its section in vale.ini, is missing"
+    assert sorted(m.group(1).split()) == sorted(v.group(1).split(",")), (
+        "vale.ini exempts other seam ADRs than scripts/check-oss-purity.sh names"
+    )
