@@ -30,9 +30,8 @@ def table(mocker):
         open_registry(mocker, resource,
                       {'pipeline_name': 'orders', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:orders'},
                       {'pipeline_name': 'billing', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:billing'})
-        sfn = mocker.patch.object(pipelines_list, 'sfn')
         yield table
-        assert sfn.method_calls == [], "the console asks Step Functions nothing about a run (ADR #137 §5)"
+    assert not hasattr(pipelines_list, 'sfn'), "the console asks Step Functions nothing about a run (ADR #137 §5)"
 
 
 def body():

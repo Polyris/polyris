@@ -32,9 +32,8 @@ def world(mocker):
         use_specs_table(mocker, resource)
         freeze(mocker, 'routes.pipelines_list', 'routes.pipelines_info')
         registry = open_registry(mocker, resource)
-        sfn = mocker.patch.object(pipelines_list, 'sfn')
         yield type('World', (), {'table': table, 'resource': resource, 'registry': registry})
-        assert sfn.method_calls == [], "no route asks Step Functions about a run (ADR #137 §5)"
+    assert not hasattr(pipelines_list, 'sfn'), "no route asks Step Functions about a run (ADR #137 §5)"
 
 
 def executions(**query):

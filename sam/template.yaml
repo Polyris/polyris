@@ -1847,13 +1847,24 @@ Resources:
                 Resource: !GetAtt PipelineSpecsTable.Arn
               - Effect: Allow
                 Action:
-                  - states:StartExecution
                   - states:StopExecution
                   - states:DescribeExecution
-                  # /api/health (Step Functions check) and the pipeline-ARN
-                  # fallback in pipelines_list / pipelines_actions.
+                  # /api/health (its Step Functions check).
                   - states:ListStateMachines
                 Resource: "*"
+              # Run starts a registered pipeline's state machine, and the backfill route
+              # bulk_backfill; never run_task, which the dispatcher alone starts for a task row
+              # (tests/sdk/test_console_api_sfn_iam_parity.py).
+              - Sid: StartPipelines
+                Effect: Allow
+                Action: states:StartExecution
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"
+              - Sid: NeverStartRunTask
+                Effect: Deny
+                Action: states:StartExecution
+                Resource:
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper"
+                  - "arn:aws:states:*:*:stateMachine:*-polyris-dep-run-task-helper:*"
               - Effect: Allow
                 Action:
                   - cloudwatch:GetMetricStatistics

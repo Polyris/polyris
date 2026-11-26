@@ -23,7 +23,7 @@ CONSOLE_API = REPO_ROOT / "sam" / "lambdas" / "console_api"
 OVERLAY = REPO_ROOT.parent / "polyris-ee" / "sam" / "lambdas" / "console_api" / "ee"
 #: What the paid overlay calls through the role, for a build without it checked out; when it is, the test below
 #: holds the list to its code.
-OVERLAY_OPERATIONS = {"describe_execution", "start_execution", "list_state_machines"}
+OVERLAY_OPERATIONS = {"describe_execution", "start_execution"}
 
 _CALL_RE = re.compile(r"\bsfn\.([a-z_]+)\(")
 _PAGINATOR_RE = re.compile(r"\bsfn\.get_paginator\(\s*['\"]([a-z_]+)['\"]")
@@ -101,3 +101,23 @@ def test_the_overlay_s_operations_are_the_ones_its_code_calls():
     if not OVERLAY.is_dir():
         pytest.skip("the paid overlay is not checked out next to this repository")
     assert set(_used_operations(OVERLAY)) == OVERLAY_OPERATIONS
+
+
+def _statements() -> list:
+    role = _template()["Resources"]["ConsoleApiRole"]["Properties"]
+    return [stmt for policy in role.get("Policies", []) for stmt in policy["PolicyDocument"]["Statement"]]
+
+
+def test_the_console_starts_only_the_platforms_state_machines_and_never_run_task():
+    """The console started any state machine of the account (IAM_HOLES_VERIFIED, claim 6c). Its Run starts a
+    registered pipeline, the overlay's backfill bulk_backfill; run_task is the dispatcher's alone, of any
+    platform in the account."""
+    from polyris.platform import PLATFORM_NAMES
+
+    starts = [s for s in _statements() if "states:StartExecution" in ([s["Action"]] if isinstance(s["Action"], str)
+                                                                       else s["Action"])]
+    allow = [s for s in starts if s["Effect"] == "Allow"]
+    deny = [s for s in starts if s["Effect"] == "Deny"]
+    assert [s["Resource"] for s in allow] == ["arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"]
+    run_task = f"arn:aws:states:*:*:stateMachine:*-polyris-{PLATFORM_NAMES.run_task}"
+    assert [sorted(s["Resource"]) for s in deny] == [[run_task, f"{run_task}:*"]]

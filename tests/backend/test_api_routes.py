@@ -131,7 +131,6 @@ def test_list_pipelines_basic(mocker):
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
     mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
     from routes.pipelines_list import list_pipelines
     resp = _parse_response(list_pipelines(_make_event()))
 
@@ -152,7 +151,6 @@ def test_list_pipelines_schedule_from_registry(mocker):
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
     mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
     from routes.pipelines_list import list_pipelines
     resp = _parse_response(list_pipelines(_make_event()))
 

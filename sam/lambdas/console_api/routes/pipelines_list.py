@@ -16,7 +16,6 @@ from botocore.exceptions import ClientError, BotoCoreError
 from polyris.constants import ACCESS_DENIED_CODES, TaskConfigKey, TaskSpecKey
 from polyris.coordination import attention, deadlines, dispatch, run_row, task_row, trigger_rules
 
-from config import sfn
 from dal import executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing, needs_redeploy
 from polyris.coordination.task_spec import SpecError
@@ -138,25 +137,6 @@ def list_pipelines(event: Dict) -> Dict:
             # Newest first by date, then by start: the date alone left runs of one date in index order.
             runs.sort(key=lambda r: (r[0]['date'] or '', r[0]['started_at'] or ''), reverse=True)
             _finish_runs(pipelines[name], runs)
-
-    # 3. Get ARNs from Step Functions API (only if not already from registry)
-    pipelines_without_arn = [name for name, data in pipelines.items() if not data.get('arn')]
-    if pipelines_without_arn:
-        try:
-            paginator = sfn.get_paginator('list_state_machines')
-            for page in paginator.paginate():
-                for sm in page.get('stateMachines', []):
-                    sm_name = sm['name']
-                    # Match by name (exact or partial)
-                    if sm_name in pipelines and not pipelines[sm_name]['arn']:
-                        pipelines[sm_name]['arn'] = sm['stateMachineArn']
-                    else:
-                        # Try partial match (pipeline name might be part of SFN name)
-                        for p_name in pipelines_without_arn:
-                            if (p_name in sm_name or sm_name in p_name) and not pipelines[p_name]['arn']:
-                                pipelines[p_name]['arn'] = sm['stateMachineArn']
-        except (ClientError, BotoCoreError, KeyError) as e:
-            log.error("list_pipelines", "Error listing state machines", error=str(e))
 
     return cors_response(200, {
         'pipelines': list(pipelines.values()),

@@ -7,74 +7,36 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from config import sfn
 from dal import pipelines_repo
 from response import cors_response, safe_parse_body
 from logger import log
 
 
+def unregistered_message(pipeline_name: str) -> str:
+    """What the console answers for a Run of a pipeline the registry does not hold."""
+    return (f"Pipeline '{pipeline_name}' is not registered on this platform. A pipeline registers within a "
+            "minute of polyris-deploy; deploy it, then run it.")
+
+
 def run_pipeline(pipeline_name: str, event: Dict) -> Dict:
-    """Start a new pipeline execution."""
-    # Get pipeline ARN from registry
-    pipeline_arn = None
+    """Start a new execution of a registered pipeline.
+
+    The registry is the one source of a pipeline's state machine (ADR #23): a name it does not
+    hold answers 404, and a registry that cannot be read 500. The console never looks a state
+    machine up by its name, which started any state machine of the account whose name was close.
+    """
     try:
         item = pipelines_repo.get(pipeline_name) or {}
-        pipeline_arn = item.get('sfn_arn', '') or item.get('arn')
-    except Exception as e:
-        log.error("run_pipeline", "Error getting pipeline from registry", error=str(e))
-    
-    # Fallback to listing state machines and finding by name
-    available_pipelines = []
+    except (ClientError, BotoCoreError) as e:
+        log.error("run_pipeline", "Error getting pipeline from registry", error=str(e), pipeline_name=pipeline_name)
+        return cors_response(500, {'error': f'Could not read the pipeline registry: {e}'})
+    pipeline_arn = item.get('sfn_arn', '')
     if not pipeline_arn:
-        try:
-            paginator = sfn.get_paginator('list_state_machines')
-            search_name = pipeline_name.lower().replace('_', '-').replace(' ', '-')
-            candidates = []
-            
-            for page in paginator.paginate():
-                for sm in page.get('stateMachines', []):
-                    sm_name_lower = sm['name'].lower()
-                    sm_name_normalized = sm_name_lower.replace('_', '-').replace(' ', '-')
-                    
-                    # Skip helper state machines
-                    if any(helper in sm_name_lower for helper in ['wrapper', 'registration', 'run-task', 'helper', 'slack', 'failure', 'restart', 'notify']):
-                        continue
-                    
-                    available_pipelines.append(sm['name'])
-                    
-                    # Exact match - use immediately
-                    if sm_name_normalized == search_name or sm['name'] == pipeline_name:
-                        pipeline_arn = sm['stateMachineArn']
-                        break
-                    
-                    # Partial match - save as candidate
-                    if search_name in sm_name_normalized or sm_name_normalized in search_name:
-                        candidates.append({
-                            'arn': sm['stateMachineArn'],
-                            'name': sm['name'],
-                            'score': abs(len(sm_name_normalized) - len(search_name))
-                        })
-                
-                if pipeline_arn:
-                    break
-            
-            # Use best candidate if no exact match
-            if not pipeline_arn and candidates:
-                candidates.sort(key=lambda x: x['score'])
-                pipeline_arn = candidates[0]['arn']
-                
-        except Exception as e:
-            log.error("pipelines", "Error listing state machines", error=str(e))
-            import traceback
-            traceback.print_exc()
-    
-    if not pipeline_arn:
-        return cors_response(404, {
-            'error': f'Pipeline {pipeline_name} not found',
-            'available_pipelines': available_pipelines,
-            'hint': 'Check CloudWatch logs for details'
-        })
-    
+        return cors_response(404, {'error': unregistered_message(pipeline_name)})
+
     # Parse input from body
     body, err = safe_parse_body(event)
     if err:
