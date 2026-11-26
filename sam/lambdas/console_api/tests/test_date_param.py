@@ -50,7 +50,7 @@ def test_no_route_defaults_a_date_with_the_two_arg_get(path):
     assert not offenders, (
         f"{path.name} defaults `date` via the two-arg .get(), which only fires when the "
         f"param is absent — a cleared picker sends it present and empty, and the default "
-        f"never runs: {offenders}. Use `params.get('date') or <default>`. See ADR #106."
+        f"never runs: {offenders}. Use `params.get('date') or <default>`. See ADR #106, date scope."
     )
 
 

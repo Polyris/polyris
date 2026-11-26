@@ -13,20 +13,19 @@ Actively build and sharpen the project's domain model as you design. This is the
 /
 ├── GLOSSARY.md                          ← project-wide terms
 ├── docs/
-│   └── reference/
-│       ├── DESIGN_DECISIONS.md          ← inline ADRs (numbered sections)
-│       ├── adr-index.md                 ← ADR index (Principle #29)
-│       └── adr-NNN-slug.md             ← standalone ADRs for larger decisions
+│   └── decisions/
+│       ├── README.md                    ← ADR index (Principle #29)
+│       └── adr-N-slug.md                ← one file per ADR
 └── polyris/CLAUDE.md                    ← SDK-specific rules
 ```
 
-Create files lazily: only when you have something to write. `GLOSSARY.md` is created when the first term resolves. A standalone ADR file is created only when the decision is too large for an inline entry.
+Create files lazily: only when you have something to write. `GLOSSARY.md` is created when the first term resolves. An ADR file is created when a decision is recorded.
 
 ## During the session
 
 ### Challenge against existing docs first
 
-Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md`, and `docs/reference/DESIGN_DECISIONS.md`. A decision already settled there is a constraint, not a question.
+Before asking any question, read `CLAUDE.md`, `polyris/CLAUDE.md` and `docs/decisions/README.md`, the ADR index; then the ADRs of the area under discussion, section by section (find one as root `CLAUDE.md`, *Design decisions*, says). A decision already settled there is a constraint, not a question.
 
 ### Challenge against the glossary
 
@@ -78,33 +77,32 @@ If any of the three is missing, skip it.
 
 ## ADR format
 
-**Inline** (small decision, add a numbered section to `docs/reference/DESIGN_DECISIONS.md`):
+The rules are in `docs/CLAUDE.md`, *Design decisions*: one file, `docs/decisions/adr-N-<slug>.md`, N the highest number + 1. Where an ADR lives: root `CLAUDE.md` Principle #24.
 
 ```md
-### ADR #N — Short title
+---
+area: engine
+accepted: 2026-11-25
+---
+# ADR #N — The decision, stated in at most 120 characters
 
-One to three sentences: context, decision, why.
-```
+## Context
 
-After adding: update the count line in `docs/reference/adr-index.md` and add a row to the table (Principle #29).
+{Short: what forced the decision.}
 
-**Standalone** (large decision with rejected alternatives, consequences, or constraints worth preserving):
+## Decision
 
-File: `docs/reference/adr-NNN-slug.md`
+### 1. {A rule}
 
-```md
-# ADR #NNN — Short title of the decision
-
-{1-3 sentences: context, what was decided, why.}
-
-## Considered options
-
-- Option A — chosen because X
-- Option B — rejected because Y
+{The rule as it holds, with the test that pins it.}
 
 ## Consequences
 
-{Non-obvious downstream effects, if any.}
+{Non-obvious downstream effects.}
+
+## Alternatives
+
+- Option B — rejected because Y
 ```
 
-After adding: update `docs/reference/adr-index.md` count and table (Principle #29).
+After adding: run `python scripts/adr_index.py` (Principle #29).

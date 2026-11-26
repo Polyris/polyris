@@ -11,7 +11,7 @@
 //   NEXT_PUBLIC_COGNITO_USER_POOL_ID / _CLIENT_ID / _REGION  (when auth is on)
 // The empty API_URL and null AUTH.enabled here fall through to those env vars
 // (config.ts uses `w.API_URL || env` and `w.AUTH.enabled ?? env`), so .env wins
-// locally; window.CONFIG only wins when this file carries a real value (ADR #94).
+// locally; window.CONFIG only wins when this file carries a real value (ADR #94, runtime config).
 //
 // Whichever you set, API_URL must include BOTH the stage and the trailing /api
 // (e.g. https://abc123.execute-api.us-east-1.amazonaws.com/dev/api) — the app

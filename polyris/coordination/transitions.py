@@ -38,7 +38,7 @@ NO_ROW: Optional[str] = None
 #: Final: a row that no longer changes on its own. ``succeeded`` and ``aborted`` occur only on rows from before 1.3.
 FINAL: FrozenSet[str] = frozenset(SETTLED_STATUSES)
 #: Not final, and carried only by rows that a 1.2 run left: 1.2's countdown of wait_before, which 1.3 writes as a
-#: waiting row (ADR #137 §1). Its run row is missing, and the stop of such a row takes it (*Migration*).
+#: waiting row (ADR #137 §1). Its run row is missing, and the stop of such a row takes it (*Migration and upgrade*).
 OLDER_NOT_FINAL: FrozenSet[str] = frozenset({"waiting_delay"})
 #: Every status that is not final, those of rows from before 1.3 included.
 NOT_FINAL: FrozenSet[str] = (frozenset(s.value for s in S) - FINAL) | OLDER_NOT_FINAL

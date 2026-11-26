@@ -34,7 +34,7 @@ Every operation must be safe to repeat. DynamoDB conditional updates, `_sfn_stop
 If the solution is unclear — ask first. A minute of discussion beats an hour of fixing the wrong approach.
 
 **6. Align on architectural decisions**
-DynamoDB schema, SFN flow, API contract, file structure, deployment approach — requires explicit approval. After alignment, document in ADR (`docs/reference/DESIGN_DECISIONS.md`).
+DynamoDB schema, SFN flow, API contract, file structure, deployment approach — requires explicit approval. After alignment, record it as an ADR (`docs/CLAUDE.md`, *Design decisions*).
 
 **7. Finish what you start**
 Every task: code, tests, documentation, CHANGELOG. If something can't be finished — document exactly what remains and why.
@@ -113,7 +113,7 @@ After wiring, update `HelpModal::KeyboardShortcutsTab`. Use `useKeyboardShortcut
 
 Before adding a shortcut, check conflicts: `grep -rn "'<key>'" ui/src`. App.tsx's `1`-`5` are global — never re-bind at a non-App surface. A PR that adds a numeric shortcut at a non-App surface is broken and must be rejected.
 
-**20. Top-level view sync across three files (ADR #65)**
+**20. Top-level view sync across three files (ADR #65, view sync)**
 
 Adding a top-level view → update all three in the same PR:
 1. `ui/src/types/index.ts` — `MAIN_VIEWS` and `MainView` type
@@ -143,7 +143,7 @@ End with a **completeness report** — mandatory:
 Test: *would a user reading only this repo be able to use this?* If no, don't mention it — not as "coming soon", "available in paid", "greyed out in OSS", or any comparison. The paid overlay owns its own docs.
 
 - Editing something? Ask "does OSS ship this?" If no, remove the reference.
-- CHANGELOG, ADR, or design note discussing a non-OSS feature → write it in `polyris-ee`.
+- CHANGELOG or design note discussing a non-OSS feature → write it in `polyris-ee`. An ADR lives in the repository that ships what it governs: one governing only the paid overlay is written in `polyris-ee/docs/decisions/`, numbered from 1001, never stored or indexed here; one governing code here stays here and describes only what this repository ships.
 - Comparison phrases are the common violation: "X is not yet in OSS", "compared to the full Z" — the comparison itself is the violation, not just specific feature names.
 - Exception: ADRs documenting how the OSS/paid boundary mechanism itself works may discuss both sides — that's the topic.
 
@@ -165,19 +165,15 @@ After fixing a bug, ask: *what rule would have prevented this?* Write it in CLAU
 **27. Enums crossing SDK ↔ backend ↔ frontend go through `polyris/constants.py` + `sync_enums`**
 If a value set means the same thing in Python and TypeScript, it belongs in `polyris/constants.py` and is emitted by `python -m polyris.codegen.sync_enums`. Bare string literals across multiple files are how a new member gets added in one place and silently forgotten in others.
 
-When adding or removing a value: (1) edit `polyris/constants.py`, (2) register in `sync_enums.py` if new class, (3) run `python -m polyris.codegen.sync_enums` — mandatory even for removals (CI `make check-generate-enums` will fail if skipped), (4) import the enum everywhere — never bare strings, (5) add a parity test (#28).
+When adding or removing a value: (1) edit `polyris/constants.py`, (2) register in `sync_enums.py` if new class, (3) run `python -m polyris.codegen.sync_enums` — mandatory even for removals, and after any edit of `constants.py`, a comment included, since the generated files carry its hash (CI `make check-generate-enums` will fail if skipped), (4) import the enum everywhere — never bare strings, (5) add a parity test (#28).
 
 **28. Constants coupled across languages/artifacts need a parity test**
 Any string written in one artifact and read verbatim in another must have a parity test asserting the same value on both sides. The type system can't enforce string parity across JSON templates or Python↔TypeScript.
 
 Examples: `_PUSH_MARKER_FIELD` written by `xcom.push()`, read by SFN template — parity in `test_xcom_coupled_constants_parity.py`. The upstreams whose output a task reads — `run_task`'s `Items` and `xcom._readable` — `test_the_set_run_task_reads_is_the_set_xcom_reads`: an allowlist on both sides, never a list of refusals on one (`_readable` refused only failures and rule skips, and read an older run's output of the date for an upstream that still ran; the review of TR-5). Marker fields `_manually_resolved`/`_resolution`/`_reason`/`_operator` — same test. `SCHEDULE_PRESETS` ↔ `infer_cron_cadence` — `TestSchedulePresetsParity` in `test_granularity.py`. Generated enums covered by `codegen --check`.
 
-**29. adr-index.md count must match its row count**
-`docs/reference/adr-index.md` opens with "_N rows indexed (X inline, Y standalone)_". When you add or remove an ADR, update the count in the same commit:
-```bash
-grep -Ec "^\| [0-9]+ \| " docs/reference/adr-index.md
-grep -Ec "^\| [0-9]+ \| .* \| inline \|" docs/reference/adr-index.md
-```
+**29. Every ADR number resolves, and a cited section exists**
+`docs/decisions/README.md` is the index: its table of ADRs in force is generated from each file's front matter (`python scripts/adr_index.py`); a retired number keeps a row naming its successor and the command that prints its old text. `tests/docs/test_adr_*.py` check every citation, cited section, row and limit. Never renumber or reuse a number, and never drop or renumber a section something cites: leave a one-line pointer.
 
 **30. Date-scoped DDB rows are shared across same-date runs — gate UI reads on settled state**
 Rows keyed by `(pipeline, task, DATE)` — `output#*`, `input#*`, manual-resolution markers — are shared across every same-date run. A UI that renders such a row unconditionally shows a prior run's content when the current task isn't settled yet.
@@ -314,7 +310,7 @@ The tags are `polyris:namespace`, `polyris:stage` and `polyris:component` (`plat
 
 ---
 
-## Date picker is per-workspace, not global (ADR #106)
+## Date picker is per-workspace, not global (ADR #106, date scope)
 
 `useAppStore.date` is the **pipeline page's scope only**. Never read it from a workspace view (Runs, Tasks). A feed's empty date means "every date"; a page's empty date means nothing at all. Runs and Tasks each own their date filter in their own URL (`runFilter.date`, `taskFilter.date`).
 
@@ -568,9 +564,9 @@ Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `re
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
-**Auth (ADR #65, #66):** `authenticate()` → `authorize()` at top of `handler()`. Accepts Cognito JWT or PAT (`plrs_…`). Scopes: `read` ⊂ `write` ⊂ `admin`. `AUTH_ENABLED` env: the template sets it from `EnableCognitoAuth`, on by default; unset, it is off. Public paths: `/api/health*`, `/api/metrics`, `/api/action/*`.
+**Auth (ADR #65, API tokens; ADR #66):** `authenticate()` → `authorize()` at top of `handler()`. Accepts Cognito JWT or PAT (`plrs_…`). Scopes: `read` ⊂ `write` ⊂ `admin`. `AUTH_ENABLED` env: the template sets it from `EnableCognitoAuth`, on by default; unset, it is off. Public paths: `/api/health*`, `/api/metrics`, `/api/action/*`.
 
-**A public route shows an anonymous caller no error text and no resource name.** Build its body from an allowlist. Until 1.2.0 every check of `/api/health` returned the raw AWS error text, account and role names included, to anyone. It now shows its details only to a verified caller (`auth.optional_principal`, ADR #65 v1.2.0 update). `sam/lambdas/console_api/tests/routes/test_health_detail.py` plants such names in failing checks and asserts that none reaches the anonymous answer. `main.handler`'s catch-all answers a public route's unexpected failure with `INTERNAL_ERROR_MESSAGE`, and the paid overlay's action pages show no error text. `response.html_response` escapes what a page echoes, such as the execution name from the link.
+**A public route shows an anonymous caller no error text and no resource name.** Build its body from an allowlist. Until 1.2.0 every check of `/api/health` returned the raw AWS error text, account and role names included, to anyone. It now shows its details only to a verified caller (`auth.optional_principal`, ADR #65, API tokens). `sam/lambdas/console_api/tests/routes/test_health_detail.py` plants such names in failing checks and asserts that none reaches the anonymous answer. `main.handler`'s catch-all answers a public route's unexpected failure with `INTERNAL_ERROR_MESSAGE`, and the paid overlay's action pages show no error text. `response.html_response` escapes what a page echoes, such as the execution name from the link.
 
 When adding an endpoint:
 1. **Decide the tier.** Free → `routes/<mod>.py`. Team → `ee/team/<mod>.py`. OSS must never import `ee`.
@@ -692,7 +688,7 @@ Internal rows are `_`-prefixed (the run row `_run_{execution}` and its input `_r
 - Components never import `api` directly — use hooks
 - Styling: shadcn primitives only, no other UI libraries (mui/chakra/mantine/antd = 0). Tailwind CSS for utilities; BEM-prefixed global CSS for surface-specific bits. No `.module.css`.
 - Icons: Lucide React via `icons.tsx`
-- Runtime config: `window.CONFIG` (set by `/config.js`) is source of truth, `NEXT_PUBLIC_*` is build fallback — `getConfig()` is window-first; use `??` for booleans (ADR #94)
+- Runtime config: `window.CONFIG` (set by `/config.js`) is source of truth, `NEXT_PUBLIC_*` is build fallback — `getConfig()` is window-first; use `??` for booleans (ADR #94, runtime config)
 - **Status constants are for orchestration only.** `TASK_SUCCESS_STATUSES` etc. encode which statuses unblock downstream tasks. Display code (counters, labels, badges) uses explicit checks: `t.status === 'success'`, never `TASK_SUCCESS_STATUSES.includes(t.status)`. See `ui/CLAUDE.md` for details.
 - `ErrorBoundary.tsx` is the only sanctioned class component — React's error boundary API has no hook equivalent. Don't write any other class components.
 - TypeScript strict mode is on (`tsconfig.json`). When you reach for `any`, stop — use `unknown` + narrow, or write the type out.
@@ -780,7 +776,7 @@ make test-cov
 
 After significant changes:
 - `CHANGELOG.md` — new version entry
-- `docs/reference/DESIGN_DECISIONS.md` — new ADR
+- `docs/decisions/adr-N-<slug>.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
 - `CHANGELOG.md` opens with `## Unreleased`; add your entry under it. `scripts/release.sh` refuses an empty one and renames it to `## vX.Y.Z - <date>` (`scripts/changelog_release.py`). Nothing did before, and releases from 1.0.2 to 1.2.2 shipped their notes under `## Unreleased`.
 - A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/docs/test_resource_counts.py` and `tests/docs/test_resource_inventory.py` derive every number and name from `sam/template.yaml` (and the free route count from the console) and fail until the docs agree. Run `make test-docs`.
@@ -806,20 +802,7 @@ Releases are cut from git tags. CE tag `vX.Y.Z` builds PyPI + self-hosted bundle
 
 ---
 
-## Key ADRs (read before touching these areas)
+## Design decisions (ADRs)
 
-| # | Topic | Decision |
-|---|-------|---------|
-| 22 | Data source | UI reads DynamoDB only, never SFN API |
-| 23 | DAG lookup | superseded by ADR #137 §8: the run's spec version (a 1.2 run's snapshot until 1.4) → registry → inferred |
-| 24 | Registration | `polyris-deploy` boto3 call, not EventBridge |
-| 26 | Testing | pytest-mock (`mocker`) everywhere |
-| 28 | Exceptions | `(ClientError, BotoCoreError)` for AWS calls; route-level catch-all OK |
-| 34 | Infrastructure | AWS SAM (not Terraform/OpenTofu/Pulumi) |
-| 35 | Pipeline deploy | `polyris-deploy` (CFN) replaces Pulumi |
-| 37 | SFN definitions | `DefinitionUri` + `AWS::Serverless::StateMachine` |
-| 38 | Error visibility | `_notify_warn_` records + always log `error=str(e)` |
-| 39 | Assets | pipeline_registry is source of truth, asset_registry removed |
-| 40 | Responsive layout | Flex chains, no viewport magic numbers; mobile rules in `_mobile.css` or per-component `@media` |
-| 41 | URL routing | CloudFront Function rewrites + `window.history` for per-route deep state |
-| 94 | Runtime config | `window.CONFIG` (from `/config.js`) wins over baked `NEXT_PUBLIC_*`; `getConfig` is window-first, `??` for booleans |
+`ADR #N` is `docs/decisions/adr-N-<slug>.md`. Find `§k` with `grep -nE '^#+ k[. ]'` (`6\.1` for §6.1); no such heading: `§k` is item `k.` of the decision list (`grep -nE '^k\. '`). `*Name*` is a heading. Read that section, not the file. No file: see its row in `docs/decisions/README.md`. A cited section is a rule in force (Principle #6).
+Read first: engine — #137 §1, §3, §7, #130 *Rules for the code*, #138 §2; install — #131; seam — #97–#100, #110; auth — #65, API tokens; views — #65, view sync. In force: the UI reads DynamoDB, never Step Functions (#22); SAM, not Terraform (#34); no asset registry (#39); CloudFront rewrites + `window.history` (#41); `window.CONFIG` wins (#94, runtime config).

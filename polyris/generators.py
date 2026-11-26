@@ -896,7 +896,7 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
     # sfn type doesn't need task_config
 
     # Thread the retry policy into task_config only when retries are requested
-    # (ADR #107). When absent, the wrapper's Check_Should_Retry defaults to 0, so
+    # (ADR #107, retry loop). When absent, the wrapper's Check_Should_Retry defaults to 0, so
     # no-retry tasks keep their existing contract untouched (including sfn's empty
     # one) and incur no snapshot churn; sfn tasks with retries opt in uniformly.
     _add_retry_config(

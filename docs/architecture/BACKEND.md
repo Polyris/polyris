@@ -16,7 +16,7 @@ coordination Lambdas import their status sets from `polyris.coordination`, in
 the SDK their `requirements.txt` pins. `make check-generate-enums` gates drift
 in CI. Don't hand-edit the
 generated files or duplicate an enum — edit `constants.py` and regenerate
-(DESIGN_DECISIONS #72/#83/#93/#94).
+(ADR #72, #83, #93 and #94, error codes).
 
 ---
 

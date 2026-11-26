@@ -1,4 +1,4 @@
-"""Defects ADR #130 fixes, by id (the ADR's Context table); B-D1 is ADR #133's, and the ids from
+"""Defects ADR #130 fixes, by id, each described here; B-D1 is ADR #133's, and the ids from
 B-RN1 on come from the external review of 1.2.0 (ADR #135 and the CHANGELOG's Fixed entries).
 B-Q1 is D107's: the harness fails like AWS on an expression that evaluates to undefined.
 The ids from R-L1 on are the classes of bug ADR #137 makes impossible, each

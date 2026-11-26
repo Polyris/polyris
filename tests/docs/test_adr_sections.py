@@ -1,0 +1,61 @@
+"""Every cited section of an ADR exists in that ADR.
+
+`ADR #137 §7`, `ADR #130 §1, §9`, `ADR #137, *Migration and upgrade*`,
+`ADR #50 §Backward compatibility` and `ADR #130, Rules for the code` resolve to
+a heading of that ADR (or to an item of its numbered decision list, when it has
+no numbered headings). Root `CLAUDE.md` Principle #29.
+"""
+from __future__ import annotations
+
+import pytest
+
+from tests.docs import _adr
+from tests.docs._helpers import format_findings, rel
+
+
+def _check(c: _adr.Citation, adrs: list[_adr.Adr]) -> list[str]:
+    missing: list[str] = []
+    for key in c.sections:
+        if not any(a.has_section(key) for a in adrs):
+            missing.append(f"ADR #{c.number} §{key}")
+    if c.sub and not any(a.has_section(f"{c.number}{c.sub}") for a in adrs):
+        missing.append(f"ADR #{c.number}{c.sub}")
+    if c.name and not any(a.has_named(c.name, prefix=True) for a in adrs):
+        missing.append(f"ADR #{c.number} §{c.name}")
+    if c.starred and not any(a.has_named(c.starred) or a.has_title(c.starred) for a in adrs):
+        missing.append(f"ADR #{c.number}, *{c.starred}*")
+    if c.exact and not any(a.has_named(c.exact) or a.has_title(c.exact) for a in adrs):
+        missing.append(f"ADR #{c.number}, {c.exact}")
+    return missing
+
+
+def test_every_cited_section_exists() -> None:
+    known = _adr.load_adrs()
+    retired = _adr.load_retired()
+    findings: list[tuple[str, int, str]] = []
+    for path in _adr.tracked_text_files():
+        for lineno, line in _adr.scanned_lines(path):
+            for c in _adr.citations_in(path, lineno, line):
+                if c.number in retired and (c.sections or c.name or c.starred or c.sub):
+                    findings.append((rel(path), lineno, f"ADR #{c.number} is retired: cite the section that replaced it"))
+                if c.number in known:
+                    for what in _check(c, known[c.number]):
+                        findings.append((rel(path), lineno, f"{what}: no such section"))
+    if findings:
+        pytest.fail(format_findings("adr_sections", findings))
+
+
+def test_a_pointer_leads_to_a_live_section() -> None:
+    known = _adr.load_adrs()
+    findings: list[tuple[str, int, str]] = []
+    for adrs in known.values():
+        for adr in adrs:
+            for heading, target in adr.pointers():
+                num, key = target
+                live = [a for a in known.get(num, []) if key is None or a.has_section(key)]
+                if not live:
+                    findings.append((adr.where, 0, f"{heading} points at ADR #{num} §{key}, which does not exist"))
+                elif any(a.is_pointer(key) for a in live):
+                    findings.append((adr.where, 0, f"{heading} points at another pointer (ADR #{num} §{key})"))
+    if findings:
+        pytest.fail(format_findings("adr_pointers", findings))

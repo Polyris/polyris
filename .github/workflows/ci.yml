@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # rsa (console_api auth.py, ADR #65) ships in the [dev] extra; the SDK
+          # rsa (console_api auth.py, ADR #65, API tokens) ships in the [dev] extra; the SDK
           # tests import the Lambda ROUTES, so the editable install covers them.
           pip install -e ".[dev]"
           pip install ruff mypy cfn-lint
@@ -70,6 +70,10 @@ jobs:
         env:
           PYTEST_ADDOPTS: -n auto
         run: make test-integration
+
+      # A retired ADR's row names the release tag that holds its text (tests/docs/test_adr_index.py).
+      - name: Fetch the release tags that hold the retired ADRs
+        run: git fetch --depth=1 origin 'refs/tags/v*:refs/tags/v*'
 
       - name: Run docs drift tests
         run: make test-docs
@@ -177,7 +181,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # rsa = pure-Python RS256 JWT verify in auth.py (ADR #65).
+          # rsa = pure-Python RS256 JWT verify in auth.py (ADR #65, API tokens).
           # moto = real (in-memory) AWS backends for tests that exercise actual
           # boto3 calls rather than mocking them (Principle #14) — e.g. the
           # coordination Lambdas' tests against real DynamoDB tables and streams.

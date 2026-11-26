@@ -565,7 +565,7 @@ def run_up(args: argparse.Namespace) -> None:
         deployed = version_from_description(existing.get("Description"))
         print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {installing})")
         # A stack whose last update succeeded and still deletes what it dropped is an upgrade to 1.3 that
-        # was interrupted: its cleanup waits for what 1.2 left running (ADR #137, *Migration*).
+        # was interrupted: its cleanup waits for what 1.2 left running (ADR #137, *Migration and upgrade*).
         cleaning_up = (existing.get("StackStatus") == CLEANUP_STATUS
                        and runs_tasks_as_rows(deployed, outputs_of(existing)))
         if existing.get("StackStatus", "").endswith("_IN_PROGRESS") and not cleaning_up:
@@ -658,7 +658,7 @@ def run_up(args: argparse.Namespace) -> None:
     _header("CloudFormation")
     assert stack_name  # set on both branches above
     # The update from 1.2 deletes 1.2's state machines: their executions are stopped as its cleanup begins (ADR #137,
-    # *Migration*). Any other update, 1.3 to 1.3 among them, stops nothing then.
+    # *Migration and upgrade*). Any other update, 1.3 to 1.3 among them, stops nothing then.
     stop_leftovers = (functools.partial(_stop_leftovers, session, cfn, stack_name, region=region, account=account)
                       if upgrading else None)
     after_update = existing is not None and rows_engine
@@ -733,7 +733,7 @@ def _check_before_upgrade(
     session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str, deployed: Optional[str],
     override: bool,
 ) -> None:
-    """Check a platform below 1.3 before it is upgraded, while nothing has changed (ADR #137, *Migration*)."""
+    """Check a platform below 1.3 before it is upgraded, while nothing has changed (ADR #137, *Migration and upgrade*)."""
     print("   checking the platform before its upgrade to 1.3")
     dynamodb = session.client("dynamodb")
     registry = outputs_of(stack).get(OUTPUT_REGISTRY_TABLE, "")

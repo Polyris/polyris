@@ -7,8 +7,10 @@ description: Use when integrating a new AWS service into the Polyris stack beyon
 
 Polyris compiles a Python DSL → Amazon States Language → Step Functions. "Adding a service" is
 usually **a library change first** (a new task type the DSL emits), then infra (SAM/IAM). Every
-service is standing cost + operational surface — read the cost and SFN-direction ADRs in
-`docs/reference/DESIGN_DECISIONS.md` first. The stack is deliberately small (~$31/month).
+service is standing cost + operational surface — read the SFN-direction ADRs first: #18 (Standard
+vs Express), #19 (zero-cost waiting), #20 (Step Functions over EventBridge), #137 §1 and its *Cost*
+(how a task runs and what it costs). Find a section with `grep -nE '^#+ k[. ]' docs/decisions/adr-N-*.md` (write `6\.1` for §6.1); with
+no such heading, §k is item `k.` of the decision list (`grep -nE '^k\. '`). Read only that section. The stack is deliberately small (~$31/month).
 
 ## Step 1 — Fit + pick the integration shape
 
@@ -43,7 +45,7 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
    - Every `ValueError` must name the decorator (`@task.<service>`), the field, and show a working
      example: `"@task.<service> <field> must not be empty — e.g. <field>='<example>'."`.
    - Docstring examples must not use `:N` pinned suffixes on `task_definition` / `job_definition`
-     (ADR #35 applies to docstrings too).
+     (Principle #35 applies to docstrings too).
 3. **`polyris/generators.py`** — two dispatch sites, keep in sync. The split (dict + `if/elif`) is
    intentional for now — the registry refactor (paid emitters self-register without editing the free
    compiler) is deferred until the first paid AWS service. Until then, edit both sites together.
@@ -51,7 +53,7 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
      register it in the state-generator **dispatch dict**.
    - Add an `elif task.task_type == '<service>':` branch to the `task_config` builder,
      `_build_task_config_and_arn`. Keys are **never bare strings** — declare each as a
-     `polyris.constants.TaskConfigKey` member first (ADR #108); `tests/sdk/test_task_config_contract.py`
+     `polyris.constants.TaskConfigKey` member first (ADR #108, TaskConfigKey); `tests/sdk/test_task_config_contract.py`
      fails on any literal on either side.
    - Add the type to `WRAPPER_STEP_TYPES` if its step should run as a task row, and to
      `TRACKED_STEP_TYPES` if it should appear in DAG visualization.
@@ -90,8 +92,8 @@ materially moves ~$31/month, justify it in the ADR. On-demand / pay-per-use shap
 
 ## Step 6 — Record the decision (ADR)
 
-Add a standalone `docs/reference/adr-<N>-<slug>.md` (next number after the current ceiling; mirror
-`adr-106`/`adr-107`). Capture: what the service is for, why it vs alternatives, cost delta, and
+Add `docs/decisions/adr-<N>-<slug>.md` (the highest number + 1), written as `docs/CLAUDE.md`,
+*Design decisions*, says, then run `python scripts/adr_index.py`. Capture: what the service is for, why it vs alternatives, cost delta, and
 orchestration shape.
 
 ## Step 7 — Surfaces that follow

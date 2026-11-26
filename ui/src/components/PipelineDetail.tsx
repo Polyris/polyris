@@ -512,7 +512,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                     // asked `executions.length === 0` instead — a different question, to a
                     // different endpoint — so whenever the two disagreed the explanation
                     // silently vanished and left a bare graph with no way out. They agree
-                    // now (ADR #106 follow-up), which is exactly why this must not go back
+                    // now (ADR #106, date scope follow-up), which is exactly why this must not go back
                     // to trusting that they always will.
                     (dag?.nodes?.length ?? 0) > 0 ? (
                         <div className="relative h-full">

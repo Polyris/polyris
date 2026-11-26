@@ -1,7 +1,7 @@
 """
 Data Access Layer: API tokens (Personal Access Tokens).
 
-Per ADR #65 — a dedicated `api-tokens` table (not the shared pipeline-tokens
+Per ADR #65, API tokens — a dedicated `api-tokens` table (not the shared pipeline-tokens
 table), keeping a security credential separate from operational execution data.
 
 Table schema (api-tokens):

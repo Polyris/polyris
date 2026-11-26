@@ -37,7 +37,7 @@ from polyris.platform import (
 ACCOUNT = "123456789012"  # moto's default account
 REGION = "eu-central-1"
 #: An older platform that already runs 1.3's engine, by its version or, for a stack that names none,
-#: by the output 1.3 adds. An update of one makes no checks of the move from 1.2 (ADR #137, *Migration*),
+#: by the output 1.3 adds. An update of one makes no checks of the move from 1.2 (ADR #137, *Migration and upgrade*),
 #: which the tests under "The move from 1.2 to 1.3" cover.
 OLDER = "1.3.0a1"
 ROWS_OUTPUTS = [{"OutputKey": "StartRunFunctionArn",

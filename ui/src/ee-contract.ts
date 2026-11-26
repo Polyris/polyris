@@ -42,7 +42,7 @@ export interface BackfillsViewProps {
 }
 
 export interface PaidSurface {
-  /** Personal Access Token management (ADR #65/#66). Rendered in SettingsModal. */
+  /** Personal Access Token management (ADR #65, API tokens, and ADR #66). Rendered in SettingsModal. */
   ApiTokensSection?: ComponentType;
   /** Per-pipeline failure-alert config: Slack/PagerDuty (ADR #103). Rendered in SettingsModal. */
   AlertsSection?: ComponentType;

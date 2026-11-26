@@ -62,7 +62,6 @@ Start with the [README](../README.md): what polyris is, how to install it, and [
 |----------|-------------|
 | [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | How polyris works |
 | [BACKEND.md](architecture/BACKEND.md) | The console API and its tables |
-| [DESIGN_DECISIONS.md](reference/DESIGN_DECISIONS.md), [adr-index.md](reference/adr-index.md) | Design decisions (ADRs) |
 
 ## Contributing
 
@@ -71,4 +70,5 @@ Start with the [README](../README.md): what polyris is, how to install it, and [
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Set up a checkout and send a change |
 | [DEVELOPMENT.md](tools/DEVELOPMENT.md) | Tests, checks, CI, and how the console is built |
 | [AGENTIC_WORKFLOW.md](tools/AGENTIC_WORKFLOW.md) | The coding-agent workflow and its guards |
+| [Design decisions](decisions/README.md) | Why the code is the way it is: the ADRs in force |
 | [TRADEMARK.md](reference/TRADEMARK.md) | Trademark and branding policy |

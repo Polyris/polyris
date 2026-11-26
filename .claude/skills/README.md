@@ -25,7 +25,7 @@ turns and agent self-review caught none.
 
 | Skill | Does | Ends by |
 |---|---|---|
-| `/grill-with-docs` | relentless interview against CLAUDE.md + ADRs + codebase; writes new terms to `GLOSSARY.md` and hard decisions as ADRs inline | frontier empty, user confirms shared understanding |
+| `/grill-with-docs` | relentless interview against CLAUDE.md + ADRs + codebase; writes new terms to `GLOSSARY.md` and hard decisions as ADRs in `docs/decisions/` | frontier empty, user confirms shared understanding |
 | `/shape` | one question at a time, each with a recommendation; never asks what the repo can answer | writing `docs/work/<slug>/DECISIONS.md`, then stopping |
 | `/implement` | one change: read first, failing test first for a bug, mutation-test the fix, sweep the blast radius | reporting what the gates said, not how it feels |
 | `/refactor` | restructure without changing behaviour — green baseline first, full symbol sweep, no bug fixes bundled | all callers updated, grep returns zero old names, gates green |

@@ -16,6 +16,6 @@ FIELD = "generation"
 FIRST = 1
 
 #: What a row that a 1.2 run left with no generation reads as, or with 0, which 1.2's templates wrote when their
-#: input had none. Only its stop writes such a row (``row_write.LEGACY_ROW_CONDITION``, *Migration*); raised
+#: input had none. Only its stop writes such a row (``row_write.LEGACY_ROW_CONDITION``, *Migration and upgrade*); raised
 #: generations start at ``FIRST``, so no 1.3 owner matches it.
 LEGACY = 0

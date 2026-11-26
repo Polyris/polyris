@@ -130,7 +130,6 @@ Or browse [examples/](examples/) — 17 self-contained pipelines from hello-worl
 | Approve an install (IAM / resource inventory) | [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) |
 | Fix a specific problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
 | Understand the runtime architecture | [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) |
-| Read design decisions / ADRs | [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) |
 | Develop polyris itself | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ---

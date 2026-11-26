@@ -34,7 +34,7 @@ The sweeper checks what is due every 5 minutes, so a lost wake-up delays a task 
 ## Design Principles
 
 These are the load-bearing decisions the rest of the architecture follows from.
-(Each is expanded in [DESIGN_DECISIONS.md](../reference/DESIGN_DECISIONS.md).)
+(Each is expanded in its ADR; [the decisions index](../decisions/README.md) lists them.)
 
 1. **Nothing to run — AWS runs it.** polyris has no scheduler, no worker pool
    and no orchestrator to operate. A pipeline compiles to a Step Functions state
@@ -68,7 +68,7 @@ These are the load-bearing decisions the rest of the architecture follows from.
    defined once in `polyris/constants.py` and code-generated into every Lambda
    (`constants_generated.py`) and the UI (`ui/src/generated/enums.ts`), with CI
    drift gates. Hand-maintained copies of the same vocabulary are treated as
-   bugs (see DESIGN_DECISIONS #72/#83/#93/#94).
+   bugs (see ADR #72, #83, #93 and #94, error codes).
 
 6. **No silent failures.** A task that fails after its retries waits for an
    operator's decision, with the cause on its row. A failure of the platform
@@ -79,7 +79,7 @@ These are the load-bearing decisions the rest of the architecture follows from.
 
 ## Data Flow: "What Calls What"
 
-Use this section to debug "why didn't my task start?" — trace the chain step by step. [ADR #137](../reference/adr-137-tasks-as-rows.md) is the full design.
+Use this section to debug "why didn't my task start?" — trace the chain step by step. [ADR #137](../decisions/adr-137-tasks-as-rows.md) is the full design.
 
 ### Flow 1: A scheduled run
 

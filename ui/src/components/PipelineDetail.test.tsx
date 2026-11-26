@@ -447,7 +447,7 @@ describe('PipelineDetail', () => {
     // The empty-graph banner explains an empty graph, so it must be gated on the
     // graph's own data. It asked `executions.length === 0` — a different question,
     // to a different endpoint — and vanished whenever the two disagreed, leaving a
-    // bare graph with no explanation and no way out (ADR #106 follow-up).
+    // bare graph with no explanation and no way out (ADR #106, date scope follow-up).
     // ──────────────────────────────────────────────────────────────────────
     describe('run / current definition toggle', () => {
         it('renders "Definition" and the History button as two separate controls', () => {

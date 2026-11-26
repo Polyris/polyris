@@ -576,7 +576,7 @@ function CopyBlock({ children }: { children: React.ReactNode }) {
 
 /**
  * Every /api/* endpoint requires an `Authorization` header once `AUTH_ENABLED`
- * is on (ADR #65). The examples below are authored WITHOUT it and the header is
+ * is on (ADR #65, API tokens). The examples below are authored WITHOUT it and the header is
  * injected centrally here, so it is shown on all ~25 of them and can never drift
  * out of sync across copies (Principle #1). Examples reference `$API_TOKEN` —
  * the user exports it once (`export API_TOKEN=plrs_…`) so every example is

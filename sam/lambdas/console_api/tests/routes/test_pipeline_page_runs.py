@@ -230,7 +230,7 @@ def test_the_history_names_a_failed_direct_step(world):
 
 
 def test_a_row_of_a_run_from_before_1_3_left_unfinished_is_stale(world):
-    """ADR #137, Migration (the review of TR-6d, P-2): 1.3 finishes no row of a run from before it, and the upgrade
+    """ADR #137, *Migration and upgrade* (the review of TR-6d, P-2): 1.3 finishes no row of a run from before it, and the upgrade
     stopped its execution, so such a row says it is stale; a row of 1.3 never does."""
     from polyris.coordination import task_spec
     from routes.tasks import get_all_tasks

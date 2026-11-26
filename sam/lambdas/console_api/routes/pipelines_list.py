@@ -72,7 +72,7 @@ def list_pipelines(event: Dict) -> Dict:
                     'asset_schedule': asset_schedule,
                     'registered_at': item.get('registered_at', ''),
                     # Deployed with an older format than this console reads, or before 1.3
-                    # (ADR #137, *Migration*): its runs fail until polyris-deploy runs again.
+                    # (ADR #137, *Migration and upgrade*): its runs fail until polyris-deploy runs again.
                     'needs_redeploy': needs_redeploy(item),
                     'status': 'idle',
                     'sla': None,

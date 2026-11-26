@@ -1,4 +1,4 @@
-"""The ``pipeline-specs`` table in ``sam/template.yaml`` (ADR #137 §8, *Migration*).
+"""The ``pipeline-specs`` table in ``sam/template.yaml`` (ADR #137 §8, *Migration and upgrade*).
 
 No TTL: versions and texts are never deleted, since a redrive runs the original
 definition for up to 14 days and identical DAGs share their items. No deletion

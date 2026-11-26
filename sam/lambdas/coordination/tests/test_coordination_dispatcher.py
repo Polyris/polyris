@@ -994,7 +994,7 @@ def test_a_countdown_that_ended_at_the_check_is_no_lost_hint(world):
 
 @pytest.mark.parametrize("generation,raised", [(None, 1), (0, 1), (3, 4)])
 def test_a_row_a_12_run_left_in_flight_is_stopped_without_readiness_fields(world, generation, raised):
-    """1.2 rows name no spec version; their stop needs only the status and the generation (*Migration*)."""
+    """1.2 rows name no spec version; their stop needs only the status and the generation (*Migration and upgrade*)."""
     old = "load-2026-11-12-run-2026-11-12-0ld0ld01"
     row = {"execution_name": old, "task_name": "load", "status": "waiting", "pipeline_execution": "old-run",
            "attention": attention.attention(attention.WAITING, old), "attention_at": "2026-11-12T05:00:00.000Z",

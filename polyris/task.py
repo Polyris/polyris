@@ -290,7 +290,7 @@ class Task:
     doc_md: str = ""
     
     # Backfill behavior
-    skip_on_backfill: bool = False  # Skip this task during backfill runs
+    skip_on_backfill: bool = False  # Skip this task during backfill runs (ADR #12, ADR #60)
     
     # SFN-specific
     wait_before: Union[int, timedelta] = 0  # Wait before starting (seconds or timedelta)
@@ -478,7 +478,7 @@ class CommonTaskKwargs(TypedDict, total=False):
 _COMMON_TASK_PARAMS = frozenset(CommonTaskKwargs.__annotations__)
 
 def _validate_common_kwargs(decorator_name: str, common: Mapping[str, object]) -> None:
-    """Strict-kwargs guard (ADR #106 D5): typos in common params raise
+    """Strict-kwargs guard (ADR #106, parameter parity D5): typos in common params raise
     immediately with the decorator's own name, instead of surfacing as a
     confusing _create_task error."""
     unknown = set(common) - _COMMON_TASK_PARAMS

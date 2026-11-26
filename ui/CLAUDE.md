@@ -185,7 +185,7 @@ The SDK writes each `wait_for` entry either as an asset (`{asset_name, freshness
 
 ## A read the backend narrows says so in the UI
 
-When the API answers from a window or a limit, the label and the empty state name it, from a constant pinned to the backend's by a parity test. History read only the last 14 days without a pipeline or a date (`Limits.SLA_DAYS`, ADR #108) while its date filter said "All dates" and an empty list said "No runs found". `utils/historyWindow.ts` holds the window, and its test reads `SLA_DAYS` from `console_api/constants.py`.
+When the API answers from a window or a limit, the label and the empty state name it, from a constant pinned to the backend's by a parity test. History read only the last 14 days without a pipeline or a date (`Limits.SLA_DAYS`, ADR #108, runs feed) while its date filter said "All dates" and an empty list said "No runs found". `utils/historyWindow.ts` holds the window, and its test reads `SLA_DAYS` from `console_api/constants.py`.
 
 ## A status read from the API is never green by default
 

@@ -23,7 +23,7 @@ If you cannot Read these files, STOP and report. Never write docs from memory of
 Answer these in order:
 1. **Who is the reader?** Newcomer, migrator, on-call operator, integrator?
 2. **What Diátaxis category?** Tutorial / How-to / Reference / Explanation — only one. Can't pick? The doc is trying to be two — split.
-3. **Where does it live?** `docs/getting-started/` (learn), `docs/features/` (reference), `docs/deployment/` (how-to), `docs/architecture/` + ADR (explain).
+3. **Where does it live?** `docs/getting-started/` (learn), `docs/features/` (reference), `docs/deployment/` (how-to), `docs/architecture/` (explain); an ADR in `docs/decisions/` records a decision for contributors (`docs/CLAUDE.md`, *Design decisions*).
 4. **What existing doc covers this?** `grep -r "<key term>" docs/` — if anything exists, extend it, don't fork.
 5. **Would a reader in 12 months find this?** Fix the navigation in the parent index in the same commit if needed.
 
@@ -97,7 +97,7 @@ Mechanical gates (pytest / lychee / Vale) catch drift detectable by regex and fi
 
 - `test_cli_flags.py` — every `polyris-<cmd> --flag` in docs must exist as `add_argument("--flag")` in `polyris/*.py`.
 - `test_entry_points.py` — every `polyris-<cmd>` in docs must be in `pyproject.toml [project.scripts]`.
-- `test_adr_refs.py` — every `ADR #N` / `adr-N-slug` must resolve to a file or heading in `DESIGN_DECISIONS.md`.
+- `test_adr_refs.py` — every `ADR #N` / `adr-N-slug` in the repository resolves to a file in `docs/decisions/` or a retired row; `test_adr_sections.py` — every cited section exists; `test_adr_index.py` — the index matches the files; `test_adr_limits.py` — the size limits, and no ADR of the paid overlay here.
 - `test_resource_counts.py` — prose claims like "8 Lambda functions" must match `sam/template.yaml` counts.
 - `test_pypi_installs.py` — bare `pip install polyris` rejected; use `polyris @ git+…@<VERSION>`.
 

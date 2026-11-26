@@ -169,7 +169,7 @@ def stop_view(item: Mapping[str, Any]) -> RowView:
 
     A row that a 1.2 run left in flight has no readiness fields, and may have no
     generation, which then reads as ``ownership.LEGACY``: a stop needs only the
-    status and the generation (*Migration*).
+    status and the generation (*Migration and upgrade*).
     """
     if task_row.READINESS in item:
         return row_view(item)

@@ -61,7 +61,7 @@ class PipelinesRepo:
         response = self.table.scan(Select='COUNT')
         return response.get('Count', 0)
 
-    # ── Alert configuration (ADR #103) ────────────────────────────────────
+    # ── Alert configuration (ADR #1, ADR #103) ────────────────────────────
     # Per-pipeline alert delivery config lives on the pipeline-registry item
     # under the `alert_config` attribute. The DSL declares nothing about alerts;
     # everything is runtime config edited from Settings → Alerts (Team) and read

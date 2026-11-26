@@ -79,7 +79,7 @@ def test_a_finished_run_waits_on_nobody(table):
 
 
 def test_a_pipeline_without_a_run_in_the_window_is_idle_and_runs_from_before_1_3_do_not_count(table):
-    """§5, *Migration*: a 1.2 run has no run row; the pipeline's status appears with its first 1.3 run."""
+    """§5, *Migration and upgrade*: a 1.2 run has no run row; the pipeline's status appears with its first 1.3 run."""
     put_task(table, 'orders-run-2026-11-21-legacy01', 'extract', '2026-11-21', 'failed', started=days_ago(1))
     put_run(table, 'orders', '2026-11-01', days_ago(21), suffix='past0001', summary={'success': 1})
     orders = card()

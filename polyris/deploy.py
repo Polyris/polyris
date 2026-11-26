@@ -168,7 +168,8 @@ def _generate_cfn_template(
         "DependsOn": "PipelineLogGroup",
     }
 
-    # EventBridge schedule (time-based) — via EventBridge Scheduler
+    # EventBridge schedule (time-based) — via EventBridge Scheduler, which starts the
+    # pipeline's state machine directly (ADR #55)
     # (AWS::Scheduler::Schedule), not the classic AWS::Events::Rule, which
     # AWS's own console now labels "legacy" in favor of Scheduler.
     if dag.schedule and not dag.is_asset_triggered:
@@ -276,7 +277,7 @@ def _stamp_registered_at(
     """Write the deploy-owned fields on pipeline-registry: registered_at, the "last
     deploy" timestamp, and the format the pipeline was deployed with
     (``task_spec.REGISTRY_FORMAT_FIELD``), which the console compares with the
-    format it reads to mark a pipeline that needs a redeploy (ADR #137, *Migration*).
+    format it reads to mark a pipeline that needs a redeploy (ADR #137, *Migration and upgrade*).
 
     This is the authoritative writer for both. The pipeline SFN's
     own Register_Pipeline state deliberately does NOT touch them, so

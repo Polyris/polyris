@@ -155,7 +155,7 @@ def test_a_result_that_is_no_json_is_the_string_an_older_run_task_stored(mocker)
         assert body["truncated"] is False
 
 
-# ── Split records: prefer input# record, fall back to legacy field (§3.2) ────
+# ── Split records: prefer input# record, fall back to legacy field ────
 
 
 def test_input_read_from_new_input_record_when_present(mocker):

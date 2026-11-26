@@ -10,7 +10,7 @@ from typing import Dict
 from response import cors_response, error_response
 from logger import log
 
-# Auth gate (ADR #65)
+# Auth gate (ADR #65, API tokens)
 from auth import authenticate, authorize, is_public_path, is_auth_enabled, AuthError, AuthzError
 from dal import api_tokens_repo
 from routing import Router
@@ -86,7 +86,7 @@ def handler(event: Dict, context) -> Dict:
     method = event.get('requestContext', {}).get('http', {}).get('method', 'GET')
     params = event.get('queryStringParameters', {}) or {}
 
-    # Auth gate (ADR #65). On by default via AUTH_ENABLED (the template sets it
+    # Auth gate (ADR #65, API tokens). On by default via AUTH_ENABLED (the template sets it
     # true); disabling enforcement is a deliberate, reversible step. Health/
     # metrics are public.
     if is_auth_enabled() and not is_public_path(path):

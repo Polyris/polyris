@@ -332,7 +332,7 @@ def _render_ts_body() -> str:
     parts.append(_ts_array(
         "BACKFILL_ERROR_CODES",
         "Backfill error codes the route can return; the UI friendly-error "
-        "map must cover every one (ADR #94).",
+        "map must cover every one (ADR #94, error codes).",
         sorted(src.BACKFILL_ERROR_CODES),
     ))
 

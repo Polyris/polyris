@@ -1,5 +1,5 @@
 """
-Integration tests for the auth gate as wired into main.handler (ADR #65).
+Integration tests for the auth gate as wired into main.handler (ADR #65, API tokens).
 
 Unlike test_auth.py (which unit-tests authenticate() in isolation), these pin
 the *contract* that matters before flipping AUTH_ENABLED on:

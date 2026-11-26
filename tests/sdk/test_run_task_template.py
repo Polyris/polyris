@@ -733,7 +733,7 @@ def test_role_same_falls_back_to_same_account(template):
     assert _resolve_role_arn(template, "Run_Task_Lambda", wi) == "0"
 
 
-# --- retries: wrapper retry loop reads task_config (G7, ADR #107, option B) ---
+# --- retries: wrapper retry loop reads task_config (G7, ADR #107, retry loop, option B) ---
 
 def _eval_jsonata(expr, wrapper_input, variables=None):
     jsonata = pytest.importorskip("jsonata")
@@ -990,7 +990,7 @@ def test_lambda_function_name_reaches_invoke(template):
     assert _eval_jsonata(fn_expr, wi) == "my-fn"
 
 
-# --- exponential backoff (ADR #107, opt-in via retry_exponential_backoff) ---
+# --- exponential backoff (ADR #107, retry loop, opt-in via retry_exponential_backoff) ---
 
 def test_retry_wait_exponential_backoff_when_enabled(template):
     """With retry_backoff the wait doubles per attempt, capped at max_retry_delay."""
@@ -1061,7 +1061,7 @@ def test_backoff_without_cap_omits_max_retry_delay():
     assert "max_retry_delay" not in tc
 
 
-# --- retry jitter (ADR #107, opt-in equal jitter via $random) ---
+# --- retry jitter (ADR #107, retry loop, opt-in equal jitter via $random) ---
 
 def test_retry_wait_jitter_bounds_over_backoff(template):
     """With retry_jitter over exponential backoff, each wait is a random integer in
@@ -1342,7 +1342,7 @@ def test_save_input_record_uses_input_key_prefix(template):
 
 
 def test_save_input_record_no_truncation_expression(template):
-    """§1.2 fix: the 25KB $length check is gone — the new record has its
+    """The 25KB $length check is gone — the new record has its
     own 400KB DDB item budget."""
     ti_expr = template["States"]["Save_Input_Record"]["Arguments"]["ExpressionAttributeValues"][":ti"]["S"]
     assert "25000" not in ti_expr, "task_input must not truncate at 25KB anymore"
@@ -1356,7 +1356,7 @@ def test_save_input_record_uses_updateitem_not_putitem(template):
 
 
 def test_save_input_record_uses_task_date_not_date(template):
-    """§1.2 I3 fix: field name deliberately mismatched from date-pipeline-index
+    """Field name deliberately mismatched from date-pipeline-index
     GSI's key attribute to avoid populating that GSI with internal input# rows.
     is_internal_record() also filters input#* by prefix as belt-and-suspenders."""
     update_expr = template["States"]["Save_Input_Record"]["Arguments"]["UpdateExpression"]
@@ -1425,7 +1425,7 @@ def test_check_task_pushed_state_exists(template):
 
 
 def test_check_task_pushed_projects_marker_and_run_id(template):
-    """§1.4: GetItem must read _pushed_by_task AND pushed_run_id for versioning."""
+    """GetItem must read _pushed_by_task AND pushed_run_id for versioning."""
     state = template["States"]["Check_Task_Pushed"]
     proj = state["Arguments"]["ProjectionExpression"]
     assert "#p" in proj
@@ -1801,7 +1801,7 @@ def test_all_run_task_states_route_to_check_task_pushed(template):
         )
 
 
-# ── POLYRIS_TASK_NAME + POLYRIS_WRAPPER_RUN_ID env injection (§1.5) ───
+# ── POLYRIS_TASK_NAME + POLYRIS_WRAPPER_RUN_ID env injection ───
 
 
 def test_glue_arguments_include_task_name_and_run_id_env(template):

@@ -8,7 +8,7 @@ polyris.constants.TaskConfigKey; these tests pin that:
   2. every key the writer produces (per task type, all params set) is exactly
      the constants-derived set — a literal-string key on either side fails here.
 
-This is the structural fix for the ADR #106 class of bug (emr Step drift).
+This is the structural fix for the ADR #106, parameter parity class of bug (emr Step drift).
 """
 import re
 from datetime import timedelta
@@ -132,7 +132,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         assert self._keys(build) == expected
 
     def test_sfn_stays_empty(self):
-        """The sfn contract is deliberately empty (ADR #106) — pin it."""
+        """The sfn contract is deliberately empty (ADR #106, parameter parity) — pin it."""
         from polyris import task
 
         def build(dag):
@@ -223,7 +223,7 @@ class TestBuildTaskConfigAndArnDirectly:
         assert task_arn == "arn:aws:states:us-east-1:1:stateMachine:x"
 
     def test_sfn_task_type_returns_empty_task_config(self):
-        """sfn's contract is deliberately empty (ADR #106) regardless of
+        """sfn's contract is deliberately empty (ADR #106, parameter parity) regardless of
         which caller invokes this function — pinned directly here too, not
         just through _wrapper_input_for's indirect path."""
         from polyris import task
@@ -237,7 +237,7 @@ class TestBuildTaskConfigAndArnDirectly:
 
     def test_no_retries_means_no_retry_keys_at_all(self):
         """Retry keys are threaded in only when task.retries is truthy
-        (ADR #107) — absent entirely otherwise, not present-with-zero."""
+        (ADR #107, retry loop) — absent entirely otherwise, not present-with-zero."""
         from polyris import task
 
         def build(dag):

@@ -7,7 +7,7 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 1.3.0, tasks as rows (`docs/reference/adr-137-tasks-as-rows.md`), released 2026-11-24
+**Version:** 1.3.0, tasks as rows (`docs/decisions/adr-137-tasks-as-rows.md`), released 2026-11-24
 
 ## In flight
 
