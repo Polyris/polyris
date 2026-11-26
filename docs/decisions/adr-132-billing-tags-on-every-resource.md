@@ -1,6 +1,7 @@
 ---
 area: deploy
 accepted: by 2026-11-14
+revised: 2026-11-26
 ---
 # ADR #132 — Billing tags: one `polyris:` set on every resource AWS can tag
 
@@ -29,6 +30,6 @@ The old tags are removed. The stack tag `polyris:platform=true` stays: it is how
 
 **Consequences.**
 - Cost Explorer can split the bill by installation, stage and component once the keys are activated as cost allocation tags in the paying account (`docs/how-to/manage-the-platform.md`).
-- Most orchestration cost is state transitions of the platform's shared state machines (the wrapper, `run_task`), tagged `platform`. `polyris:pipeline` covers a pipeline's own state machine, log group and scheduler role, so tags cannot split the shared cost by pipeline.
+- Most orchestration cost is state transitions of the platform's shared state machines (the wrapper, `run_task`), tagged `platform`. `polyris:pipeline` covers a pipeline's own state machine and log group (its schedule starts with the platform's schedule role, ADR #142 §4), so tags cannot split the shared cost by pipeline.
 - Upgrading removes the old tags: IAM conditions and cost reports on them stop matching. A pipeline's resources keep theirs until its next `polyris-deploy`.
 - Users cannot add tags of their own through polyris; no user has asked for it.

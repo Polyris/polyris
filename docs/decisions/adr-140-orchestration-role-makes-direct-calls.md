@@ -1,6 +1,7 @@
 ---
 area: deploy
 accepted: by 2026-11-25
+revised: 2026-11-26
 ---
 # ADR #140 — The orchestration role makes the direct steps' calls
 
@@ -15,4 +16,4 @@ accepted: by 2026-11-25
 
 **Alternatives.** A policy per pipeline on exactly the resources its steps and tasks name, written by `polyris-deploy`: least privilege, and a new IAM mechanism, left for later. Leaving each user to grant the calls: every user met AccessDenied first.
 
-**Consequences.** The role can reach any topic, queue, model, bucket and table of the account. Only Step Functions, EventBridge, EventBridge Scheduler and API Gateway of the account can assume it, so who may deploy a pipeline decides what it touches. A team that keeps data away from it puts the platform in an account of its own and reaches the data with a task's `role=`, or attaches a permissions boundary to the role (IAM_PERMISSIONS.md). A resource encrypted with a customer-managed KMS key still needs its key policy to allow the role.
+**Consequences.** The role can reach any topic, queue, model, bucket and table of the account. Only Step Functions of the account can assume it, and a deployer runs only the `*-polyris-*` stacks and state machines of the platform's deploy policy, never the platform's own (ADR #142 §2, §5), so who may deploy a pipeline decides what it touches. A team that keeps data away from it puts the platform in an account of its own and reaches the data with a task's `role=` (ADR #142 §10). A resource encrypted with a customer-managed KMS key still needs its key policy to allow the role.
