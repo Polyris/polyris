@@ -44,11 +44,11 @@ def run_glue():
 
 A value that is already a full `arn:aws:iam::...:role/...` is used as it is; otherwise it is a key of `roles` in `config.py`. `role="same"` (the default) runs in the platform's account, as its default task role.
 
-A role of the platform's own account works only under the IAM path `/polyris-tasks/`, which only whoever creates IAM roles can give a role, for example `arn:aws:iam::123456789012:role/polyris-tasks/finance-writer` next to the roles of other accounts above. `polyris-deploy` refuses any other role of the platform's account, and so does `polyris-validate` when `config.py` sets the stage's `account_id`.
+A role of the platform's own account works only under the IAM path `/polyris-tasks/`, which only whoever creates IAM roles can give a role, for example `arn:aws:iam::123456789012:role/polyris-tasks/finance-writer` next to the roles of other accounts above. `polyris-deploy` refuses any other role of the platform's account, and so does `polyris-validate` when `config.py` sets the stage's `account_id`. How to create such a role, with an example of both forms side by side: [give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md).
 
 ### 3. IAM trust policy in target account
 
-The target account role must trust the orchestration role of your polyris platform, `<namespace>-<stage>-polyris-orchestration-role`, which runs `run_task` (here in account `123456789012`):
+The target account role must trust the orchestration role of your polyris platform, `<namespace>-<stage>-polyris-orchestration-role` (the platform stack's output `OrchestrationRoleArn`), which starts every task's work (here in account `123456789012`):
 
 ```json
 {
