@@ -71,6 +71,49 @@ OUTPUT_REGISTRY_TABLE = "PipelineRegistryTable"
 OUTPUT_SPECS_TABLE = "PipelineSpecsTable"
 OUTPUT_START_RUN = "StartRunFunctionArn"
 
+# ── The platform's own state machines and functions ─────────────────────────
+
+
+@dataclass(frozen=True)
+class PlatformNames:
+    """The end of the name of each of the platform's state machines and Lambda functions, after
+    the platform's prefix (``platform_prefix``).
+
+    One source for every place that names them: the template names its resources so, and every
+    deny list of a role or policy that a pipeline or its author holds names them so
+    (``tests/sdk/test_platform_names.py`` walks the template to both).
+    """
+
+    #: ``run_task``: one attempt of a task's work (ADR #137 §1).
+    run_task: str = "dep-run-task-helper"
+    #: ``bulk_backfill``: starts a range of runs.
+    bulk_backfill: str = "bulk-backfill"
+    #: The three test state machines, a demo pipeline's tasks (``polyris-init --hello``).
+    test_machines: Tuple[str, ...] = ("test-quick", "test-success", "test-failure")
+    #: The functions a pipeline's state machine invokes: they stay invocable by the roles a pipeline holds.
+    pipeline_functions: Tuple[str, ...] = ("start-run", "notify")
+    #: The functions only the platform invokes: every role a pipeline holds is denied them.
+    internal_functions: Tuple[str, ...] = (
+        "console-api", "reconcile", "asset-fanout", "sweeper", "ui-bootstrap", "bucket-cleanup")
+
+    @property
+    def engine_machines(self) -> Tuple[str, ...]:
+        """The engine's state machines, which no pipeline may start, stop or redrive."""
+        return (self.run_task, self.bulk_backfill)
+
+    @property
+    def state_machines(self) -> Tuple[str, ...]:
+        """Every state machine of the platform."""
+        return self.engine_machines + self.test_machines
+
+    @property
+    def functions(self) -> Tuple[str, ...]:
+        """Every Lambda function of the platform."""
+        return self.pipeline_functions + self.internal_functions
+
+
+PLATFORM_NAMES = PlatformNames()
+
 # AWS caps IAM role names at 64 characters. The longest role in the template
 # is "{Namespace}-{Stage}-polyris-sweeper-schedule-role" (31 fixed
 # characters), so Namespace + Stage may use at most 33. Every other named
@@ -458,9 +501,6 @@ ADOPTION_SETTLE = timedelta(hours=48)
 #: 1.2's Standard state machines that 1.3 deletes, by the end of their names. The other four it deletes are
 #: Express: ListExecutions lists no execution of theirs, and each ends within five minutes on its own.
 REMOVED_STANDARD_MACHINES = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter")
-#: The engine's Standard state machines that 1.3 keeps. bulk_backfill starts runs; run_task runs a task's work.
-BULK_BACKFILL_MACHINE = "bulk-backfill"
-RUN_TASK_MACHINE = "dep-run-task-helper"
 
 
 def platform_prefix(namespace: str, stage: str) -> str:

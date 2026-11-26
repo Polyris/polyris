@@ -29,14 +29,13 @@ from .coordination import run_row, sweep
 from .executions import error_code, stop_running
 from .platform import (
     ADOPTION_SETTLE,
-    BULK_BACKFILL_MACHINE,
     OLDEST_UPGRADABLE,
     OUTPUT_SPECS_TABLE,
     OUTPUT_TOKENS_TABLE,
     PARAM_NAMESPACE,
     PARAM_STAGE,
+    PLATFORM_NAMES,
     REMOVED_STANDARD_MACHINES,
-    RUN_TASK_MACHINE,
     adoption_finished_at,
     outputs_of,
     parameters_of,
@@ -50,7 +49,7 @@ from .platform import (
 OVERRIDE_FLAG = "--accept-stopped-runs"
 #: The engine's Standard state machines of 1.2: a running execution of one is a run in flight.
 #: ListExecutions lists no Express execution, and the three test state machines are a task's work.
-ENGINE_MACHINES = REMOVED_STANDARD_MACHINES + (BULK_BACKFILL_MACHINE, RUN_TASK_MACHINE)
+ENGINE_MACHINES = REMOVED_STANDARD_MACHINES + (PLATFORM_NAMES.bulk_backfill, PLATFORM_NAMES.run_task)
 #: How many running executions of one state machine the check counts before it says "or more".
 _COUNT_UP_TO = 100
 #: What the history of an execution that polyris-up stopped says.
@@ -294,11 +293,11 @@ def stop_leftovers(
     order: List[Tuple[str, Optional[datetime]]] = [(target.machine(name), None) for name in REMOVED_STANDARD_MACHINES]
     starters: Set[str] = set()
     if started_before is not None:
-        starters = {target.machine(BULK_BACKFILL_MACHINE), *pipelines}
-        order = [(target.machine(BULK_BACKFILL_MACHINE), started_before),
+        starters = {target.machine(PLATFORM_NAMES.bulk_backfill), *pipelines}
+        order = [(target.machine(PLATFORM_NAMES.bulk_backfill), started_before),
                  *((pipeline, started_before) for pipeline in pipelines),
                  *order,
-                 (target.machine(RUN_TASK_MACHINE), started_before)]
+                 (target.machine(PLATFORM_NAMES.run_task), started_before)]
     stopped = Stopped()
     seen: Set[str] = set()
     while True:

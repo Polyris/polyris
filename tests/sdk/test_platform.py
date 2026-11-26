@@ -415,7 +415,7 @@ def test_the_engines_state_machines_are_named_as_the_template_names_them(templat
     """polyris-up lists and stops executions by these names (Principle #28). A Standard state machine
     that joins the template is the engine's, and joins the upgrade's checks, or it is a task's work."""
     standard = {name for name, kind in _state_machines(template).items() if kind == "STANDARD"}
-    assert standard == {P.RUN_TASK_MACHINE, P.BULK_BACKFILL_MACHINE, "test-quick", "test-success", "test-failure"}
+    assert standard == set(P.PLATFORM_NAMES.state_machines)
 
 
 def test_no_state_machine_has_a_name_that_1_3_removed(template):

@@ -383,9 +383,9 @@ async function testTransforms() {
   console.log("\n📋 pull() context injection");
   // Lambda payload carries pipeline_name + date + table so pull("A", event) can build the key.
   await test(
-    "Lambda payload injects pipeline_name + date + _polyris_table (+ keeps user payload)",
-    "$merge([$exists($states.input.task_config.payload) ? $states.input.task_config.payload : {}, {'current_date': $states.input.current_date, 'PARTITION_ARG': $states.input.PARTITION_ARG, 'pipeline_name': $states.input.pipeline_name, 'date': $states.input.date, '_polyris_table': 'tok-tbl'}, $exists($states.input.variables) ? $states.input.variables : {}, $exists($states.input.upstream) and $count($keys($states.input.upstream)) > 0 ? {'upstream': $states.input.upstream} : {}])",
-    { pipeline_name: "sales", date: "2026-07-07", current_date: "2026-07-07", PARTITION_ARG: "2026-07-07", task_config: { payload: { custom: 1 } } },
+    "Lambda payload injects pipeline_name + date + _polyris_table (+ keeps user payload; the platform's keys win over variables)",
+    "$merge([$exists($states.input.task_config.payload) ? $states.input.task_config.payload : {}, {'current_date': $states.input.current_date, 'PARTITION_ARG': $states.input.PARTITION_ARG, 'date': $states.input.date}, $exists($states.input.variables) ? $states.input.variables : {}, {'pipeline_name': $states.input.pipeline_name, '_polyris_table': 'tok-tbl'}, $exists($states.input.upstream) and $count($keys($states.input.upstream)) > 0 ? {'upstream': $states.input.upstream} : {}])",
+    { pipeline_name: "sales", date: "2026-07-07", current_date: "2026-07-07", PARTITION_ARG: "2026-07-07", task_config: { payload: { custom: 1 } }, variables: { pipeline_name: "payroll", _polyris_table: "elsewhere" } },
     null,
     { check: (r) => r.pipeline_name === "sales" && r.date === "2026-07-07" && r._polyris_table === "tok-tbl" && r.custom === 1 }
   );
