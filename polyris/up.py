@@ -1060,7 +1060,7 @@ def run_down(args: argparse.Namespace) -> None:
             elif r["ResourceType"] == "AWS::S3::Bucket":
                 buckets[r["LogicalResourceId"]] = physical
             elif r["ResourceType"] == STATE_MACHINE:
-                machines.append((physical, None))
+                machines.append(physical)
 
     importers = _schedule_role_importers(cfn, stack)
     if importers:

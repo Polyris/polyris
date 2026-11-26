@@ -615,7 +615,7 @@ def destroy_stack(session, stack_name: str) -> None:
     sfn = session.client("stepfunctions")
     seen: Set[str] = set()
     try:
-        machines = [(machine, None) for machine in stack_machines(cfn, stack_name)]
+        machines = stack_machines(cfn, stack_name)
     except (ClientError, BotoCoreError) as e:
         print(f"\n❌ Could not read the resources of {stack_name}: {e}")
         sys.exit(1)
