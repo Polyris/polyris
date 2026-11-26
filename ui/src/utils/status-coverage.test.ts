@@ -10,7 +10,7 @@ import type { ExecutionStatus } from '@/generated/enums';
  * here as a typed array; tsc rejects any value that isn't a real ExecutionStatus.
  */
 const EXECUTION_STATUSES: ExecutionStatus[] = [
-    'running', 'success', 'failed', 'aborted', 'stale',
+    'running', 'success', 'failed', 'aborted',
 ];
 
 describe('status colour coverage (drift guard)', () => {

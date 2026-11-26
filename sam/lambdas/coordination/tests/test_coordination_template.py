@@ -24,6 +24,7 @@ from coordination_testkit import (
     FakeSfn,
     execution_name,
     legacy_fact,
+    READINESS_1_3,
     register,
     template,
 )
@@ -386,9 +387,10 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
                  "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
     registry.put_item(Item={"pipeline_name": "orders", "sfn_arn": "arn:aws:states:us-east-1:1:stateMachine:orders"})
     sfn.executions[f"arn:aws:states:us-east-1:1:execution:orders:{RUN}"] = "ABORTED"
-    # A row a 1.2 run left in flight: no run row.
+    # A row whose run row is missing.
     old = execution_name("old", "orders-run-2026-11-12-0ld0ld01")
-    tokens.put_item(Item={"execution_name": old, "status": "waiting", "generation": 1,
+    tokens.put_item(Item={"execution_name": old, "task_name": "old", "status": "waiting", "generation": 1,
+                          "readiness": READINESS_1_3,
                           "pipeline_execution": "orders-run-2026-11-12-0ld0ld01",
                           att.KEY: att.attention(att.WAITING, old), att.DUE: format_utc(clock - timedelta(minutes=5))})
     # A push retry, the catch-up's push, and a subscription its pipeline no longer has.

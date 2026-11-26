@@ -654,11 +654,10 @@ class World:
                            body={"date": run.date, "pipeline_execution": run.name, "with_dependants": True})
 
     def upgrade_platform(self, *, statuses: Optional[Dict[str, str]] = None) -> None:
-        """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are (ADR #137,
-        *Migration and upgrade*, the flag that overrides the drain).
+        """Make the runs the World started into what a 1.2 platform left in flight when it was upgraded (D6).
 
         The World runs 1.3's engine alone, so the runs it started stand in for 1.2's and are made into what 1.2
-        leaves: polyris-up stopped their executions as the update's cleanup began; they have no run row and no
+        leaves: their executions were stopped as the update's cleanup began; they have no run row and no
         run input; their task rows carry none of 1.3's fields (readiness, spec version, run start); and each
         waiting row keeps the `waiting` entry 1.2 gave it, first due after 10 minutes. `statuses` gives a task's
         row a status that only 1.2 wrote, by task name, such as `waiting_delay` for a countdown of wait_before.

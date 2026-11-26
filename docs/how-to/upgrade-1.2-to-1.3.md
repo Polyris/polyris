@@ -4,12 +4,12 @@ How to upgrade a platform that runs polyris 1.2 to 1.3. This upgrade has steps o
 
 ## Before you start
 
-A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until 1.2 has finished adopting the older rows for 48 hours.
+Use polyris 1.3 for every step: the `polyris-up` of 1.4 and later refuses a platform below 1.3. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until 1.2 has finished adopting the older rows for 48 hours.
 
 ## Steps
 
 1. **Check your pipelines.** Install polyris 1.3 and run `polyris-validate --all` in the folder that holds your pipelines' folders. Fix what it reports: a pipeline it refuses cannot be redeployed in step 5. Rebuild every bundle that contains the polyris SDK with 1.3 too: a Lambda's package, a Glue job's wheel, an ECS or Batch image.
-2. **Grant the roles their new permissions:** [IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#upgrade-from-12-to-13). `PowerUserAccess` covers them.
+2. **Grant the roles their new permissions:** the section *Upgrade from 1.2 to 1.3* of `docs/deployment/IAM_PERMISSIONS.md` in polyris 1.3 (tag `v1.3.2`). `PowerUserAccess` covers them.
 3. **Drain.** Disable the pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`; [how](schedule-and-redeploy.md#pause-and-resume-a-schedule)), so that no new run starts. Decide the failed runs: a run started on 1.2 takes no action after the upgrade. Then let the runs in flight finish, or stop them.
 4. **Upgrade.** Run `polyris-up`. If the update fails, it rolls back to 1.2: enable the schedules again, and the platform runs as before.
 5. **Redeploy every pipeline** with `polyris-deploy`. `polyris-up` lists them at its end. Until you redeploy a pipeline, its runs fail at once. The redeploy turns the pipeline's schedule back on, also one that was off on purpose; `is_paused_upon_creation=True` keeps it off. Then start again by hand the runs whose schedule fired during the window, the runs `polyris-up` stopped, and the asset-triggered runs whose data came during the window: each of them failed at once, and nothing starts it again.
@@ -36,4 +36,4 @@ There is no way back to 1.2 but the rollback of a failed update: `polyris-up` re
 
 - A pipeline's status in the list counts runs started on 1.3 only, so it appears with the pipeline's first run after the upgrade.
 - **Runs** and **Tasks** without a date show runs started on 1.3. Pick a date to see the older runs of that date.
-- A run started on 1.2 that had a task unfinished shows `stale`, and so does that task: the upgrade stopped the run, and 1.3 finishes neither.
+- A run started on 1.2 that had a task unfinished keeps that task unfinished until its rows expire: the upgrade stopped the run, and no engine finishes it.

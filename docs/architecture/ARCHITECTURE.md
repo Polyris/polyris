@@ -284,7 +284,7 @@ A rule reads the final outcomes of its task's direct upstreams: a failed task is
 | `upstream_failed` | Blocked: a final failure of an upstream means its rule can never hold |
 | `stopped` | Stopped by an operator or with its run |
 
-Rows of runs started before 1.3 may also show `aborted` and `pending`, and `stale` for one that no engine finishes.
+Rows of runs started before 1.3 may also show `aborted` and `pending`. One that no engine finishes keeps the status 1.2 left, and its run shows `running`, until its rows expire.
 
 ---
 

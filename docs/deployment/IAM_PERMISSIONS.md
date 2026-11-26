@@ -62,18 +62,18 @@ Every resource in a polyris stack carries its billing tags ([INFRASTRUCTURE.md#t
 
 Scope all `Resource` fields to your polyris stack's namespace where the service supports it (e.g. `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*`). CloudFormation itself cannot be scoped tighter than the stack name.
 
-### Upgrade from 1.2 to 1.3
+### The checks before any change
 
-Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it. As the update's cleanup begins, it stops what 1.2 left running ([upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md)). A later `polyris-up` does so again only while a state machine of 1.2 is left; on a platform that finished its upgrade, the role needs none of this. `PowerUserAccess` covers what it takes; a least-privilege installer role needs these actions beside the ones above for the upgrade:
+`polyris-up` updates a platform from 1.3 or newer; a platform on 1.2 upgrades to 1.3 first with the `polyris-up` of 1.3 ([upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md)). Before it uploads or changes anything, it checks the account: the roles the tasks of the deployed pipelines run as, and the roles named like a pipeline's scheduler role. `PowerUserAccess` does not cover `iam:ListRoles`; a least-privilege installer role needs these actions beside the ones above:
 
 | AWS service | Actions | Resource | Why |
 |-------------|---------|----------|-----|
-| `states` | `ListExecutions` | `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*`, and each pipeline's state machine if its `config.py` gives it another namespace | The check for a run in flight lists the running executions of the engine's Standard state machines; the stop lists those and the pipelines' |
-| `states` | `StopExecution` | `arn:aws:states:*:*:execution:${Namespace}-${Stage}-polyris-*`, and the executions of such pipelines | The stop of what 1.2 left running |
-| `states` | `ListStateMachines` | `*` | The stop finds by its name the state machine of a pipeline that the registry does not name |
-| `dynamodb` | `GetItem` | The `pipeline-tokens` table | The engine's health row tells 1.2 from an older platform, and records when 1.2 finished adopting older rows and facts |
+| `iam` | `ListRoles` | `*` | Finds the roles named `*-polyris-*-scheduler-role` |
+| `cloudformation` | `DescribeStackResources` | `*` | Finds the stack that made each such role |
+| `cloudformation` | `ListImports` | `*` | `polyris-down` refuses while a pipeline imports the platform's schedule role |
+| `dynamodb` | `BatchGetItem` | The `pipeline-specs` table | Reads each pipeline's current task specs |
 
-A denied call of a check, or of the registry's read (`dynamodb:Scan`, in the install's list), refuses the upgrade before anything has changed, and the message names the action. The stop runs after the update: if one of its calls is denied, `polyris-up` says so; grant the action and run it again. It also reads the creation time of `pipeline-specs` and the state of `run-start-index` on `pipeline-tokens` (`dynamodb:DescribeTable`), and each pipeline's state machine (`states:DescribeStateMachine`), which the install's list has.
+A denied call refuses before anything has changed, and the message names the action.
 
 ## Deploy — per-pipeline `polyris-deploy`
 

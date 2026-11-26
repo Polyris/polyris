@@ -187,3 +187,7 @@ def register(ddb, pipeline: str, execution_arn: str) -> None:
     machine = execution_arn.replace(":execution:", ":stateMachine:", 1).rsplit(":", 1)[0]
     ddb.Table(TABLES["PIPELINES_TABLE"][1]).update_item(
         Key={"pipeline_name": pipeline}, UpdateExpression="SET sfn_arn = :arn", ExpressionAttributeValues={":arn": machine})
+
+
+#: What Start_Run writes in a task row's readiness field (task_spec.readiness_text); a row a 1.2 run left has none.
+READINESS_1_3 = '{"dependencies":[],"trigger_rule":"all_success"}'

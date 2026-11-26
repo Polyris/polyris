@@ -374,18 +374,6 @@ def test_every_write_of_the_run_row_renews_its_history_ttl_and_never_makes_a_row
     assert get(ddb, run().key) == {}
 
 
-def test_a_row_a_12_run_left_without_a_generation_is_stopped_on_its_absence(ddb):
-    """Its stop is conditional on the status read and on no generation, and gives it the first (*Migration and upgrade*)."""
-    put(ddb, {"execution_name": KEY, "status": "waiting"})
-    item = {"execution_name": KEY, "task_name": "load", "status": "waiting"}
-    legacy = dispatch.stop_view(item)
-    judgment = dispatch.stop(legacy, now=NOW, cause="its run row is missing")
-    assert send(ddb, dispatch_writes.task_write(legacy, judgment, None, table=TABLE, now=NOW))
-    stopped = get(ddb, KEY)
-    assert (stopped["status"], stopped["generation"]) == ("stopped", 1)
-    assert not send(ddb, dispatch_writes.task_write(legacy, judgment, None, table=TABLE, now=NOW))   # raised now
-
-
 # ── the row as a write leaves it (dispatch_writes.applied) ──────────────────
 
 def _cases():

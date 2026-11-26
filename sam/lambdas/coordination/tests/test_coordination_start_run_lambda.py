@@ -156,7 +156,7 @@ def test_specs_dynamodb_leaves_unread_are_transient_so_the_states_retry_repeats_
 
 @pytest.mark.parametrize("execution_arn", [
     f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-bulk-backfill:{EXECUTION}",
-    f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:another-run",
+    "arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:another-run",
     f"arn:aws:states:us-east-1:123456789012:stateMachine:acme-dev-polyris-orders:{EXECUTION}",
 ])
 def test_an_execution_that_is_not_one_of_the_pipelines_registered_machine_gets_no_row(stack, execution_arn):

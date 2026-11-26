@@ -304,9 +304,6 @@ class ExecutionStatus:
     SUCCESS = "success"
     FAILED = "failed"
     ABORTED = "aborted"
-    # Derived: a run from before 1.3 with a task row left unfinished. 1.3 finishes no such row, and the upgrade
-    # stopped the run's execution (ADR #137, *Migration and upgrade*), so it stays so until its rows expire. Goes with 1.4.
-    STALE = "stale"
 
 
 EXECUTION_STATUS_CANONICAL: Set[str] = {
@@ -314,7 +311,6 @@ EXECUTION_STATUS_CANONICAL: Set[str] = {
     ExecutionStatus.SUCCESS,
     ExecutionStatus.FAILED,
     ExecutionStatus.ABORTED,
-    ExecutionStatus.STALE,
 }
 
 # Task-status groupings used to derive a pipeline-execution status (ADR #112).

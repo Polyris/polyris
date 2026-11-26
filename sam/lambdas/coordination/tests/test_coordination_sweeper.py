@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import pytest
-from coordination_testkit import DATE, NOW, RUN, TABLES, client_error, fact
+from coordination_testkit import DATE, NOW, READINESS_1_3, RUN, TABLES, client_error, fact
 
 import sweeper
 from dispatcher import Dispatcher
@@ -338,11 +338,11 @@ def test_the_engine_stops_a_run_still_creating_after_start_runs_retry_window(mak
 
 
 def test_rows_of_a_run_whose_run_row_is_missing_are_stopped_with_the_cause(make, tokens, clock):
-    """1.2 rows left in flight: no run row, no readiness fields; each due one is stopped (invariant 11)."""
+    """Rows whose run row is missing: each due one is stopped with the cause (invariant 11)."""
     for task in ("extract", "load"):
         name = f"{task}-{DATE}{RUN[-20:]}"
         tokens.put_item(Item={"execution_name": name, "task_name": task, "status": "waiting", "generation": 1,
-                              "pipeline_execution": RUN, att.KEY: att.attention(att.WAITING, name),
+                              "readiness": READINESS_1_3, "pipeline_execution": RUN, att.KEY: att.attention(att.WAITING, name),
                               att.DUE: format_utc(clock.now - timedelta(minutes=1))})
 
     result = make().run()
@@ -356,7 +356,7 @@ def test_a_further_orphan_that_cannot_be_stopped_stays_due(make, tokens, clock, 
     names = [f"{task}-{DATE}{RUN[-20:]}" for task in ("extract", "load")]
     for task, name in zip(("extract", "load"), names):
         tokens.put_item(Item={"execution_name": name, "task_name": task, "status": "waiting", "generation": 1,
-                              "pipeline_execution": RUN, att.KEY: att.attention(att.WAITING, name),
+                              "readiness": READINESS_1_3, "pipeline_execution": RUN, att.KEY: att.attention(att.WAITING, name),
                               att.DUE: format_utc(clock.now - timedelta(minutes=1))})
     sweeper_run = make()
     _index_lags(sweeper_run.dispatcher.client, shows=names[:1])

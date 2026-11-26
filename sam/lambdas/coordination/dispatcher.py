@@ -38,8 +38,8 @@ goes the other way, dependants first (§4).
   in that row's current generation, comes now (``judge_now``). The pass decides
   as the sweeper's check does, from the rows and DescribeExecution, with at most
   two calls. A stream or narrow pass makes no DescribeExecution call.
-- A row whose run row is missing is stopped with the cause (invariant 11), a row
-  that a 1.2 run left in flight included (*Migration and upgrade*).
+- A row whose run row is missing is stopped with the cause (invariant 11); a row
+  that a 1.2 run left in flight is skipped with a log line and expires (D6).
 
 Entry points: ``handler`` for the tasks table's stream and for the end of an
 execution (``on_execution_end``), ``full_pass`` for the sweeper, ``narrow_pass``
@@ -856,8 +856,8 @@ class Dispatcher:
     def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str,
                      deadline: Optional[float] = None) -> Dict[str, Any]:
         """Each row named, stopped with the cause: its run row is missing (invariant 11). A row that a 1.2 run
-        left in flight has no readiness fields; its stop needs only its status and generation (*Migration and upgrade*).
-        Past ``deadline`` the rest wait for a later pass or check, which finds them again."""
+        left in flight is skipped with a log line: it expires with its history TTL (D6). Past ``deadline`` the rest
+        wait for a later pass or check, which finds them again."""
         now = self.clock()
         stopped = 0
         for index, key in enumerate(keys):
@@ -868,8 +868,12 @@ class Dispatcher:
             item = self._get(key)
             if item is None or task_row.STATUS not in item:
                 continue
+            if dispatch.written_before_1_3(item):
+                log.info("dispatcher", "a row a 1.2 run left is not stopped; it expires with its history", run=run_key,
+                         row=key, status=str(item[task_row.STATUS]))
+                continue
             try:
-                row = dispatch.stop_view(item)
+                row = dispatch.row_view(item)
                 judgment = dispatch.stop(row, now=now, cause="its run row is missing")
                 items = dispatch_writes.task_write(row, judgment, None, table=self.tokens_table, now=now)
             except Exception as exc:  # noqa: BLE001 — one row that cannot be stopped never holds up the others (Rule 51)

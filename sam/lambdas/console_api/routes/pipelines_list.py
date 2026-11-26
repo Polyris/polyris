@@ -20,7 +20,7 @@ from dal import executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing, needs_redeploy
 from polyris.coordination.task_spec import SpecError
 from constants import Limits, TaskStatus
-from feed import (dependencies_of, feed_dates, is_stale, latest_run_of_date, page_by_started_at, readiness_of,
+from feed import (dependencies_of, feed_dates, latest_run_of_date, page_by_started_at, readiness_of,
                   run_counts, run_entry, run_rows_before, runs_of_date, wait_for_text)
 from response import cors_response, index_building_response
 from logger import log
@@ -308,7 +308,6 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'retry_attempt': safe_int(item.get('retry_attempt'), 0),
             'max_retries': retries[task_name] if task_name in retries else resolve_max_retries(item),
             **_why_it_waits(item, readiness, task_map),
-            **({'stale': True} if is_stale(item) else {}),
         })
     
     # Calculate stats

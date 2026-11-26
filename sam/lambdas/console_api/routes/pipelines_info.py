@@ -2,7 +2,6 @@
 
 Team observability (metrics, logs) lives in ee/team/pipelines_info.py — ADR #98.
 """
-import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -16,7 +15,6 @@ from polyris.coordination import run_row
 from polyris.coordination.task_spec import SpecError
 from response import cors_response
 from logger import log
-from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
 from utils import parse_wait_before, should_skip_token_row
 
 
@@ -72,9 +70,8 @@ def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
     Priority (``dag_source``):
     1. ``run`` — a run started on 1.3: the specs of the version its run row names, the
        graph it ran with (ADR #137 §8);
-       ``snapshot`` — a run from before 1.3, which has no run row: its DAG snapshot. Only
-       1.2 runs have one, and 1.4 removes this reader (ADR #137, *Migration and upgrade*; D89);
-    2. ``registry`` — the specs of the version the registry names: the current definition;
+    2. ``registry`` — the specs of the version the registry names: the current definition, which a
+       run from before 1.3 (no run row) shows too (D6);
     3. ``inferred`` — from the run's task rows, or the latest run of the date's, when no
        specs can be read. No route scans the tasks table (ADR #137 §5).
     """
@@ -88,10 +85,6 @@ def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
             dag = _run_graph(pipeline_name, run)
             if dag is not None:
                 return _graph_response(pipeline_name, dag, 'run')
-        else:
-            dag = _snapshot_graph(pipeline_execution)
-            if dag is not None:
-                return _graph_response(pipeline_name, dag, 'snapshot')
 
     # The current definition: the task specs of the version the registry names
     try:
@@ -127,31 +120,6 @@ def _run_graph(pipeline_name: str, run: Mapping[str, Any]) -> Optional[Dict[str,
                   pipeline_name=pipeline_name, run=str(run.get(run_row.TABLE_KEY, '')), error=str(e))
         return None
     return dag if dag['nodes'] else None
-
-
-def _snapshot_graph(pipeline_execution: str) -> Optional[Dict[str, Any]]:
-    """A 1.2 run's DAG snapshot (D89; 1.4 removes this reader), with each task's countdown from its rows."""
-    try:
-        snapshot_item = executions_repo.get(f'{DAG_SNAPSHOT_PREFIX}{pipeline_execution}')
-    except (ClientError, BotoCoreError) as e:
-        log.error("pipelines", "Error getting DAG snapshot", error=str(e))
-        return None
-    if not snapshot_item:
-        return None
-    try:
-        dag_str = snapshot_item.get('dag', '{}')
-        dag = json.loads(dag_str) if isinstance(dag_str, str) else dag_str
-    except (json.JSONDecodeError, TypeError) as e:
-        log.error("pipelines", "Unreadable DAG snapshot", pipeline_execution=pipeline_execution, error=str(e))
-        return None
-    if not (isinstance(dag, dict) and dag.get('nodes') and isinstance(dag.get('edges'), list)):
-        return None
-    countdowns = _countdowns(executions_repo.query_by_pipeline_execution(pipeline_execution))
-    for node in dag['nodes']:
-        node_id = node.get('id', '')
-        if node_id in countdowns and 'wait_before' not in node:
-            node['wait_before'] = countdowns[node_id]
-    return dag
 
 
 def _countdowns(rows: List[Dict[str, Any]]) -> Dict[str, int]:

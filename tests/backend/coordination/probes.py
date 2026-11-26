@@ -310,9 +310,9 @@ PROBES: Tuple[Probe, ...] = (
           f"{ROWS}::test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_clears"),
     # A Restart taken a day short of a year: nothing renews the outputs its rerun reads (D126).
     # The stop of a row whose run row is missing skips every row: a 1.2 row left in flight hangs.
-    Probe("R-U1", (Edit(DISPATCHER, "            if item is None or task_row.STATUS not in item:\n",
-                        "            if True:\n"),),
-          f"{ROWS}::test_a_1_2_row_left_in_flight_across_the_upgrade_is_stopped_with_the_cause"),
+    Probe("R-U1", (Edit(DISPATCHER, "            if dispatch.written_before_1_3(item):\n",
+                        "            if False:\n"),),
+          f"{ROWS}::test_a_1_2_row_left_in_flight_is_skipped_and_warns_at_no_sweep"),
     Probe("R-O3", (Edit("polyris/coordination/retention.py", "RESTART_TTL_MARGIN = timedelta(days=90)",
                         "RESTART_TTL_MARGIN = timedelta(days=1)"),),
           f"{ROWS}::test_a_late_restart_is_refused_and_one_within_nine_months_finds_its_upstreams_outputs"),

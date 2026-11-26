@@ -10,7 +10,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 import env
 import start_run as start_run_lambda
-from coordination_testkit import TABLES, FakeSfn, client_error, fact, register
+from coordination_testkit import READINESS_1_3, TABLES, FakeSfn, client_error, fact, register
 from dispatcher import RESERVE_MS, Dispatcher
 from polyris.coordination import attention, run_name, run_row, spec_store, start_run, sweep, task_row, task_spec
 from polyris.coordination.records import DECISION_EVENT_ORDER, DEPS_BLOCKED, DEPS_READY
@@ -993,39 +993,34 @@ def test_a_countdown_that_ended_at_the_check_is_no_lost_hint(world):
     assert item(world, key("load"))["status"] == "deps_ready"
 
 
-@pytest.mark.parametrize("generation,raised", [(None, 1), (0, 1), (3, 4)])
-def test_a_row_a_12_run_left_in_flight_is_stopped_without_readiness_fields(world, generation, raised):
-    """1.2 rows name no spec version; their stop needs only the status and the generation (*Migration and upgrade*)."""
+@pytest.mark.parametrize("status", ["waiting", "waiting_delay", "running"])
+def test_a_row_a_12_run_left_is_skipped_with_a_log_line_and_never_warns(world, status):
+    """1.4 no longer stops such a row: it expires with its history TTL (D6), and no sweep turns it into an error."""
     old = "load-2026-11-12-run-2026-11-12-0ld0ld01"
-    row = {"execution_name": old, "task_name": "load", "status": "waiting", "pipeline_execution": "old-run",
-           "attention": attention.attention(attention.WAITING, old), "attention_at": "2026-11-12T05:00:00.000Z",
-           **({"generation": generation} if generation is not None else {})}
+    row = {"execution_name": old, "task_name": "load", "status": status, "pipeline_execution": "old-run",
+           "attention": attention.attention(attention.WAITING, old), "attention_at": "2026-11-12T05:00:00.000Z"}
+    world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in row.items()})
+    for _ in range(2):
+        result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
+                                            check=True, orphan_keys=[old])
+        assert (result["action"], result["stopped"]) == ("orphans", 0)
+    assert item(world, old)["status"] == status
+    assert world.client.get_item(TableName=table("TOKENS_TABLE"),
+                                 Key={"execution_name": {"S": f"_notify_warn_coordination_{old}"}}).get("Item") is None
+
+
+def test_a_row_of_13_whose_run_row_is_missing_is_stopped(world):
+    name = "load-2026-11-12-run-2026-11-12-0ld0ld01"
+    row = {"execution_name": name, "task_name": "load", "status": "waiting", "pipeline_execution": "old-run",
+           "generation": 3, "readiness": READINESS_1_3,
+           "attention": attention.attention(attention.WAITING, name), "attention_at": "2026-11-12T05:00:00.000Z"}
     world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in row.items()})
     result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
-                                        check=True, orphan_keys=[old, "gone-2026-11-12-x"])
+                                        check=True, orphan_keys=[name, "gone-2026-11-12-x"])
     assert (result["action"], result["stopped"]) == ("orphans", 1)
-    stopped = item(world, old)
-    assert (stopped["status"], stopped["generation"], stopped["error"]) == ("stopped", raised, "its run row is missing")
+    stopped = item(world, name)
+    assert (stopped["status"], stopped["generation"], stopped["error"]) == ("stopped", 4, "its run row is missing")
     assert "attention" not in stopped
-
-
-@pytest.mark.parametrize("countdown", ["aaa_countdown", "zzz_countdown"])
-def test_every_row_a_12_run_left_is_stopped_a_countdown_in_waiting_delay_too(world, countdown):
-    """The break review of TR-8: TaskStatus lost waiting_delay, and with it the stop's sources, so a 1.2 row that
-    counted down failed the whole pass, before or after the waiting row in the order of the keys. The table takes
-    the statuses only older rows carry (transitions.OLDER_NOT_FINAL)."""
-    keys = []
-    for task, status, due in [(countdown, "waiting_delay", None), ("load", "waiting", "2026-11-12T05:00:00.000Z")]:
-        name = f"{task}-2026-11-12-run-2026-11-12-0ld0ld01"
-        keys.append(name)
-        row = {"execution_name": name, "task_name": task, "status": status, "pipeline_execution": "old-run",
-               "generation": 1, **({"attention": attention.attention(attention.WAITING, name), "attention_at": due}
-                                   if due else {})}
-        world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in row.items()})
-    result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
-                                        check=True, orphan_keys=[keys[1]])
-    assert (result["action"], result["stopped"]) == ("orphans", 2)
-    assert {item(world, k)["status"] for k in keys} == {"stopped"}
 
 
 def test_a_row_of_a_run_without_its_run_row_that_cannot_be_stopped_warns_and_the_others_stop(world):
@@ -1036,7 +1031,7 @@ def test_a_row_of_a_run_without_its_run_row_that_cannot_be_stopped_warns_and_the
         keys.append(name)
         world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in {
             "execution_name": name, "task_name": task, "status": status, "pipeline_execution": "old-run",
-            "generation": 1}.items()})
+            "generation": 1, "readiness": READINESS_1_3}.items()})
     result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
                                         check=True, orphan_keys=keys)
     assert result["stopped"] == 1 and item(world, keys[1])["status"] == "stopped"

@@ -267,17 +267,18 @@ def test_a_limit_due_in_a_pause_fires_after_the_resume_moved_by_the_paused_time(
 
 
 @defect("R-U1")
-def test_a_1_2_row_left_in_flight_across_the_upgrade_is_stopped_with_the_cause(world):
-    """ADR #137, *Migration and upgrade*: a 1.2 run has no run row, so none of its rows starts; when a waiting row's 1.2 entry
-    falls due, the sweeper's pass stops every row of the run, with the cause on the row, by the rule for a row whose
-    run row is missing. extract counts down its wait_before in 1.2's waiting_delay, a status 1.3 no longer has
-    (the break review of TR-8): it stops too, and fails no pass."""
+def test_a_1_2_row_left_in_flight_is_skipped_and_warns_at_no_sweep(world):
+    """D6: a 1.2 run has no run row, so none of its rows starts; when a waiting row's 1.2 entry falls due, the
+    sweeper's pass skips each row of the run with a log line, and its rows expire with their history. No sweep turns
+    such a row into a warning, a countdown in 1.2's waiting_delay included."""
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.upgrade_platform(statuses={"extract": "waiting_delay"})
-    world.clock.advance(minutes=30)
-    world.sweep()
-    assert world.status(run, "load") == world.status(run, "extract") == "stopped"
-    assert world.row(run, "load")["error"] == "its run row is missing"
+    for _ in range(2):
+        world.clock.advance(minutes=30)
+        world.sweep()
+    assert (world.status(run, "load"), world.status(run, "extract")) == ("waiting", "waiting_delay")
+    assert "error" not in world.row(run, "load")
+    assert not [i for i in world._items() if str(i["execution_name"]).startswith("_notify_warn_")]
 
 
 @defect("R-C1")
