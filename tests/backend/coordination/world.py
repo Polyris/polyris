@@ -195,6 +195,7 @@ class World:
             registry_table=self.stack.tables["PipelineRegistryTable"],
             tokens_table=self.stack.tables["PipelineTokensTable"],
             asset_subscriptions_table=self.stack.tables["AssetSubscriptionsTable"],
+            schedule_role_export="acme-dev-polyris-schedule-role-arn",
         )
         target = template["Resources"]["PipelineSchedule"]["Properties"]["Target"]
         payload = str(target["Input"]).replace("<aws.scheduler.scheduled-time>", scheduled_time)

@@ -121,6 +121,7 @@ def _pipeline_resources(shape: str) -> Dict[str, Dict[str, Any]]:
         _dag(shape), namespace="acme", stage="prod", region="us-east-1",
         role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
         registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+        schedule_role_export="acme-prod-polyris-schedule-role-arn",
     )
     resources: Dict[str, Dict[str, Any]] = template["Resources"]
     return resources

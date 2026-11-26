@@ -25,7 +25,13 @@ History, in order:
    The post-deploy enforcement (fix #2) now uses the scheduler client's
    get_schedule/update_schedule instead of the classic events client's
    enable_rule/disable_rule, since Scheduler has no simple toggle API.
+
+4. 1.4 (PLAN_IAM 1.4.0 §6.1): the pipeline stack creates no role. Its schedule
+   starts the state machine with the platform's shared schedule role, imported
+   from the platform's export; polyris-deploy needs no IAM write action.
 """
+import json
+
 import pytest
 
 from polyris import DAG, task
@@ -33,6 +39,7 @@ from polyris.deploy import _generate_cfn_template, deploy_pipeline
 
 
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:x"
+EXPORT = "acme-dev-polyris-schedule-role-arn"
 
 
 def _scheduled_dag(dag_id="test-pipeline", is_paused_upon_creation=None):
@@ -51,6 +58,7 @@ class TestScheduleResourceInTemplate:
             dag, namespace="test", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+            schedule_role_export=EXPORT,
         )
         rule = template["Resources"]["PipelineSchedule"]
         assert rule["Type"] == "AWS::Scheduler::Schedule"
@@ -62,6 +70,7 @@ class TestScheduleResourceInTemplate:
             dag, namespace="test", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+            schedule_role_export=EXPORT,
         )
         rule = template["Resources"]["PipelineSchedule"]
         assert rule["Properties"]["State"] == "ENABLED"
@@ -74,56 +83,35 @@ class TestScheduleResourceInTemplate:
             dag, namespace="test", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+            schedule_role_export=EXPORT,
         )
         rule = template["Resources"]["PipelineSchedule"]
         assert rule["Properties"]["FlexibleTimeWindow"] == {"Mode": "OFF"}
 
-    def test_scheduler_role_trust_policy_scoped_to_scheduler_service(self):
-        dag = _scheduled_dag()
+    def test_the_pipeline_stack_holds_no_iam_resource(self):
+        """An author holds no IAM write action (D3): the stack creates no role, so its deploy needs none."""
         template = _generate_cfn_template(
-            dag, namespace="test", stage="dev", region="us-east-1",
+            _scheduled_dag(), namespace="test", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+            schedule_role_export=EXPORT,
         )
-        role = template["Resources"]["PipelineSchedulerRole"]
-        statement = role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]
-        assert statement["Principal"]["Service"] == "scheduler.amazonaws.com"
-        assert statement["Action"] == "sts:AssumeRole"
-        # Deliberately unconditional: a confused-deputy Condition
-        # (aws:SourceArn/aws:SourceAccount) was tried and removed after a
-        # real deploy failed at CreateSchedule with "The execution role you
-        # provide must allow AWS EventBridge Scheduler to assume the role" —
-        # a known, widely-reported issue with Scheduler's create-time trust-
-        # policy validation and conditional AssumeRole statements. The
-        # permission policy (see the next test) already scopes this role to
-        # states:StartExecution on only this one pipeline's state machine,
-        # so the blast radius stays bounded without this condition.
-        assert "Condition" not in statement
+        assert not [r for r in template["Resources"].values() if r["Type"].startswith("AWS::IAM::")]
 
-    def test_scheduler_role_can_invoke_the_state_machine(self):
-        dag = _scheduled_dag()
-        template = _generate_cfn_template(
-            dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
-            registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
-        )
-        role = template["Resources"]["PipelineSchedulerRole"]
-        policy = role["Properties"]["Policies"][0]["PolicyDocument"]["Statement"][0]
-        assert policy["Action"] == "states:StartExecution"
-        assert policy["Resource"] == {"Ref": "PipelineStateMachine"}
-
-    def test_schedule_target_points_at_the_new_role_not_the_pipeline_role(self):
-        """The schedule's Target.RoleArn must be the NEW scheduler role, not
-        role_arn (the pipeline's own Step Functions execution role) — those
-        are two different roles with two different trust policies."""
+    def test_schedule_target_imports_the_platforms_schedule_role(self):
+        """The schedule's Target.RoleArn is the platform's schedule role, imported from its export, not
+        role_arn (the pipeline's Step Functions execution role): two roles, two trust policies. The import
+        keeps the platform from dropping the role while a pipeline uses it (D8)."""
         dag = _scheduled_dag()
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::000000000000:role/pipeline-exec", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+            schedule_role_export=EXPORT,
         )
         rule = template["Resources"]["PipelineSchedule"]
-        assert rule["Properties"]["Target"]["RoleArn"] == {"Fn::GetAtt": ["PipelineSchedulerRole", "Arn"]}
+        assert rule["Properties"]["Target"]["RoleArn"] == {"Fn::ImportValue": EXPORT}
+        assert rule["DependsOn"] == ["PipelineStateMachine"]
 
 
 _SAM_OUTPUTS = [
@@ -135,6 +123,8 @@ _SAM_OUTPUTS = [
     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
     {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
     {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
+    {"OutputKey": "PipelineScheduleRoleArn", "OutputValue": "arn:aws:iam::000000000000:role/acme-dev-polyris-schedule-role"},
+    {"OutputKey": "PipelineDeployPolicyArn", "OutputValue": "arn:aws:iam::000000000000:policy/acme-dev-polyris-deploy-policy"},
 ]
 
 
@@ -150,8 +140,8 @@ def _platform_tables(platform_dynamodb):
 
 
 
-def _sam_stack_response():
-    return {"Stacks": [{"Outputs": _SAM_OUTPUTS, "Parameters": [
+def _sam_stack_response(outputs=None):
+    return {"Stacks": [{"Outputs": _SAM_OUTPUTS if outputs is None else outputs, "Parameters": [
         {"ParameterKey": "Stage", "ParameterValue": "dev"},
         {"ParameterKey": "Namespace", "ParameterValue": "acme"},
     ]}]}
@@ -188,49 +178,58 @@ def _fake_current_schedule(state="ENABLED"):
     }
 
 
+def _deploy(mocker, dag, *, current_schedule_state="ENABLED", outputs=None, destroy=False, cfn=None, s3=None):
+    """deploy_pipeline() of ``dag``, mocked at the AWS boundary only (the boto3 Session; CloudFormation
+    change sets go through the boto3 client, the specs through moto). Returns the clients it used."""
+    mocker.patch("polyris.validation.validate_asl_from_dag", return_value=(True, [], []))
+    boto = mocker.patch("polyris.deploy.boto3")
+    session = mocker.MagicMock()
+    boto.Session.return_value = session
+    sts = mocker.MagicMock()
+    sts.get_caller_identity.return_value = {"Account": "999999999999"}
+    cfn = cfn or mocker.MagicMock()
+
+    # describe_stacks is called for two stacks in a deploy: the SAM infra
+    # stack (returns wrapper ARN, tables, results bucket) and the pipeline
+    # stack itself (returns StateMachineArn after CloudFormation deploy).
+    def _describe_stacks(StackName):
+        if StackName == "acme-dev":
+            return _sam_stack_response(outputs)
+        return _pipeline_stack_response(ARN)
+    cfn.describe_stacks.side_effect = _describe_stacks
+    cfn.describe_change_set.return_value = {"Status": "CREATE_COMPLETE", "ChangeSetName": "cs"}
+
+    scheduler = mocker.MagicMock()
+    scheduler.get_schedule.return_value = _fake_current_schedule(current_schedule_state)
+    s3 = s3 or mocker.MagicMock()
+
+    def _client(name, **_kw):
+        return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, "s3": s3, **_PLATFORM}.get(
+            name, mocker.MagicMock())
+    session.client.side_effect = _client
+
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    cfg.stage = "dev"
+    cfg.region = "us-east-1"
+    cfg.namespace = "acme"
+    cfg.profile = None
+    cfg.for_stage.return_value = _stage_cfg_mock(mocker)
+
+    mocker.patch("polyris.deploy._register_pipeline")
+    mocker.patch("polyris.deploy.destroy_stack")
+    mocker.patch("polyris.deploy.unregister_pipeline", return_value=True)
+
+    deploy_pipeline(dag, stage="dev", region="us-east-1", destroy=destroy)
+    return {"cfn": cfn, "scheduler": scheduler, "s3": s3}
+
+
 class TestPostDeployScheduleStateEnforcement:
     """Full deploy_pipeline() flow, mocked at the AWS-boundary only (boto3
     Session; CloudFormation change sets go through the boto3 client) — everything
     else runs for real, so these exercise the actual code path."""
 
     def _run_deploy(self, mocker, dag, current_schedule_state="ENABLED"):
-        mocker.patch("polyris.validation.validate_asl_from_dag", return_value=(True, [], []))
-        boto = mocker.patch("polyris.deploy.boto3")
-        session = mocker.MagicMock()
-        boto.Session.return_value = session
-        sts = mocker.MagicMock()
-        sts.get_caller_identity.return_value = {"Account": "999999999999"}
-        cfn = mocker.MagicMock()
-
-        # describe_stacks is called for two stacks in a deploy: the SAM infra
-        # stack (returns wrapper ARN, tables, results bucket) and the pipeline
-        # stack itself (returns StateMachineArn after CloudFormation deploy).
-        def _describe_stacks(StackName):
-            if StackName == "acme-dev":
-                return _sam_stack_response()
-            return _pipeline_stack_response(ARN)
-        cfn.describe_stacks.side_effect = _describe_stacks
-        cfn.describe_change_set.return_value = {"Status": "CREATE_COMPLETE", "ChangeSetName": "cs"}
-
-        scheduler = mocker.MagicMock()
-        scheduler.get_schedule.return_value = _fake_current_schedule(current_schedule_state)
-
-        def _client(name, **_kw):
-            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, **_PLATFORM}.get(
-                name, mocker.MagicMock())
-        session.client.side_effect = _client
-
-        cfg = mocker.patch("polyris.deploy.polyris_config")
-        cfg.stage = "dev"
-        cfg.region = "us-east-1"
-        cfg.namespace = "acme"
-        cfg.profile = None
-        cfg.for_stage.return_value = _stage_cfg_mock(mocker)
-
-        mocker.patch("polyris.deploy._register_pipeline")
-
-        deploy_pipeline(dag, stage="dev", region="us-east-1")
-        return scheduler
+        return _deploy(mocker, dag, current_schedule_state=current_schedule_state)["scheduler"]
 
     def test_unpaused_dag_updates_a_disabled_schedule_to_enabled(self, mocker):
         """The exact drift bug: even with NO template changes, every
@@ -318,3 +317,129 @@ class TestPostDeployScheduleStateEnforcement:
 
         # Must not raise — the deploy as a whole already succeeded via CFN.
         deploy_pipeline(dag, stage="dev", region="us-east-1")
+
+
+def _unscheduled_dag(dag_id="manual-pipeline"):
+    with DAG(dag_id, schedule=None) as dag:
+        @task.sfn(arn=ARN)
+        def t():
+            pass
+        t()
+    return dag
+
+
+#: A platform older than 1.4: no schedule role, no deploy policy.
+_OUTPUTS_1_3 = [o for o in _SAM_OUTPUTS if o["OutputKey"] not in ("PipelineScheduleRoleArn", "PipelineDeployPolicyArn")]
+
+
+class TestTheDeployHoldsNoIam:
+    """PLAN_IAM 1.4.0 §5.5, §6.1, §6.3: the pipeline stack creates no role, so polyris-deploy needs no IAM
+    write and no capability; its schedule imports the platform's role; a role without the deploy policy
+    is told which policy to attach."""
+
+    def test_the_change_set_asks_for_no_capability_and_imports_the_platforms_schedule_role(self, mocker):
+        cfn = _deploy(mocker, _scheduled_dag())["cfn"]
+        request = cfn.create_change_set.call_args.kwargs
+        assert request["Capabilities"] == []
+        schedule = json.loads(request["TemplateBody"])["Resources"]["PipelineSchedule"]
+        # The platform's Namespace and Stage name the export, whatever the pipeline's own are.
+        assert schedule["Properties"]["Target"]["RoleArn"] == {"Fn::ImportValue": EXPORT}
+
+    def test_a_scheduled_pipeline_on_a_platform_without_the_schedule_role_is_refused_with_the_cause(
+            self, mocker, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _deploy(mocker, _scheduled_dag(), outputs=_OUTPUTS_1_3)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Missing outputs: PipelineScheduleRoleArn" in out
+        assert "Ask whoever installs the platform to run" in out and "polyris-up" in out
+
+    def test_an_unscheduled_pipeline_deploys_on_a_platform_without_the_schedule_role(self, mocker):
+        cfn = _deploy(mocker, _unscheduled_dag(), outputs=_OUTPUTS_1_3)["cfn"]
+        cfn.execute_change_set.assert_called_once()
+
+    def test_a_scheduled_pipeline_is_destroyed_on_a_platform_without_the_schedule_role(self, mocker):
+        import polyris.deploy as deploy
+
+        _deploy(mocker, _scheduled_dag(), outputs=_OUTPUTS_1_3, destroy=True)
+        deploy.destroy_stack.assert_called_once()
+
+    def test_a_refused_pass_role_names_the_deploy_policy_to_attach(self, mocker, capsys):
+        from botocore.exceptions import WaiterError
+
+        cfn = mocker.MagicMock()
+        cfn.get_waiter.return_value.wait.side_effect = WaiterError(
+            name="stack_update_complete", reason="terminal failure", last_response={})
+        cfn.describe_stack_events.return_value = {"StackEvents": [
+            {"ResourceType": "AWS::CloudFormation::Stack", "ResourceStatus": "UPDATE_ROLLBACK_IN_PROGRESS",
+             "ResourceStatusReason": "The following resource(s) failed to update: [PipelineStateMachine]."},
+            {"ResourceType": "AWS::StepFunctions::StateMachine", "ResourceStatus": "UPDATE_FAILED",
+             "ResourceStatusReason": "User: arn:aws:sts::999999999999:assumed-role/ci/x is not authorized to "
+                                     "perform: iam:PassRole on resource: arn:aws:iam::999999999999:role/r"},
+            {"ResourceType": "AWS::CloudFormation::Stack", "ResourceStatus": "UPDATE_IN_PROGRESS",
+             "ResourceStatusReason": "User Initiated"},
+        ]}
+        with pytest.raises(SystemExit) as exc:
+            _deploy(mocker, _scheduled_dag(), cfn=cfn)
+        assert exc.value.code == 1
+        assert ("Attach the platform's deploy policy to it: "
+                "arn:aws:iam::000000000000:policy/acme-dev-polyris-deploy-policy") in capsys.readouterr().out
+
+    def test_a_failure_of_an_earlier_operation_gives_no_pass_role_hint(self, mocker, capsys):
+        from botocore.exceptions import WaiterError
+
+        cfn = mocker.MagicMock()
+        cfn.get_waiter.return_value.wait.side_effect = WaiterError(
+            name="stack_update_complete", reason="terminal failure", last_response={})
+        cfn.describe_stack_events.return_value = {"StackEvents": [
+            {"ResourceType": "AWS::StepFunctions::StateMachine", "ResourceStatus": "UPDATE_FAILED",
+             "ResourceStatusReason": "Invalid State Machine Definition"},
+            {"ResourceType": "AWS::CloudFormation::Stack", "ResourceStatus": "UPDATE_IN_PROGRESS",
+             "ResourceStatusReason": "User Initiated"},
+            {"ResourceType": "AWS::StepFunctions::StateMachine", "ResourceStatus": "UPDATE_FAILED",
+             "ResourceStatusReason": "is not authorized to perform: iam:PassRole"},
+        ]}
+        with pytest.raises(SystemExit):
+            _deploy(mocker, _scheduled_dag(), cfn=cfn)
+        assert "deploy policy" not in capsys.readouterr().out
+
+
+class TestALargeTemplateIsTheOneUploaded:
+    """PLAN_IAM 1.4.0 §5.5: a template over the inline limit goes through the results bucket. Its key is
+    one nobody can predict, and the change set runs only the template that was uploaded."""
+
+    @pytest.fixture(autouse=True)
+    def _small_limit(self, mocker):
+        mocker.patch("polyris.deploy.TEMPLATE_BODY_LIMIT", 10)
+
+    @staticmethod
+    def _answer_with(cfn, s3, swap=False):
+        def _get_template(StackName, ChangeSetName, TemplateStage):
+            assert TemplateStage == "Original"
+            body = json.loads(s3.put_object.call_args.kwargs["Body"])
+            if swap:
+                body["Resources"]["Evil"] = {"Type": "AWS::IAM::Role"}
+            return {"TemplateBody": body}  # boto3 parses a JSON body
+        cfn.get_template.side_effect = _get_template
+
+    def test_the_uploaded_template_is_deployed_under_a_key_of_its_own(self, mocker):
+        keys = []
+        for _ in range(2):
+            cfn, s3 = mocker.MagicMock(), mocker.MagicMock()
+            self._answer_with(cfn, s3)
+            _deploy(mocker, _scheduled_dag(), cfn=cfn, s3=s3)
+            cfn.execute_change_set.assert_called_once()
+            keys.append(s3.put_object.call_args.kwargs["Key"])
+            assert cfn.create_change_set.call_args.kwargs["TemplateURL"].endswith(keys[-1])
+        assert keys[0] != keys[1] and all(k.startswith("cfn-pipeline-templates/") for k in keys)
+
+    def test_a_swapped_template_is_refused_and_its_change_set_deleted(self, mocker, capsys):
+        cfn = mocker.MagicMock()
+        s3 = mocker.MagicMock()
+        self._answer_with(cfn, s3, swap=True)
+        with pytest.raises(SystemExit) as exc:
+            _deploy(mocker, _scheduled_dag(), cfn=cfn, s3=s3)
+        assert exc.value.code == 1
+        cfn.execute_change_set.assert_not_called()
+        cfn.delete_change_set.assert_called_once()
+        assert "is not the one uploaded" in capsys.readouterr().out

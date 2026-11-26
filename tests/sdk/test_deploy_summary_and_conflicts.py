@@ -398,4 +398,5 @@ class TestSamStackOutputKeys:
             "AssetSubscriptionsTable",
             "PipelineSpecsTable",
             "ResultsBucket",
+            "PipelineScheduleRoleArn",
         )

@@ -65,17 +65,22 @@ from .cfn_changeset import (
     describe_stack,
     execute_change_set,
     start_event_watcher,
+    verify_change_set_template,
 )
 from .executions import stack_machines, stop_running
 from .platform import (
     NAMESPACE_STAGE_MAX_LEN,
+    OUTPUT_DEPLOY_POLICY,
+    OUTPUT_SCHEDULE_ROLE,
     PARAM_NAMESPACE,
     PARAM_STAGE,
     AmbiguousPlatformStack,
     is_platform_stack,
     parameters_of,
+    schedule_role_export,
     select_platform_stack,
 )
+from . import __version__
 from .config import ConfigError, use_stage
 from .config import config as polyris_config
 from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN
@@ -103,10 +108,17 @@ def _generate_cfn_template(
     registry_table: str,
     tokens_table: str,
     asset_subscriptions_table: str,
+    schedule_role_export: str,
     log_retention_days: int = 30,
     log_level: str = "ERROR",
 ) -> dict:
-    """Generate CloudFormation template for a single pipeline."""
+    """Generate CloudFormation template for a single pipeline.
+
+    The stack holds no IAM resource (PLAN_IAM 1.4.0 §6.1): its state machine runs as the platform's
+    orchestration role (``role_arn``), and its schedule starts it with the platform's schedule role,
+    imported from the export named ``schedule_role_export``. The import keeps the platform from
+    dropping that role while a pipeline uses it (D8).
+    """
 
     full_name = f"{namespace}-{stage}-polyris-{dag.dag_id}"
     asl_json = generate_step_function_json(
@@ -174,44 +186,6 @@ def _generate_cfn_template(
     # AWS's own console now labels "legacy" in favor of Scheduler.
     if dag.schedule and not dag.is_asset_triggered:
         schedule_expr = dag._eventbridge_schedule
-        scheduler_role_name = f"{full_name}-scheduler-role"
-
-        # Scheduler needs its own execution role — distinct from role_arn
-        # (the pipeline's Step Functions execution role) — trusted only by
-        # scheduler.amazonaws.com, and only for start_execution on THIS
-        # pipeline's own state machine.
-        resources["PipelineSchedulerRole"] = {
-            "Type": "AWS::IAM::Role",
-            "Properties": {
-                "RoleName": scheduler_role_name,
-                "AssumeRolePolicyDocument": {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Principal": {"Service": "scheduler.amazonaws.com"},
-                            "Action": "sts:AssumeRole",
-                        }
-                    ],
-                },
-                "Policies": [
-                    {
-                        "PolicyName": "InvokePipelineStateMachine",
-                        "PolicyDocument": {
-                            "Version": "2012-10-17",
-                            "Statement": [
-                                {
-                                    "Effect": "Allow",
-                                    "Action": "states:StartExecution",
-                                    "Resource": {"Ref": "PipelineStateMachine"},
-                                }
-                            ],
-                        },
-                    }
-                ],
-                "Tags": tags,
-            },
-        }
 
         # Logical ID deliberately NOT "PipelineScheduleRule" (the pre-
         # migration name, when this was an AWS::Events::Rule): confirmed via
@@ -231,7 +205,7 @@ def _generate_cfn_template(
                 "FlexibleTimeWindow": {"Mode": "OFF"},
                 "Target": {
                     "Arn": {"Ref": "PipelineStateMachine"},
-                    "RoleArn": {"Fn::GetAtt": ["PipelineSchedulerRole", "Arn"]},
+                    "RoleArn": {"Fn::ImportValue": schedule_role_export},
                     "Input": json.dumps(
                         {
                             "triggered_by": "schedule",
@@ -242,7 +216,7 @@ def _generate_cfn_template(
                     ),
                 },
             },
-            "DependsOn": ["PipelineStateMachine", "PipelineSchedulerRole"],
+            "DependsOn": ["PipelineStateMachine"],
         }
 
     outputs["StateMachineArn"] = {
@@ -365,6 +339,31 @@ def _register_pipeline(
     print("  ✅ Registration triggered")
 
 
+def denies_pass_role(text: str) -> bool:
+    """Whether an AWS error text is a refused ``iam:PassRole``, as IAM words it in an API error or a
+    stack event ("... is not authorized to perform: iam:PassRole on resource ...")."""
+    return "iam:PassRole" in text and ("not authorized" in text or "AccessDenied" in text)
+
+
+def _pass_role_denied(cfn, stack_name: str, error: Exception) -> bool:
+    """Whether a failed deploy failed on ``iam:PassRole``: in its error, or in a stack event of its last
+    operation. A role that lacks the platform's deploy policy fails there (PLAN_IAM 1.4.0 §6.3)."""
+    if denies_pass_role(str(error)):
+        return True
+    try:
+        events = cfn.describe_stack_events(StackName=stack_name).get("StackEvents", [])
+    except (ClientError, BotoCoreError) as e:
+        print(f"   (could not read the stack's events: {e})")
+        return False
+    for event in events:  # newest first, back to the start of the last operation
+        if denies_pass_role(event.get("ResourceStatusReason") or ""):
+            return True
+        if (event.get("ResourceType") == "AWS::CloudFormation::Stack"
+                and event.get("ResourceStatusReason") == "User Initiated"):
+            break
+    return False
+
+
 # =============================================================================
 # Config resolution + pre-deploy summary
 # =============================================================================
@@ -381,6 +380,7 @@ SAM_STACK_OUTPUT_KEYS = (
     "AssetSubscriptionsTable",
     "PipelineSpecsTable",
     "ResultsBucket",
+    OUTPUT_SCHEDULE_ROLE,
 )
 
 
@@ -469,8 +469,12 @@ def _explicit_region(cli_region: Optional[str], stage_config) -> Optional[str]:
             or stage_config.get("region"))
 
 
+#: EventBridge Scheduler caps a schedule's name at 64 characters.
+SCHEDULE_NAME_MAX_LEN = 64
+
+
 def _check_name_lengths(dag: DAG, namespace: str, stage: str) -> None:
-    """Exit before any AWS write when IAM role names would exceed 64 characters."""
+    """Exit before any AWS write when IAM role names or the pipeline's schedule name would be too long."""
     _ns_stage_total = len(namespace) + len(stage)
     if _ns_stage_total > NAMESPACE_STAGE_MAX_LEN:
         print(
@@ -482,16 +486,15 @@ def _check_name_lengths(dag: DAG, namespace: str, stage: str) -> None:
         )
         sys.exit(1)
 
-    # Scheduler role only exists for time-triggered DAGs — guard only fires then.
-    # {namespace}-{stage}-polyris-{dag_id}-scheduler-role = ns+1+stage+9+dag_id+15
+    # Only a time-triggered DAG has a schedule: {namespace}-{stage}-polyris-{dag_id}-schedule.
     if dag.schedule and not dag.is_asset_triggered:
-        _scheduler_role_len = len(namespace) + 1 + len(stage) + 9 + len(dag.dag_id) + 15
-        if _scheduler_role_len > 64:
-            _dag_id_budget = 39 - _ns_stage_total
+        schedule_name = f"{namespace}-{stage}-polyris-{dag.dag_id}-schedule"
+        if len(schedule_name) > SCHEDULE_NAME_MAX_LEN:
+            _dag_id_budget = SCHEDULE_NAME_MAX_LEN - len(schedule_name) + len(dag.dag_id)
             print(
                 f"\n❌ DAG ID too long for this namespace+stage — cannot deploy '{dag.dag_id}':\n"
-                f"   '{namespace}-{stage}-polyris-{dag.dag_id}-scheduler-role' "
-                f"= {_scheduler_role_len} chars (IAM limit 64).\n"
+                f"   '{schedule_name}' = {len(schedule_name)} chars "
+                f"(EventBridge Scheduler limit {SCHEDULE_NAME_MAX_LEN}).\n"
                 f"   With namespace={namespace!r} + stage={stage!r} ({_ns_stage_total} chars), "
                 f"dag_id must be at most {_dag_id_budget} chars (currently {len(dag.dag_id)}).\n"
                 f"   Shorten the dag_id before deploying."
@@ -836,7 +839,7 @@ def deploy_pipeline(
     # are cosmetic (they name SAM's own resources); pipeline naming lives
     # in config.py.
     print(f"\nReading platform stack outputs from {_c(sam_stack_name, CYAN)}...")
-    outputs, _params = _read_sam_stack(session, sam_stack_name)
+    outputs, platform_params = _read_sam_stack(session, sam_stack_name)
 
     start_run_arn = outputs.get("StartRunFunctionArn")
     role_arn = outputs.get("OrchestrationRoleArn")
@@ -847,12 +850,17 @@ def deploy_pipeline(
     results_bucket = outputs.get("ResultsBucket")
     console_url = outputs.get("ConsoleUiUrl")
 
-    required = ("OrchestrationRoleArn",) + (() if destroy else ("PipelineSpecsTable", "StartRunFunctionArn"))
+    # A scheduled pipeline's schedule runs as the platform's schedule role, which 1.4 adds: this
+    # check is what tells a 1.4 polyris-deploy against an older platform (PLAN_IAM 1.4.0 §6.1).
+    scheduled = bool(dag.schedule) and not dag.is_asset_triggered
+    required = ("OrchestrationRoleArn",) + (() if destroy else (
+        ("PipelineSpecsTable", "StartRunFunctionArn") + ((OUTPUT_SCHEDULE_ROLE,) if scheduled else ())))
     missing = [k for k in required if not outputs.get(k)]
     if missing:
         print(f"❌ Platform stack '{sam_stack_name}' is missing required outputs.")
         print(f"   Missing outputs: {', '.join(missing)}")
-        print(f"   The platform is older than this polyris. Upgrade it with {_c('polyris-up', CYAN)}.")
+        print(f"   The platform is older than this polyris ({__version__}). Ask whoever installs the platform "
+              f"to run {_c(f'polyris-up {__version__}', CYAN)}.")
         sys.exit(1)
     assert role_arn  # narrowed by the check above
 
@@ -908,6 +916,8 @@ def deploy_pipeline(
         registry_table=registry_table or "",
         tokens_table=tokens_table or "",
         asset_subscriptions_table=asset_subscriptions_table or "",
+        schedule_role_export=schedule_role_export(platform_params.get(PARAM_NAMESPACE, ""),
+                                                  platform_params.get(PARAM_STAGE, "")),
         log_level=log_level,
         log_retention_days=log_retention_days,
     )
@@ -948,19 +958,32 @@ def deploy_pipeline(
             print(f"\n❌ Template is {len(template_body.encode())} bytes (inline limit {TEMPLATE_BODY_LIMIT}) "
                   "and the platform stack has no ResultsBucket output to upload it to.")
             sys.exit(1)
-        key = f"cfn-pipeline-templates/{stack_name}-{hashlib.sha256(template_body.encode()).hexdigest()[:16]}.json"
+        # A key nobody can predict, and the change set's template checked against what was uploaded:
+        # another writer of the prefix cannot have CloudFormation run a template of theirs with this
+        # caller's rights (PLAN_IAM 1.4.0 §5.5).
+        digest = hashlib.sha256(template_body.encode()).hexdigest()[:16]
+        key = f"cfn-pipeline-templates/{stack_name}-{digest}-{uuid.uuid4().hex}.json"
         session.client("s3").put_object(Bucket=results_bucket, Key=key, Body=template_body.encode())
         source = {"template_url": f"https://{results_bucket}.s3.{region}.amazonaws.com/{key}"}
 
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        change_set = create_change_set(cfn, stack_name=stack_name, capabilities=["CAPABILITY_NAMED_IAM"], **source)
+        # The stack holds no IAM resource, so it needs no capability. Its first update from a
+        # pipeline deployed before 1.4 deletes the stack's own scheduler role, which needs none
+        # either (V-Q).
+        change_set = create_change_set(cfn, stack_name=stack_name, capabilities=[], **source)
         if change_set is None:
             print("  No changes to deploy — the stack already matches this DAG.")
         else:
+            if "template_url" in source:
+                verify_change_set_template(cfn, stack_name=stack_name, change_set=change_set, uploaded=template_body)
             execute_change_set(cfn, stack_name=stack_name, change_set=change_set)
     except (ChangeSetError, ClientError, BotoCoreError) as e:
         print(f"\n❌ CloudFormation deploy failed: {e}")
+        if _pass_role_denied(cfn, stack_name, e):
+            policy = outputs.get(OUTPUT_DEPLOY_POLICY)
+            print(f"   The role that runs polyris-deploy may not pass the platform's roles. Attach the platform's "
+                  f"deploy policy to it: {_c(policy, CYAN) if policy else 'polyris-up prints its name'}.")
         sys.exit(1)
     finally:
         stop_narration()

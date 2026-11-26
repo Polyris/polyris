@@ -6,7 +6,6 @@ This module contains all the generate_* functions:
 - generate_dag_json: Generate DAG structure JSON
 - generate_dag_hash: Deterministic hash for DAG change detection
 - generate_mermaid: Generate Mermaid diagram
-- generate_eventbridge_schedule: Generate EventBridge schedule
 - generate_assets_json: Generate asset information JSON
 - validate_asl: Validate Amazon States Language JSON
 - generate_debug_info: Generate debug information for troubleshooting
@@ -1694,26 +1693,6 @@ def generate_mermaid(dag: DAG) -> str:
                 lines.append(f"    {step.step_id}")
     
     return "\n".join(lines)
-
-
-def generate_eventbridge_schedule(dag: DAG) -> Optional[Dict]:
-    """Generate EventBridge Scheduler configuration."""
-    if not dag._eventbridge_schedule:
-        return None
-    
-    return {
-        "Name": f"{dag.dag_id}-schedule",
-        "ScheduleExpression": dag._eventbridge_schedule,
-        "State": "DISABLED" if dag.is_paused_upon_creation else "ENABLED",
-        "Target": {
-            "Arn": "${sfn_arn}",
-            "RoleArn": "${scheduler_role_arn}",
-            "Input": json.dumps({
-                "triggered_by": "schedule",
-                "schedule": dag.schedule
-            })
-        }
-    }
 
 
 # ============================================

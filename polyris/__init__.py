@@ -115,7 +115,6 @@ from .generators import (
     generate_step_function_json,
     generate_dag_json,
     generate_mermaid,
-    generate_eventbridge_schedule,
     generate_assets_json,
     generate_all_assets,
 )
@@ -195,7 +194,6 @@ __all__ = [
     'generate_step_function_json',
     'generate_dag_json',
     'generate_mermaid',
-    'generate_eventbridge_schedule',
     'generate_assets_json',
     'generate_all_assets',
     

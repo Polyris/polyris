@@ -248,6 +248,41 @@ def test_an_error_of_the_hook_reaches_the_caller():
         C.execute_change_set(_Updating(C.CLEANUP_STATUS), stack_name="s", change_set=UPDATE, on_cleanup=hook)
 
 
+# ── verify_change_set_template ───────────────────────────────────────────────
+
+
+class _Templated(FakeCfn):
+    """A stack whose change set holds ``body``, as GetTemplate returns it (a dict for JSON, else the text)."""
+
+    def __init__(self, body):
+        super().__init__("UPDATE_COMPLETE")
+        self.body = body
+
+    def get_template(self, **kw):
+        self.calls.append(("get_template", kw))
+        return {"TemplateBody": self.body}
+
+
+UPLOADED = '{"Resources": {"Machine": {"Type": "AWS::StepFunctions::StateMachine"}}}'
+
+
+@pytest.mark.parametrize("body", [{"Resources": {"Machine": {"Type": "AWS::StepFunctions::StateMachine"}}},
+                                  UPLOADED])
+def test_a_change_set_with_the_uploaded_template_passes(body):
+    cfn = _Templated(body)
+    C.verify_change_set_template(cfn, stack_name="s", change_set={"ChangeSetName": "cs"}, uploaded=UPLOADED)
+    assert cfn.call("get_template") == {"StackName": "s", "ChangeSetName": "cs", "TemplateStage": "Original"}
+    assert not [c for c in cfn.calls if c[0] == "delete_change_set"]
+
+
+@pytest.mark.parametrize("body", [{"Resources": {"Role": {"Type": "AWS::IAM::Role"}}}, "Resources: {}"])
+def test_a_change_set_with_another_template_is_deleted_and_refused(body):
+    cfn = _Templated(body)
+    with pytest.raises(C.ChangeSetError, match="not the one uploaded"):
+        C.verify_change_set_template(cfn, stack_name="s", change_set={"ChangeSetName": "cs"}, uploaded=UPLOADED)
+    assert cfn.call("delete_change_set") == {"StackName": "s", "ChangeSetName": "cs"}
+
+
 # ── start_event_watcher ──────────────────────────────────────────────────────
 
 

@@ -437,7 +437,8 @@ def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(reso
         extract()
     pipeline = _generate_cfn_template(dag, namespace="other", stage="qa", region="us-east-1",
                                       role_arn="arn:aws:iam::1:role/r", start_run_function_arn="arn:start-run",
-                                      registry_table="r", tokens_table="t", asset_subscriptions_table="a")
+                                      registry_table="r", tokens_table="t", asset_subscriptions_table="a",
+                                      schedule_role_export="acme-dev-polyris-schedule-role-arn")
     name = pipeline["Resources"]["PipelineStateMachine"]["Properties"]["StateMachineName"]
     run_task = resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"].replace("${Namespace}-${Stage}", "acme-dev")
     for machine in (name, run_task):

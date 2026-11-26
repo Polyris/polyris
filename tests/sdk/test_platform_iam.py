@@ -11,7 +11,8 @@ from pathlib import Path
 
 import yaml
 
-from polyris.platform import NAMESPACE_STAGE_MAX_LEN
+from polyris.platform import (NAMESPACE_STAGE_MAX_LEN, OUTPUT_DEPLOY_POLICY, OUTPUT_SCHEDULE_ROLE,
+                              schedule_role_export)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -81,11 +82,13 @@ def test_the_schedule_roles_name_fits_iam_and_stays_out_of_the_migration_grant()
     assert len(name.replace("${Namespace}", "").replace("${Stage}", "")) + NAMESPACE_STAGE_MAX_LEN <= 64
 
 
-def test_the_schedule_role_is_exported_for_the_pipeline_stacks_to_import():
-    """A pipeline stack imports it (D8): CloudFormation keeps the platform from dropping it while one does."""
-    output = TEMPLATE["Outputs"]["PipelineScheduleRoleArn"]
+def test_the_schedule_role_is_exported_under_the_name_polyris_deploy_imports():
+    """A pipeline stack imports it (D8): CloudFormation keeps the platform from dropping it while one does.
+    polyris-deploy names the export from the platform's Namespace and Stage (Principle #28)."""
+    output = TEMPLATE["Outputs"][OUTPUT_SCHEDULE_ROLE]
     assert output["Value"] == {"!GetAtt": "PipelineScheduleRole.Arn"}
-    assert output["Export"]["Name"] == {"!Sub": "${Namespace}-${Stage}-polyris-schedule-role-arn"}
+    assert output["Export"]["Name"] == {"!Sub": schedule_role_export("${Namespace}", "${Stage}")}
+    assert TEMPLATE["Outputs"][OUTPUT_DEPLOY_POLICY]["Value"] == {"!Ref": "PipelineDeployPolicy"}
 
 
 # ── The orchestration role (§3.2) ───────────────────────────────────────────────────────────────────
