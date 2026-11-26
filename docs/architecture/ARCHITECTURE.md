@@ -407,7 +407,7 @@ Component details, accessibility and testing patterns: [DEVELOPMENT.md](../tools
 ### Task fails immediately
 
 1. Check the task's **ARN or name** — is it right?
-2. Check **IAM** — may the orchestration role, which runs `run_task`, start it? See [TROUBLESHOOTING.md](../operations/TROUBLESHOOTING.md).
+2. Check **IAM** — may the role the task's work starts as (the default task role, or the task's `role=`) start it? See [TROUBLESHOOTING.md](../operations/TROUBLESHOOTING.md#task-fails-immediately).
 3. Check the task's own **logs** — what is the error?
 
 ---

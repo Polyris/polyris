@@ -97,7 +97,7 @@ Every deploy prints the resolved target before its first AWS write:
 
 ## Roles for tasks
 
-A task's `role=` names one of two kinds of role: a role in another account, or a role of the platform's account whose IAM path is `/polyris-tasks/`. `polyris-deploy` refuses any other role of the platform's account, and so does `polyris-validate` when the stage sets `account_id`.
+A task's `role=` names one of two kinds of role: a role in another account, or a role of the platform's account whose IAM path is `/polyris-tasks/`. `polyris-deploy` refuses any other role of the platform's account, and so does `polyris-validate` when the stage sets `account_id`. How to create either: [give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md).
 
 ```python
 ENVIRONMENTS = {

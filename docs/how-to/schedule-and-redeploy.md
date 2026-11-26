@@ -8,7 +8,8 @@ When you set `schedule="cron(...)"` or `schedule="rate(...)"` or `schedule="@dai
 
 - **A trigger** — the cron / rate expression from your DSL string, or the one a preset stands for. Every expression is in **UTC**: polyris sets no time zone, so convert your local time to UTC in the cron.
 - **A target** — the pipeline's state machine ARN, invoked via `states:StartExecution`.
-- **An execution role** — `{namespace}-{stage}-polyris-{dag_id}-scheduler-role`, trusted only by `scheduler.amazonaws.com`, allowed only to `StartExecution` on this one state machine.
+- **An execution role** — the platform's schedule role, `{namespace}-{stage}-polyris-schedule-role`, which every scheduled pipeline shares. It is trusted only by EventBridge Scheduler of the platform's account and may start the pipelines' state machines, never the platform's own. The pipeline's stack imports it, so the platform keeps it while the pipeline is deployed.
+- **A name** — `{namespace}-{stage}-polyris-{dag_id}-schedule`, at most 64 characters: `polyris-deploy` refuses a `dag_id` that would make it longer, and says how long it may be.
 - **A state** — `ENABLED` unless you set `is_paused_upon_creation=True` on the DAG.
 
 `schedule=None` deploys no scheduler resources — the state machine is manual-only (trigger via Console or `states:StartExecution`).
@@ -79,7 +80,7 @@ Before you `polyris-deploy` a running pipeline:
 
 ## Destroy a pipeline
 
-`polyris-destroy` deletes the pipeline's stack (state machine, schedule, scheduler role, log group) and removes the pipeline from the console. It stops the pipeline's running runs on the way; a task already running may finish first. To stop work at once, Stop the runs in the console first; to let a run finish, wait until it has, then destroy.
+`polyris-destroy` deletes the pipeline's stack (state machine, schedule, log group) and removes the pipeline from the console. It stops the pipeline's running runs on the way; a task already running may finish first. To stop work at once, Stop the runs in the console first; to let a run finish, wait until it has, then destroy.
 
 Does not delete:
 

@@ -490,19 +490,19 @@ catalog = Asset("catalog")
 
 # Producer pipeline — publishes the inventory asset when extract completes.
 with DAG("producer", schedule="@daily") as pipeline:
-    @task.sfn(arn="${extract_arn}", outlets=[inventory])
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:extract-inventory", outlets=[inventory])
     def extract():
         pass
 
 # Consumer pipeline — runs hourly, but individual tasks block on the asset.
 with DAG("consumer", schedule="@hourly") as pipeline:
     # The inventory fact for this run's date.
-    @task.sfn(arn="${process_arn}", wait_for=[inventory])
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:process-inventory", wait_for=[inventory])
     def process():
         pass
 
     # The latest catalog partition up to this run's date, at most 24 hours old.
-    @task.sfn(arn="${report_arn}", wait_for=[catalog.within(hours=24)])
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:catalog-report", wait_for=[catalog.within(hours=24)])
     def report():
         pass
 ```
