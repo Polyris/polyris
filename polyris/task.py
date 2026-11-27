@@ -546,7 +546,7 @@ class TaskDecorator:
         # Build helpful error message
         error_msg = (
             "Base @task decorator is not allowed. Use a service-specific decorator:\n"
-            "  @task.sfn(arn='${...}')                              - Step Function\n"
+            "  @task.sfn(arn='...')                                 - Step Function\n"
             "  @task.lambda_function(function_name='...')           - Lambda\n"
             "  @task.glue_job(job_name='...')                       - Glue Job\n"
             "  @task.ecs_task(cluster='...', task_definition='...') - ECS / Fargate\n"

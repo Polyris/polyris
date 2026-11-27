@@ -120,13 +120,6 @@ from .generators import (
 )
 
 
-# Resolver
-from .resolver import (
-    ARNResolver,
-    set_resolver,
-    get_resolver,
-)
-
 __all__ = [
     # Core
     'config',
@@ -198,11 +191,6 @@ __all__ = [
     'generate_all_assets',
     
     # CLI
-    
-    # Resolver
-    'ARNResolver',
-    'set_resolver',
-    'get_resolver',
     
     # Constants
     'SCHEDULE_PRESETS',
