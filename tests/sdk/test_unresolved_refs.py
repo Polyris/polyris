@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from polyris import DAG, task
-from polyris.resource_check import check_resource_references, unresolved_refs
+from polyris.resource_check import check_resource_references, print_resource_check_result, unresolved_refs
 from polyris.validation import validate_asl_from_dag
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:etl"
@@ -50,3 +50,11 @@ def test_the_existence_check_refuses_it_without_an_aws_call(mocker):
 
     assert [r.ref for r in result.errors] == ["${workflow_arn}"]
     session.client.assert_not_called()
+
+
+def test_the_deploy_output_says_why_it_is_refused(mocker, capsys):
+    result = check_resource_references(_dag(sfn={"arn": "${workflow_arn}"}), mocker.MagicMock(), "us-east-1")
+
+    print_resource_check_result(result)
+
+    assert "holds a ${...} placeholder, which nothing substitutes: ${workflow_arn}" in capsys.readouterr().out
