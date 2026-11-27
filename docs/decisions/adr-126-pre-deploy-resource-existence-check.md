@@ -1,6 +1,7 @@
 ---
 area: deploy
 accepted: by 2026-11-12
+revised: 2026-11-27
 ---
 # ADR #126 — Pre-deploy resource existence check in `polyris-deploy`
 
@@ -16,7 +17,7 @@ accepted: by 2026-11-12
 
 *Cross-account tasks (`task.role != "same"`) are reported, not checked.* The deploy session cannot assume a different IAM role, so checking cross-account resources would always produce access-denied warnings. The operator is informed via a distinct warning section so they know what was not verified.
 
-*CloudFormation substitution variables (`${...}`) are silently skipped.* These are resolved at CFN deploy time by CloudFormation parameter substitution. Attempting to verify them before deploy would always fail.
+*A reference that holds `${...}` is refused, without an AWS call.* Since 1.3 a task's spec carries its ARN or name as written, and nothing substitutes a placeholder in it, so the task would fail at its first run; `polyris-validate` refuses it first (`resource_check.unresolved_refs`, `tests/sdk/test_unresolved_refs.py`). Until 1.4 the check skipped such a reference as resolved by CloudFormation.
 
 *`dag.steps` excluded in V1.* Steps can reference SFN ARNs and Lambda names (`LambdaInvokeStep`, `StartExecutionStep`). The step-type surface is not yet stable enough to cover reliably. Added as a documented TODO in `resource_check.py`.
 

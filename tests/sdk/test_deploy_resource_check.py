@@ -462,18 +462,6 @@ class TestCheckResourceReferences:
         assert result.skipped == []
         assert result._checked == 0
 
-    def test_cfn_substitution_silently_skipped(self, mocker):
-        task = _make_task(mocker, task_type="sfn", arn="${workflow_arn}")
-        result = check_resource_references(
-            _make_dag(mocker, [task]),
-            self._session(mocker),
-            "us-east-1",
-        )
-        assert result.errors == []
-        assert result.warnings == []
-        assert result.skipped == []
-        assert result._checked == 0
-
     def test_cross_account_task_goes_to_skipped(self, mocker):
         task = _make_task(mocker, task_type="glue", job_name="etl", role="arn:aws:iam::222:role/etl")
         result = check_resource_references(
@@ -1848,7 +1836,8 @@ class TestCheckResourceOverrides:
         assert result.reports == []
         client.get_job.assert_not_called()
 
-    def test_cfn_substitution_ref_skipped(self, mocker):
+    def test_unresolved_ref_skipped(self, mocker):
+        """The existence check refused it (tests/sdk/test_unresolved_refs.py)."""
         client = mocker.MagicMock()
         task = _make_task(mocker, task_type="glue", job_name="${JobName}", worker_type="G.2X")
         result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")

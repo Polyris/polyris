@@ -416,7 +416,7 @@ cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 
 **Pre-deploy resource check:** `polyris-deploy` runs two advisory checks before generating the CloudFormation template:
 
-1. **Existence check** — verifies all external AWS resources (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job definitions, Athena workgroups) exist. Aborts deploy if any resource is missing.
+1. **Existence check** — verifies all external AWS resources (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job definitions, Athena workgroups) exist. Aborts deploy if any resource is missing, or if a reference holds `${...}`, which nothing substitutes since 1.3 (`resource_check.unresolved_refs`; `polyris-validate` refuses it first).
 
 2. **Override check** — advisory only, never aborts deploy. For Glue, ECS, and Batch tasks, compares declared task parameters (worker_type, container_overrides, batch_parameters, etc.) against the AWS resource's current defaults. Reports when declared values differ (potential silent runtime overrides), when Glue arguments are in `NonOverridableArguments` (silently ignored at runtime), and when declared values match defaults (can be omitted for cleaner DAGs). Receives `ResourceCheckResult.failed_refs` from the existence check to skip resources already confirmed broken or IAM-inaccessible; throttle/transient errors are excluded from `failed_refs` because the resource may still exist.
 

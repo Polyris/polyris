@@ -23,6 +23,7 @@ from typing import IO, Dict, List, Set, Tuple, Optional, Any
 from dataclasses import asdict, dataclass, field
 from polyris._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 from polyris.platform import refused_task_role, reserved_machine, task_role_refusal
+from polyris.resource_check import unresolved_message, unresolved_refs
 
 
 @dataclass
@@ -616,6 +617,9 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
                     f"{' and '.join(unfilled)} with real values before deploying:\n"
                     f"     {arn}"
                 )
+
+        # A ${...} in a task's ARN or name: nothing substitutes it since 1.3, so the task would fail at its run.
+        placeholder_errors.extend(unresolved_message(rr) for rr in unresolved_refs(dag))
 
         asl_json = generate_step_function_json(dag)
         asl = _json.loads(asl_json)

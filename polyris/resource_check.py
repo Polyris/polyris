@@ -20,8 +20,11 @@ Two checks run before CloudFormation deploy:
    still exist and the override check will surface a fresh unverified entry if it
    also can't reach the service.
 
+Refused without an AWS call:
+  - A reference that holds ${...}: since 1.3 a task's spec carries its ARN or name as written, and
+    nothing substitutes it (``unresolved_refs``; polyris-validate refuses it first).
+
 Skipped silently (no output):
-  - CloudFormation substitution variables (${...}) — resolved at CFN deploy time
   - emr tasks — emr_cluster_id is a runtime resource ID, not a static name
 
 Skipped with warning:
@@ -116,6 +119,23 @@ class ResourceCheckResult:
 
 # ---- Collection --------------------------------------------------------------
 
+
+def is_unresolved(ref: str) -> bool:
+    """Whether a task's ARN or name holds a ``${...}`` placeholder, which nothing substitutes since 1.3."""
+    return "${" in ref
+
+
+def unresolved_refs(dag: "DAG") -> List[ResourceRef]:
+    """Every resource reference of ``dag``'s tasks that holds a ``${...}`` placeholder, of any role."""
+    return [rr for rr in _collect_resource_refs(dag) if is_unresolved(rr.ref)]
+
+
+def unresolved_message(rr: ResourceRef) -> str:
+    """Why a reference that holds ``${...}`` is refused, and what to write instead."""
+    return (f"Task '{rr.task_id}': {rr.ref!r} holds a ${{...}} placeholder, which nothing substitutes. "
+            f"Write the resource's real ARN or name.")
+
+
 # task_types that are skipped entirely — no refs collected, no warnings.
 _RESOURCE_SKIP_TYPES: frozenset[str] = frozenset(
     {
@@ -141,7 +161,7 @@ _TASK_TYPE_TO_KINDS: Dict[str, List[str]] = {
 def _collect_resource_refs(dag: "DAG") -> List[ResourceRef]:
     """Extract all checkable resource refs from dag.tasks.
 
-    Does not filter cross-account or ${...} refs — caller does that.
+    Does not filter cross-account or unresolved (``${...}``) refs — caller does that.
     """
     refs: List[ResourceRef] = []
     for task in dag.tasks:
@@ -376,12 +396,13 @@ def check_resource_references(
     _region_warned = False
 
     for rr in refs:
+        if is_unresolved(rr.ref):
+            result.errors.append(rr)    # nothing substitutes it: refused without an AWS call
+            continue
+
         if rr.role != "same":
             result.skipped.append(rr)
             continue
-
-        if "${" in rr.ref:
-            continue  # CloudFormation substitution — resolved at CFN deploy time
 
         dedup = (rr.kind, rr.ref)
         if dedup in seen:
@@ -450,6 +471,8 @@ def print_resource_check_result(result: ResourceCheckResult) -> None:
     for rr in result.errors:
         kind = _KIND_DISPLAY.get(rr.kind, rr.kind)
         not_found_msg = "does not exist or is deregistered" if rr.kind in _LIFECYCLE_KINDS else "does not exist"
+        if is_unresolved(rr.ref):
+            not_found_msg = "holds a ${...} placeholder, which nothing substitutes"
         print(
             _c(
                 f"  ✗ {kind:<{_DISPLAY_COL_WIDTH}} (task: {_sanitize(rr.task_id)})"
@@ -891,8 +914,8 @@ def check_resource_overrides(
 
         kind, service, ref_attr, fetcher, checker = _OVERRIDE_INFO[task_type]
         ref: str = getattr(task, ref_attr, "") or ""
-        if not ref or "${" in ref:
-            continue
+        if not ref or is_unresolved(ref):
+            continue  # the existence check refused it
 
         if (kind, ref) in _fr:
             if (kind, ref) not in skipped_seen:
