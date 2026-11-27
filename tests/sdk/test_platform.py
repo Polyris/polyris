@@ -47,7 +47,8 @@ def test_parameter_names_exist_in_template(template, name):
 
 
 @pytest.mark.parametrize("name", [P.OUTPUT_CONSOLE_URL, P.OUTPUT_TEST_SFN_ARN, P.OUTPUT_TOKENS_TABLE,
-                                  P.OUTPUT_REGISTRY_TABLE, P.OUTPUT_SPECS_TABLE, P.OUTPUT_START_RUN])
+                                  P.OUTPUT_REGISTRY_TABLE, P.OUTPUT_SPECS_TABLE, P.OUTPUT_START_RUN,
+                                  P.OUTPUT_ORCHESTRATION_ROLE, P.OUTPUT_SCHEDULE_ROLE, P.OUTPUT_DEPLOY_POLICY])
 def test_outputs_exist_in_template(template, name):
     assert name in template["Outputs"]
 

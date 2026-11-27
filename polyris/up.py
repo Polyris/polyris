@@ -52,6 +52,7 @@ from .platform import (
     NO_ROLLBACK_BELOW,
     OUTPUT_CONSOLE_URL,
     OUTPUT_DEPLOY_POLICY,
+    OUTPUT_ORCHESTRATION_ROLE,
     OUTPUT_REGISTRY_TABLE,
     OUTPUT_SPECS_TABLE,
     OUTPUT_TEST_SFN_ARN,
@@ -790,8 +791,8 @@ def preflight(session: boto3.Session, existing: Optional[Dict[str, Any]], *, reg
         problems.extend(f"  {arn}: {'; '.join(reasons)}" for arn, reasons in planted)
         hints.append("The authors' deploy policy may pass and delete such roles for one release, so polyris-up "
                      "refuses while one is left. Review each: CloudTrail's CreateRole, PutRolePolicy, "
-                     "AttachRolePolicy and UpdateAssumeRolePolicy events name who made or changed it. Delete or "
-                     "rename a role that is not a pipeline's.")
+                     "AttachRolePolicy and UpdateAssumeRolePolicy events name who made or changed it. Delete a "
+                     "role that is not a pipeline's.")
     if problems:
         raise UpError("Nothing was changed: the checks before the update found what to fix first.",
                       *problems, *hints, "Then run polyris-up again.")
@@ -815,7 +816,7 @@ def _refused_task_roles(session: boto3.Session, existing: Dict[str, Any], *, acc
         if not pipeline.spec_id:
             continue                    # deployed before 1.3: it has no specs, and its runs fail until a redeploy
         try:
-            with _permission("dynamodb:BatchGetItem", specs_table):
+            with _permission("dynamodb:Query, dynamodb:BatchGetItem", specs_table):
                 specs = spec_store.read(dynamodb, specs_table, pipeline.spec_id, expected_count=pipeline.task_count)
         except task_spec.SpecError as e:
             raise UpError(f"Could not read the task specs of pipeline {pipeline.name}: {e}",
@@ -935,6 +936,9 @@ def _print_outputs(stack: Dict[str, Any]) -> None:
     if OUTPUT_DEPLOY_POLICY in outputs:
         # What the role that runs polyris-deploy holds: polyris-deploy's AccessDenied hint points here.
         print(f"   Deploy policy for pipeline authors:  {_c(outputs[OUTPUT_DEPLOY_POLICY], CYAN)}")
+    if OUTPUT_ORCHESTRATION_ROLE in outputs:
+        # What the trust policy of a task's own role names (docs/how-to/give-a-pipeline-its-own-permissions.md).
+        print(f"   Orchestration role (a task's own role trusts it):  {_c(outputs[OUTPUT_ORCHESTRATION_ROLE], CYAN)}")
 
 
 # ── polyris-down ─────────────────────────────────────────────────────────────

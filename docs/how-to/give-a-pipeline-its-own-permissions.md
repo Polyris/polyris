@@ -24,15 +24,13 @@ You need the right to create IAM roles in the account where the role lives. Pipe
 
 ### 1. Find the orchestration role
 
-The new role trusts the platform's orchestration role, which starts every task's work. Its ARN is an output of the platform stack:
-
-```bash
-aws cloudformation describe-stacks --stack-name acme-prod --query "Stacks[0].Outputs[?OutputKey=='OrchestrationRoleArn'].OutputValue" --output text
-```
+The new role trusts the platform's orchestration role, which starts every task's work. `polyris-up` prints its ARN at its end:
 
 ```text
-arn:aws:iam::123456789012:role/acme-prod-polyris-orchestration-role
+   Orchestration role (a task's own role trusts it):  arn:aws:iam::123456789012:role/acme-prod-polyris-orchestration-role
 ```
+
+It is also the platform stack's output `OrchestrationRoleArn`.
 
 ### 2. Create the role under `/polyris-tasks/`
 

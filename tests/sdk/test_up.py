@@ -1143,9 +1143,11 @@ OUTPUTS_1_3 = [*ROWS_OUTPUTS, {"OutputKey": "PipelineRegistryTable", "OutputValu
                {"OutputKey": "PipelineSpecsTable", "OutputValue": SPECS},
                {"OutputKey": "ConsoleUiUrl", "OutputValue": "https://d123.cloudfront.net"}]
 POLICY = f"arn:aws:iam::{ACCOUNT}:policy/acme-dev-polyris-deploy-policy"
+ORCHESTRATION = f"arn:aws:iam::{ACCOUNT}:role/acme-dev-polyris-orchestration-role"
 #: What the update to 1.4 changes of the stack.
 UPDATED_1_4 = {"updated": {"Description": "Polyris platform v1.4.0",
-                           "Outputs": [*OUTPUTS_1_3, {"OutputKey": "PipelineDeployPolicyArn", "OutputValue": POLICY}]}}
+                           "Outputs": [*OUTPUTS_1_3, {"OutputKey": "PipelineDeployPolicyArn", "OutputValue": POLICY},
+                                       {"OutputKey": "OrchestrationRoleArn", "OutputValue": ORCHESTRATION}]}}
 
 
 def _deployed(version: str | None = "1.3.2", *, outputs: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
@@ -1316,6 +1318,7 @@ def test_up_refuses_a_scheduler_role_that_polyris_deploy_did_not_make(
     assert "1 role(s) named like a pipeline's scheduler role are not what polyris-deploy made" in err
     assert f"arn:aws:iam::{ACCOUNT}:role/acme-dev-polyris-orders-scheduler-role: " in err and reason in err
     assert "CloudTrail's CreateRole, PutRolePolicy, AttachRolePolicy and UpdateAssumeRolePolicy" in err
+    assert "Delete a role that is not a pipeline's." in err and "rename" not in err   # IAM renames no role
     assert "create_change_set" not in fake_cfn["cfn"].names()
 
 
@@ -1343,6 +1346,26 @@ def test_a_check_it_may_not_make_stops_polyris_up_with_the_permission(fake_cfn, 
 
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
     assert "polyris-up may not call iam:ListRoles on *, which its checks before any change need." in _err(capsys)
+
+
+@pytest.mark.parametrize("operation", ["Query", "BatchGetItem"])
+def test_a_denied_read_of_the_specs_names_every_action_the_read_makes(fake_cfn, platform_1_3, s3, tmp_path, capsys,
+                                                                      mocker, operation):
+    _pipeline(platform_1_3, "orders")
+    real_client = boto3.Session.client
+    method = {"Query": "query", "BatchGetItem": "batch_get_item"}[operation]
+
+    def client(self, service, *a, **kw):
+        made = real_client(self, service, *a, **kw)
+        if service == "dynamodb":
+            mocker.patch.object(made, method, side_effect=ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, operation))
+        return made
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    assert f"polyris-up may not call dynamodb:Query, dynamodb:BatchGetItem on {SPECS}" in _err(capsys)
 
 
 def test_up_deploys_only_the_template_it_uploaded(fake_cfn, platform_1_3, s3, tmp_path, capsys):
@@ -1382,6 +1405,15 @@ def test_the_update_to_1_4_tells_the_authors_to_take_the_new_deploy_policy(fake_
             "their role or CI role and detach the old one.") in out
     assert "Order: platform (done) → attach the new policy → authors' CLI 1.4 → detach the old policy" in out
     assert f"Deploy policy for pipeline authors:  {POLICY}" in out
+
+
+def test_the_outputs_name_the_role_a_tasks_own_role_trusts(fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    """The how-to's trust policy names the orchestration role: polyris-up prints its ARN with its outputs."""
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.4.0")], **UPDATED_1_4)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.4.1")))) == 0
+
+    assert f"Orchestration role (a task's own role trusts it):  {ORCHESTRATION}" in capsys.readouterr().out
 
 
 def test_an_update_within_1_4_says_nothing_of_the_policy_move(fake_cfn, platform_1_3, s3, tmp_path, capsys):

@@ -68,6 +68,8 @@ OUTPUT_TOKENS_TABLE = "PipelineTokensTable"
 OUTPUT_REGISTRY_TABLE = "PipelineRegistryTable"
 OUTPUT_SPECS_TABLE = "PipelineSpecsTable"
 OUTPUT_START_RUN = "StartRunFunctionArn"
+#: The role every pipeline's state machine runs as; a role a task names in ``role=`` trusts it.
+OUTPUT_ORCHESTRATION_ROLE = "OrchestrationRoleArn"
 # The role every scheduled pipeline's schedule starts its state machine with, which 1.4 adds; a pipeline
 # stack imports its export (``schedule_role_export``), so the platform cannot drop it while one does (D8).
 OUTPUT_SCHEDULE_ROLE = "PipelineScheduleRoleArn"

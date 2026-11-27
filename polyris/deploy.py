@@ -71,6 +71,7 @@ from .executions import stack_machines, stop_running
 from .platform import (
     NAMESPACE_STAGE_MAX_LEN,
     OUTPUT_DEPLOY_POLICY,
+    OUTPUT_ORCHESTRATION_ROLE,
     OUTPUT_SCHEDULE_ROLE,
     PARAM_NAMESPACE,
     PARAM_STAGE,
@@ -376,7 +377,7 @@ def _pass_role_denied(cfn, stack_name: str, error: Exception) -> bool:
 # constant is caught immediately (Principle #13).
 SAM_STACK_OUTPUT_KEYS = (
     "StartRunFunctionArn",
-    "OrchestrationRoleArn",
+    OUTPUT_ORCHESTRATION_ROLE,
     "PipelineRegistryTable",
     "PipelineTokensTable",
     "AssetSubscriptionsTable",
@@ -844,7 +845,7 @@ def deploy_pipeline(
     outputs, platform_params = _read_sam_stack(session, sam_stack_name)
 
     start_run_arn = outputs.get("StartRunFunctionArn")
-    role_arn = outputs.get("OrchestrationRoleArn")
+    role_arn = outputs.get(OUTPUT_ORCHESTRATION_ROLE)
     registry_table = outputs.get("PipelineRegistryTable")
     tokens_table = outputs.get("PipelineTokensTable")
     asset_subscriptions_table = outputs.get("AssetSubscriptionsTable")
@@ -855,7 +856,7 @@ def deploy_pipeline(
     # A scheduled pipeline's schedule runs as the platform's schedule role, which 1.4 adds: this
     # check is what tells a 1.4 polyris-deploy against an older platform (PLAN_IAM 1.4.0 §6.1).
     scheduled = bool(dag.schedule) and not dag.is_asset_triggered
-    required = ("OrchestrationRoleArn",) + (() if destroy else (
+    required = (OUTPUT_ORCHESTRATION_ROLE,) + (() if destroy else (
         ("PipelineSpecsTable", "StartRunFunctionArn") + ((OUTPUT_SCHEDULE_ROLE,) if scheduled else ())))
     missing = [k for k in required if not outputs.get(k)]
     if missing:
