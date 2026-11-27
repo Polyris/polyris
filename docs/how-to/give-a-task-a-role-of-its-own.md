@@ -1,6 +1,6 @@
-# Give one pipeline its own permissions
+# Give a task a role of its own
 
-A task starts its work as the platform's default task role, which is the same for every pipeline. When one task needs a right that role lacks, the infrastructure engineer (whoever runs `polyris-up` and may create IAM roles) creates a role for it, and the pipeline author names that role in the task's `role=`. This guide has one part for each of them.
+A task starts its work as the platform's default task role, which is the same for every pipeline. When one task needs a right that role lacks, the infrastructure engineer (whoever runs `polyris-up` and may create IAM roles) creates a role for it, and the pipeline author names that role in the task's `role=`. This guide has one part for each of them. Every pipeline of the platform may name such a role ([What the path doesn't do](#what-the-path-doesnt-do)).
 
 The example runs end to end: the `reports` pipeline writes its daily report to the S3 bucket `finance-reports` through the role `polyris-tasks/finance-writer`. The platform is `acme-prod` in account `123456789012`, region `us-east-1`.
 
@@ -13,10 +13,23 @@ The example runs end to end: the `reports` pipeline writes its daily report to t
 
 `polyris-deploy` refuses any other role of the platform's account. A role gets its path when it is created, and only someone allowed to create IAM roles can give it one, so a pipeline can use only the roles somebody made for pipelines, never an administrator's role.
 
-The role makes the call that starts the task's work, so it needs that service's actions:
+The role makes the call that starts the task's work, waits for it and stops it, so it needs that service's actions. They are the ones the platform's default task role has for the same task:
 
-- **Athena** runs a query with the rights of whoever starts it: an `@task.athena_query` task reads its tables and writes its results as this role. This guide's example is such a task.
-- **Lambda, Glue, ECS and Batch** run your code as the function's or job's own execution role. Give that role the data access, and this role the right to start the work (for example `lambda:InvokeFunction` on the function).
+| Task | The role's actions |
+|---|---|
+| `@task.lambda_function` | `lambda:InvokeFunction` on the function |
+| `@task.glue_job` | `glue:StartJobRun`, `glue:GetJobRun`, `glue:GetJobRuns`, `glue:BatchStopJobRun` |
+| `@task.ecs_task` | `ecs:RunTask`, `ecs:StopTask`, `ecs:DescribeTasks`; `iam:PassRole` of the task definition's roles with the condition `iam:PassedToService` = `ecs-tasks.amazonaws.com`; the [managed rule](#the-managed-rule) |
+| `@task.batch_job` | `batch:SubmitJob`, `batch:DescribeJobs`, `batch:TerminateJob`; the [managed rule](#the-managed-rule) |
+| `@task.athena_query` | `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:StopQueryExecution`, and what the query reads and writes (below) |
+| `@task.emr_step` | `elasticmapreduce:AddJobFlowSteps`, `elasticmapreduce:DescribeStep`, `elasticmapreduce:CancelSteps`; the [managed rule](#the-managed-rule) |
+| `@task.sfn` | `states:StartExecution` on the state machine, `states:DescribeExecution` and `states:StopExecution` on its executions; the [managed rule](#the-managed-rule) |
+
+Athena runs a query with the rights of whoever starts it. An `@task.athena_query` task reads its tables and writes its results as this role, so the role also needs the Glue catalog reads and the S3 reads and writes of the query. This guide's example is such a task. Lambda, Glue, ECS, Batch, EMR and a state machine run your code as their own execution role: give that role the data access, and this role only the right to start and follow the work.
+
+### The managed rule
+
+Step Functions learns that an ECS task, a Batch job, an EMR step or a state machine ended through an EventBridge rule it manages. The role needs `events:PutTargets`, `events:PutRule` and `events:DescribeRule` on `arn:aws:events:<region>:<account>:rule/StepFunctions*` of the account the role is in.
 
 ## For the infrastructure engineer
 
@@ -168,7 +181,7 @@ with DAG("reports", schedule="@daily") as dag:
 Run `polyris-validate` in the pipeline's folder. A role of the platform's account outside `/polyris-tasks/` is refused with the fix:
 
 ```text
-❌ Task 'export_daily': role arn:aws:iam::123456789012:role/finance-writer is in the platform's account, and polyris may use only roles of this account under the path /polyris-tasks/. Ask your platform admin to create the role under that path (docs: Give one pipeline its own permissions) and use its ARN, e.g. arn:aws:iam::123456789012:role/polyris-tasks/finance-writer. Roles in other accounts work as before.
+❌ Task 'export_daily': role arn:aws:iam::123456789012:role/finance-writer is in the platform's account, and polyris may use only roles of this account under the path /polyris-tasks/. Ask your platform admin to create the role under that path (docs: Give a task a role of its own) and use its ARN, e.g. arn:aws:iam::123456789012:role/polyris-tasks/finance-writer. Roles in other accounts work as before.
 ```
 
 Without `account_id`, `polyris-validate` can't tell which account is the platform's; `polyris-deploy` checks the role against your credentials' account and refuses it with the same message before it changes anything.

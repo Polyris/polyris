@@ -104,7 +104,7 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution=my-pipeline-run-2
    ```bash
    aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::123456789012:role/${NAMESPACE}-${STAGE}-polyris-default-task-role" --action-names "states:StartExecution" --resource-arns "arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job"
    ```
-   For a task with `role=`, pass that role's ARN as `--policy-source-arn`, with credentials for the account it is in. An error about assuming the role means its trust policy does not name the orchestration role ([give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md)).
+   For a task with `role=`, pass that role's ARN as `--policy-source-arn`, with credentials for the account it is in. An error about assuming the role means its trust policy does not name the orchestration role ([give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md)).
 3. **The work's own logs** in CloudWatch, for an error inside the job.
 
 **Fix:** correct the ARN or the permissions, then restart the task.
@@ -230,7 +230,7 @@ aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::123456789012
 ❌ Task 'export_daily': role arn:aws:iam::123456789012:role/finance-writer is in the platform's account, and polyris may use only roles of this account under the path /polyris-tasks/. …
 ```
 
-**Fix:** ask the infrastructure engineer to create the role under `/polyris-tasks/`, and use its new ARN: [give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md). A role in another account needs no path.
+**Fix:** ask the infrastructure engineer to create the role under `/polyris-tasks/`, and use its new ARN: [give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md). A role in another account needs no path.
 
 ---
 

@@ -6,7 +6,7 @@ Two people hold the permissions, and only the first one changes IAM:
 
 | Person | Runs | Holds | IAM |
 |---|---|---|---|
-| **Infrastructure engineer** | `polyris-up`, `polyris-down` | The installer's permissions ([Install](#install--polyris-up-or-a-from-source-sam-deploy)) | Creates every IAM role: the platform's (through its stack), and the roles a task may name in `role=` ([give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md)). Attaches the deploy policy to the pipeline authors' roles |
+| **Infrastructure engineer** | `polyris-up`, `polyris-down` | The installer's permissions ([Install](#install--polyris-up-or-a-from-source-sam-deploy)) | Creates every IAM role: the platform's (through its stack), and the roles a task may name in `role=` ([give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md)). Attaches the deploy policy to the pipeline authors' roles |
 | **Pipeline author** | `polyris-deploy`, `polyris-destroy`, `polyris-validate` | The platform's deploy policy ([Deploy](#deploy--per-pipeline-polyris-deploy)) | None: no IAM write action, apart from the 1.4 migration grant on the old scheduler roles |
 
 Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-task-role`) that pipelines assume to talk to Glue, Athena, ECS, Batch, and S3 — that role is created by polyris itself during install and documented in [DATA_PASSING.md](../features/DATA_PASSING.md#iam). This doc covers the *operator* permissions to run the polyris tooling, not the *task* permissions polyris configures on your behalf.
@@ -73,7 +73,7 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 
 ### The checks before any change
 
-`polyris-up` updates a platform from 1.3 or newer; a platform on 1.2 upgrades to 1.3 first with the `polyris-up` of 1.3 ([upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md)). Before it uploads or changes anything, it checks the account ([what the checks may refuse](../how-to/manage-the-platform.md#what-the-checks-may-refuse)). It reads the roles that the deployed pipelines' tasks name in `role=`, and every role named like a pipeline's old scheduler role. The two managed policies above cover these reads; a least-privilege installer role needs these actions beside the ones listed above:
+`polyris-up` updates a platform from 1.3 or newer; a platform on 1.2 upgrades to 1.3 first with the `polyris-up` of 1.3 (the guide of polyris 1.3, `docs/how-to/upgrade-1.2-to-1.3.md` at tag `v1.3.2`). Before it uploads or changes anything, it checks the account ([what the checks may refuse](../how-to/manage-the-platform.md#what-the-checks-may-refuse)). It reads the roles that the deployed pipelines' tasks name in `role=`, and every role named like a pipeline's old scheduler role. The two managed policies above cover these reads; a least-privilege installer role needs these actions beside the ones listed above:
 
 | AWS service | Actions | Resource | Why |
 |-------------|---------|----------|-----|
@@ -81,6 +81,7 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 | `cloudformation` | `DescribeStackResources` | `*` | Finds the stack that made each such role |
 | `cloudformation` | `ListImports` | `*` | `polyris-down` refuses while a pipeline imports the platform's schedule role |
 | `dynamodb` | `Query`, `BatchGetItem` | The `pipeline-specs` table | Reads each deployed pipeline's current task specs |
+| `iam` | `DetachUserPolicy`, `DetachGroupPolicy`, `DetachRolePolicy` | The deploy policy | `polyris-down` deletes the deploy policy while authors' users, groups or roles may still hold it; whether CloudFormation needs these to delete it is checked by the 1.4.0 live smoke |
 
 A denied call refuses before anything has changed, and the message names the action.
 
@@ -101,6 +102,8 @@ The infrastructure engineer attaches it once to each pipeline author's role, or 
 ```bash
 aws iam attach-role-policy --role-name pipeline-deployer --policy-arn arn:aws:iam::123456789012:policy/acme-dev-polyris-deploy-policy
 ```
+
+An author who deploys to several platforms, such as a `dev` and a `prod` stage, holds each platform's deploy policy: a policy names its own platform's tables, bucket and roles.
 
 The platform updates the policy with itself: a new release that needs another action ships it, and nobody edits the policy by hand. It allows:
 
@@ -180,7 +183,7 @@ Engineers investigating a failing pipeline need read access to CloudWatch logs, 
 
 ### Pipeline task role
 
-The role `run_task` assumes to start a task in the platform's account (`role="same"`, the default): it invokes your Lambda, starts your Glue job, ECS task, Batch job, Athena query, EMR step or state machine. Your workload itself runs under its own execution role. Polyris creates this role during install, and every pipeline shares it. A task that needs a right beyond the defaults gets a role of its own instead: [give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md). A permission attached to the default task role reaches every task of every pipeline.
+The role `run_task` assumes to start a task in the platform's account (`role="same"`, the default): it invokes your Lambda, starts your Glue job, ECS task, Batch job, Athena query, EMR step or state machine. Your workload itself runs under its own execution role. Polyris creates this role during install, and every pipeline shares it. A task that needs a right beyond the defaults gets a role of its own instead: [give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md). A permission attached to the default task role reaches every task of every pipeline.
 
 Default coverage: Athena queries + Glue Data Catalog CRUD + basic S3 + task-service `StartJobRun` / `RunTask` / `SubmitJob` etc. Full list: [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam).
 
@@ -272,4 +275,4 @@ Every `*-polyris-*` name in the platform's roles and policies spans the whole ac
 
 ## Cross-account model
 
-If pipeline tasks execute in a different AWS account than the polyris stack (common for orgs that separate control-plane and data-plane accounts), the orchestration role assumes a cross-account role in the target account. See [CROSS_ACCOUNT_ROLES.md](CROSS_ACCOUNT_ROLES.md) for the trust-policy pattern and `polyris-deploy` configuration, and [give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md) for a role in the platform's own account.
+If pipeline tasks execute in a different AWS account than the polyris stack (common for orgs that separate control-plane and data-plane accounts), the orchestration role assumes a cross-account role in the target account. See [CROSS_ACCOUNT_ROLES.md](CROSS_ACCOUNT_ROLES.md) for the trust-policy pattern and `polyris-deploy` configuration, and [give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md) for a role in the platform's own account.

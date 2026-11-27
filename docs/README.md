@@ -16,8 +16,7 @@ Start with the [README](../README.md): what polyris is, how to install it, and [
 | [configure-retries.md](how-to/configure-retries.md) | How do I set retries, backoff and jitter for a task? |
 | [schedule-and-redeploy.md](how-to/schedule-and-redeploy.md) | When does the first run fire? How do I pause a schedule? What happens to running runs when I redeploy? |
 | [manage-the-platform.md](how-to/manage-the-platform.md) | How do I upgrade polyris, change a setting, add users or a stage, or remove it? |
-| [give-a-pipeline-its-own-permissions.md](how-to/give-a-pipeline-its-own-permissions.md) | How do I give one task rights the shared task role lacks, in the platform's account or another? |
-| [upgrade-1.2-to-1.3.md](how-to/upgrade-1.2-to-1.3.md) | How do I upgrade a platform that runs 1.2? |
+| [give-a-task-a-role-of-its-own.md](how-to/give-a-task-a-role-of-its-own.md) | How do I give one task rights the shared task role lacks, in the platform's account or another? |
 | [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | How do I test a pipeline without AWS? |
 | [REGISTRATION.md](features/REGISTRATION.md) | How do I register a pipeline by hand, or find why it is missing from the console? |
 

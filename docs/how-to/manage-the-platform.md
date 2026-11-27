@@ -17,7 +17,7 @@ When the release notes ask for it, add `--disable-rollback`. A failed update the
 
 If a change would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user, `polyris-up` lists it and asks before continuing. Without a terminal (CI) it stops unless you pass `--accept-data-loss`; `--yes` never covers data loss.
 
-From 1.2: upgrade to 1.3 first, with the `polyris-up` of 1.3: follow [upgrade-1.2-to-1.3.md](upgrade-1.2-to-1.3.md). From 1.3: follow [Upgrade to 1.4.0](#upgrade-to-140).
+From 1.2: upgrade to 1.3 first, with the `polyris-up` of 1.3: follow the guide of polyris 1.3, `docs/how-to/upgrade-1.2-to-1.3.md` at tag `v1.3.2`. From 1.3: follow [Upgrade to 1.4.0](#upgrade-to-140).
 
 ## Upgrade to 1.4.0
 
@@ -45,7 +45,7 @@ From 1.2: upgrade to 1.3 first, with the `polyris-up` of 1.3: follow [upgrade-1.
 3. **Move the authors to polyris 1.4.0:** each author installs it as in step 1, and each CI job pins it.
 4. **Detach the old policy**, the one written for earlier releases, then run `polyris-up` once more: its checks look again for a scheduler role planted meanwhile.
 
-The pipelines keep running all along. Redeploy them at your pace: each scheduled pipeline moves to the platform's schedule role at its next `polyris-deploy`, which deletes the pipeline's own scheduler role. A task whose `role=` names a role of the platform's account outside the path `/polyris-tasks/` stops the update until it is fixed ([below](#what-the-checks-may-refuse)).
+The pipelines keep running all along. Redeploy each scheduled pipeline before you upgrade to 1.5: its next `polyris-deploy` moves it to the platform's schedule role and deletes its own scheduler role, which only 1.4's deploy policy may do. A task whose `role=` names a role of the platform's account outside the path `/polyris-tasks/` stops the update until it is fixed ([below](#what-the-checks-may-refuse)).
 
 ### What the checks may refuse
 
@@ -53,8 +53,8 @@ The pipelines keep running all along. Redeploy them at your pace: each scheduled
 
 | It says | Fix |
 |---|---|
-| `… runs v1.2.x, and polyris 1.4.0 upgrades a platform from 1.3 only.` | Upgrade to 1.3 first: install polyris 1.3, run its `polyris-up` ([upgrade-1.2-to-1.3.md](upgrade-1.2-to-1.3.md)), then run this one |
-| `N task(s) of deployed pipelines run as a role of this account outside /polyris-tasks/, which polyris 1.4.0 refuses:` and a line per task | IAM can't move a role to another path. Create each role again under `/polyris-tasks/` with the same trust and permissions (`polyris-up` prints the `aws iam create-role` command), point the task's `role=` at the new ARN, and redeploy the pipeline ([give-a-pipeline-its-own-permissions.md](give-a-pipeline-its-own-permissions.md)) |
+| `… runs v1.2.x, and polyris 1.4.0 upgrades a platform from 1.3 only.` | Upgrade to 1.3 first: install polyris 1.3, run its `polyris-up` (the guide of polyris 1.3, `docs/how-to/upgrade-1.2-to-1.3.md` at tag `v1.3.2`), then run this one |
+| `N task(s) of deployed pipelines run as a role of this account outside /polyris-tasks/, which polyris 1.4.0 refuses:` and a line per task | IAM can't move a role to another path. Create each role again under `/polyris-tasks/` with the same trust and permissions (`polyris-up` prints the `aws iam create-role` command), point the task's `role=` at the new ARN, and redeploy the pipeline ([give-a-task-a-role-of-its-own.md](give-a-task-a-role-of-its-own.md)) |
 | `N role(s) named like a pipeline's scheduler role are not what polyris-deploy made:` and each role with what is wrong | 1.4's deploy policy may pass and delete the roles named `*-polyris-*-scheduler-role`, so the update waits until each one is the role `polyris-deploy` made. Review each: CloudTrail's `CreateRole`, `PutRolePolicy`, `AttachRolePolicy` and `UpdateAssumeRolePolicy` events name who made or changed it. Delete a role that is not a pipeline's |
 | `polyris-up may not call <action> on <resource>, which its checks before any change need.` | Grant the action to the role that runs `polyris-up` ([IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#the-checks-before-any-change)) |
 | `Could not read the task specs of pipeline <name>: …` | Redeploy that pipeline |

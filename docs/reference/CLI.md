@@ -60,7 +60,7 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`). At the end of an upgrade, `polyris-up` lists the pipelines that need a redeploy, with the command for each.
 
-`polyris-up` updates a platform from 1.3 or newer. A platform on 1.2 upgrades to 1.3 first with the polyris-up of 1.3: see [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md). Before it uploads or changes anything, it checks the account and stops with a list to fix: [What the checks may refuse](../how-to/manage-the-platform.md#what-the-checks-may-refuse). At its end it prints the deploy policy that pipeline authors need.
+`polyris-up` updates a platform from 1.3 or newer. A platform on 1.2 upgrades to 1.3 first with the polyris-up of 1.3: see the guide of polyris 1.3, `docs/how-to/upgrade-1.2-to-1.3.md` at tag `v1.3.2`. Before it uploads or changes anything, it checks the account and stops with a list to fix: [What the checks may refuse](../how-to/manage-the-platform.md#what-the-checks-may-refuse). At its end it prints the deploy policy that pipeline authors need.
 
 ---
 
@@ -226,7 +226,7 @@ polyris-deploy --all                  # every pipeline folder in this folder
 
 The stack holds no IAM role.
 
-**Before the stack.** `polyris-deploy` refuses a task whose `role=` names a role of the platform's account outside the path `/polyris-tasks/` ([give-a-pipeline-its-own-permissions.md](../how-to/give-a-pipeline-its-own-permissions.md)). It checks that the AWS resources your tasks name exist, and stops if one does not. It writes each task's spec to the platform's `pipeline-specs` table, reads the version back and checks it; a spec it cannot write or confirm stops the deploy before the stack changes. A pipeline beyond a limit of [DSL.md → Pipeline limits](../features/DSL.md#pipeline-limits) is refused before anything reaches AWS. After the stack deploys, it records the pipeline in the console's registry and prints `✅ <dag_id> deployed successfully!`.
+**Before the stack.** `polyris-deploy` refuses a task whose `role=` names a role of the platform's account outside the path `/polyris-tasks/` ([give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md)). It checks that the AWS resources your tasks name exist, and stops if one does not. It writes each task's spec to the platform's `pipeline-specs` table, reads the version back and checks it; a spec it cannot write or confirm stops the deploy before the stack changes. A pipeline beyond a limit of [DSL.md → Pipeline limits](../features/DSL.md#pipeline-limits) is refused before anything reaches AWS. After the stack deploys, it records the pipeline in the console's registry and prints `✅ <dag_id> deployed successfully!`.
 
 **Which platform.** The stack: `--stack`, then `stack_name` in `config.py`, then the one stack `polyris-up` tagged in the region; several tagged stacks and no name is an error that asks for `--stack`. Without a `config.py`, the namespace and the stage come from that platform stack.
 

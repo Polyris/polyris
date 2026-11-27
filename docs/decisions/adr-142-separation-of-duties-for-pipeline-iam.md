@@ -17,7 +17,7 @@ The infrastructure engineer installs and updates the platform with `polyris-up` 
 
 ### 2. The deploy policy is a resource of the platform stack
 
-`${Namespace}-${Stage}-polyris-deploy-policy` (`AWS::IAM::ManagedPolicy`, output `PipelineDeployPolicyArn`) holds what `polyris-deploy` needs. It changes with the platform, so no release asks users to edit a policy by hand. It allows CloudFormation, Step Functions and log groups on `*-polyris-*` and denies them on the platform's own stack (`${AWS::StackId}`) and on the platform's state machines of any platform, `CreateStateMachine` included. It names the platform's own tables and results prefix exactly. It sets up the log delivery of a pipeline's state machine (`logs:*LogDelivery`, and the log groups' resource policy), which AWS asks of whoever creates a state machine that logs (`test_the_author_may_set_up_the_log_delivery_of_a_pipelines_state_machine`). Its name and `Description` never change (Principle #33). `tests/sdk/test_deploy_policy.py`.
+`${Namespace}-${Stage}-polyris-deploy-policy` (`AWS::IAM::ManagedPolicy`, output `PipelineDeployPolicyArn`) holds what `polyris-deploy` needs. It changes with the platform, so no release asks users to edit a policy by hand. It allows CloudFormation, Step Functions and log groups on `*-polyris-*` and denies them on the platform's own stack (`${AWS::StackId}`) and on the platform's state machines of any platform, `CreateStateMachine` included. It names the platform's own tables and results prefix exactly. It sets up the log delivery of a pipeline's state machine (`logs:*LogDelivery`, and the log groups' resource policy), which AWS asks of whoever creates a state machine that logs (`test_the_author_may_set_up_the_log_delivery_of_a_pipelines_state_machine`). Its name and `Description` never change (Principle #33). A `polyris-deploy` refused `iam:PassRole` names the policy to attach. `tests/sdk/test_deploy_policy.py`.
 
 ### 3. A role an author may pass is named, with the one service it goes to
 
@@ -25,11 +25,17 @@ The deploy policy passes two roles: the orchestration role to `states.amazonaws.
 
 ### 4. One schedule role, exported
 
-Pipeline stacks hold no IAM resource, and `polyris-deploy` asks for no IAM capability. Every scheduled pipeline's schedule starts its state machine with the platform's `${Namespace}-${Stage}-polyris-schedule-role`, trusted only by EventBridge Scheduler of the account, allowed to start `*-polyris-*` and denied the platform's machines. The platform exports its ARN as `${Namespace}-${Stage}-polyris-schedule-role-arn`, and each scheduled pipeline stack imports it (`Fn::ImportValue`), so CloudFormation keeps the role while a pipeline uses it. The required-outputs check asks for the output only for a scheduled pipeline (`tests/sdk/test_platform_iam.py`, `tests/sdk/test_schedule_rule_state.py`).
+Pipeline stacks hold no IAM resource, and `polyris-deploy` asks for no IAM capability. Every scheduled pipeline's schedule starts its state machine with the platform's `${Namespace}-${Stage}-polyris-schedule-role`, trusted only by EventBridge Scheduler of the account, allowed to start `*-polyris-*` and denied the platform's machines. The platform exports its ARN as `${Namespace}-${Stage}-polyris-schedule-role-arn`, and each scheduled pipeline stack imports it (`Fn::ImportValue`), so CloudFormation keeps the role while a pipeline uses it. The required-outputs check asks for the output only for a scheduled pipeline. The schedule's name, `{pipeline stack}-schedule`, takes the 64-character limit the stack's scheduler role had: namespace, stage and `dag_id` together at most 45 characters (`tests/sdk/test_platform_iam.py`, `tests/sdk/test_schedule_rule_state.py`, `tests/sdk/test_deploy_validation_gate.py`).
 
 ### 5. The roles a pipeline runs as are fenced off from the platform
 
-The orchestration role is trusted by Step Functions of its account alone. It and the default task role never invoke the platform's internal functions, never start, stop or redrive `run_task` or `bulk_backfill`, and never reach the platform's tokens, specs, dependency pointers, console files, release artifacts or pipeline templates, of any platform in the account. The orchestration role reads only EventBridge connections' secrets (`events!connection/*`) and changes only the managed rules of the `.sync` integrations (`rule/StepFunctions*`). The console role starts `*-polyris-*` and never `run_task`, and Run starts only a registered pipeline. `start-run` refuses an execution that is not one of its pipeline's registered state machine; `notify` and `ui-bootstrap` take what they act on from the platform, never from their event. Every deny list and the reserved `dag_id` suffixes come from one constant, `platform.PLATFORM_NAMES`, walked to the template by `tests/sdk/test_platform_names.py`.
+The orchestration role is trusted by Step Functions of its account alone. It and the default task role never invoke the platform's internal functions, never start, stop or redrive `run_task` or `bulk_backfill`, and never reach the platform's tokens, specs, dependency pointers, console files, release artifacts or pipeline templates, of any platform in the account. The orchestration role reads only EventBridge connections' secrets (`events!connection/*`) and changes only the managed rules of the `.sync` integrations (`rule/StepFunctions*`).
+
+The engine's roles (the dispatcher, the sweeper, AssetFanout) stop no execution of a platform machine but `run_task`. The console role starts `*-polyris-*` and never `run_task`, and Run starts only a registered pipeline.
+
+`start-run` refuses an execution that is not one of its pipeline's registered state machine, and one whose registered machine is named like a platform's. `notify` takes a pipeline's channels and their config from the registry and rebuilds a failure from the task row it names, which must be the event's pipeline's: no link, task or execution of an alert comes from the event. `ui-bootstrap` takes what it acts on from its environment.
+
+What holds is these denials and checks: a direct step of a pipeline can still write the tokens table (run rows included), the registry, `asset-events`, `task-events` and `asset-subscriptions`, since `DenyDirectStepsOnPlatformData` covers only `api-tokens`, `pipeline-specs` and `dep-subscriptions` (§10). Every deny list and the reserved `dag_id` suffixes come from one constant, `platform.PLATFORM_NAMES`, walked to the template by `tests/sdk/test_platform_names.py`.
 
 ### 6. Same-account roles fail closed, except under `/polyris-tasks/`
 
@@ -37,11 +43,15 @@ The orchestration role denies `sts:AssumeRole` on every role of its account (`St
 
 ### 7. The migration grant is time-limited and guarded
 
-For 1.4 only, the deploy policy passes `*-polyris-*-scheduler-role` to `scheduler.amazonaws.com` and may get, list and delete those roles and their inline policies: a pipeline's first redeploy deletes its old scheduler role, and a failed one rolls its schedule back to it. It is safe because `polyris-up` refuses to update while any role of that name is not the form `polyris-deploy` made (path `/`, trusted by the scheduler alone, one inline policy starting its own stack's state machine, no managed policy, held by a `*-polyris-*` stack). `test_the_migration_grant_goes_in_1_5` fails from 1.5.0 until both statements go.
+For 1.4 only, the deploy policy passes `*-polyris-*-scheduler-role` to `scheduler.amazonaws.com` and may get, list and delete those roles and their inline policies: a pipeline's first redeploy deletes its old scheduler role, and a failed one rolls its schedule back to it. It is safe because `polyris-up` refuses to update while any role of that name is not the form `polyris-deploy` made (path `/`, trusted by the scheduler alone, one inline policy starting its own stack's state machine, no managed policy, held by a `*-polyris-*` stack). Each scheduled pipeline is redeployed on 1.4, before 1.5 removes the grant. `test_the_migration_grant_goes_in_1_5` fails from 1.5.0 until both statements go, with the code that serves them: the preflight's scan of scheduler roles and its rules, and the notice of the update into 1.4.
 
 ### 8. `polyris-up` checks before it changes anything, and never goes below 1.4
 
-Before any upload it refuses a platform below 1.3 (ADR #137, *Migration and upgrade*), a task of a deployed pipeline whose role this platform refuses (§6, read from each pipeline's current spec version), and a planted scheduler role (§7). No release below 1.4 replaces 1.4 or newer, whatever the flags (`platform.rolls_back_below_floor`); the export of §4 holds the same line for an older `polyris-up`. `polyris-down` refuses while a stack imports the export. Every artifact is uploaded on every run, the template under a key nobody can predict, and a change set whose template is not the one uploaded is deleted (`cfn_changeset.verify_change_set_template`); `polyris-deploy` checks its uploaded template the same way.
+Before any upload it refuses a platform below 1.3 (ADR #137, *Migration and upgrade*), a task of a deployed pipeline whose role this platform refuses (§6, read from each pipeline's current spec version), and a planted scheduler role (§7). No release below 1.4 replaces 1.4 or newer, whatever the flags (`platform.rolls_back_below_floor`); while a scheduled pipeline imports the export of §4, CloudFormation holds the same line for an older `polyris-up`.
+
+A new platform's stack name may not contain `-polyris-`, the form of a pipeline's stack. After an update that crosses into 1.4, `polyris-up` prints what the authors need, in order: attach the deploy policy, move to the 1.4 CLI, detach the old policy, run `polyris-up` once more, and redeploy each scheduled pipeline before 1.5 (§7).
+
+`polyris-down` refuses while a stack imports the export. Every artifact is uploaded on every run, the template under a key nobody can predict, and a change set whose template is not the one uploaded is deleted (`cfn_changeset.verify_change_set_template`); `polyris-deploy` checks its uploaded template the same way.
 
 ### 9. Every work state of `run_task` has its actions on the default task role
 
@@ -50,6 +60,17 @@ Before any upload it refuses a platform below 1.3 (ADR #137, *Migration and upgr
 ### 10. One platform is one trust domain; isolation is an account
 
 The shared pipeline role orchestrates the account's workloads and data, so an author reaches any Glue job, Batch job, ECS task, EMR cluster, Lambda and state machine of the account, the account's data through the direct steps, every EventBridge connection through `HttpTask`, the CloudWatch Logs resource policies of the region (§2), any role of another account that trusts this one, and any role under `/polyris-tasks/`. Authors of one platform can disturb each other's pipelines and the platform's run rows, registry and facts: denial of service or confusion, never IAM escalation. Every `*-polyris-*` pattern spans the account, so two platforms in one account do not keep their authors apart; isolation is a separate account. `IAM_PERMISSIONS.md` states this residual.
+
+### 11. What the release's live smoke verifies
+
+The tests check the template and the code; these are AWS's behaviour, checked in a dev account before the 1.4.0 tag:
+
+- the `sts:AssumeRole` deny's `StringEqualsIfExists` on `aws:ResourceAccount`: a same-account role outside `/polyris-tasks/` is denied, one under it and one of another account are assumed;
+- a pipeline's first redeploy on 1.4 deletes its old scheduler role under the deploy policy alone, with no IAM capability, and the IAM actions CloudFormation then calls (`iam:DeleteRole`, `DeleteRolePolicy`, `GetRole`, `ListRolePolicies`, `ListAttachedRolePolicies`, and any other it needs) are the migration grant's;
+- `Fn::ImportValue` of the schedule role's export needs no permission of the caller beyond the deploy policy;
+- whether the deploy policy's `logs:PutResourcePolicy` and log-delivery actions can be narrowed from `log-group:*` and `*`;
+- that the scheduler roles of 1.3 carry no `aws:cloudformation:stack-id` tag: `polyris-up` finds the stack that holds one in the region of the state machine its policy starts, and depends on no tag;
+- the deletion of the deploy policy at `polyris-down` while authors' roles hold it, and the installer actions it needs.
 
 ## Consequences
 
