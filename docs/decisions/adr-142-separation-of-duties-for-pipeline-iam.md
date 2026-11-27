@@ -17,7 +17,7 @@ The infrastructure engineer installs and updates the platform with `polyris-up` 
 
 ### 2. The deploy policy is a resource of the platform stack
 
-`${Namespace}-${Stage}-polyris-deploy-policy` (`AWS::IAM::ManagedPolicy`, output `PipelineDeployPolicyArn`) holds what `polyris-deploy` needs. It changes with the platform, so no release asks users to edit a policy by hand. It allows CloudFormation, Step Functions and log groups on `*-polyris-*` and denies them on the platform's own stack (`${AWS::StackId}`) and on the platform's state machines of any platform, `CreateStateMachine` included. It names the platform's own tables and results prefix exactly. Its name and `Description` never change (Principle #33). `tests/sdk/test_deploy_policy.py`.
+`${Namespace}-${Stage}-polyris-deploy-policy` (`AWS::IAM::ManagedPolicy`, output `PipelineDeployPolicyArn`) holds what `polyris-deploy` needs. It changes with the platform, so no release asks users to edit a policy by hand. It allows CloudFormation, Step Functions and log groups on `*-polyris-*` and denies them on the platform's own stack (`${AWS::StackId}`) and on the platform's state machines of any platform, `CreateStateMachine` included. It names the platform's own tables and results prefix exactly. It sets up the log delivery of a pipeline's state machine (`logs:*LogDelivery`, and the log groups' resource policy), which AWS asks of whoever creates a state machine that logs (`test_the_author_may_set_up_the_log_delivery_of_a_pipelines_state_machine`). Its name and `Description` never change (Principle #33). `tests/sdk/test_deploy_policy.py`.
 
 ### 3. A role an author may pass is named, with the one service it goes to
 
@@ -49,7 +49,7 @@ Before any upload it refuses a platform below 1.3 (ADR #137, *Migration and upgr
 
 ### 10. One platform is one trust domain; isolation is an account
 
-The shared pipeline role orchestrates the account's workloads and data, so an author reaches any Glue job, Batch job, ECS task, EMR cluster, Lambda and state machine of the account, the account's data through the direct steps, every EventBridge connection through `HttpTask`, any role of another account that trusts this one, and any role under `/polyris-tasks/`. Authors of one platform can disturb each other's pipelines and the platform's run rows, registry and facts: denial of service or confusion, never IAM escalation. Every `*-polyris-*` pattern spans the account, so two platforms in one account do not keep their authors apart; isolation is a separate account. `IAM_PERMISSIONS.md` states this residual.
+The shared pipeline role orchestrates the account's workloads and data, so an author reaches any Glue job, Batch job, ECS task, EMR cluster, Lambda and state machine of the account, the account's data through the direct steps, every EventBridge connection through `HttpTask`, the CloudWatch Logs resource policies of the region (§2), any role of another account that trusts this one, and any role under `/polyris-tasks/`. Authors of one platform can disturb each other's pipelines and the platform's run rows, registry and facts: denial of service or confusion, never IAM escalation. Every `*-polyris-*` pattern spans the account, so two platforms in one account do not keep their authors apart; isolation is a separate account. `IAM_PERMISSIONS.md` states this residual.
 
 ## Consequences
 

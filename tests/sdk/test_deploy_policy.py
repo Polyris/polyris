@@ -120,3 +120,38 @@ def test_the_guard_reads_the_statements_that_hold_the_grant_today():
     """So a rename cannot leave the guard checking nothing."""
     if release_series(polyris.__version__) < (1, 5):
         assert set(MIGRATION) <= set(BY_SID)
+
+
+#: What AWS asks of whoever creates or updates a state machine that logs to CloudWatch Logs: Step Functions
+#: is a "V1 permissions" vended-logs source (CloudWatch Logs, *Logging that requires additional
+#: permissions [V1]*), and its own guide asks the same of the state machine's role (*IAM Policies for logging
+#: to CloudWatch Logs*). Every pipeline state machine logs (deploy.py, LoggingConfiguration).
+LOG_DELIVERY = {"logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery",
+                "logs:DeleteLogDelivery", "logs:ListLogDeliveries"}
+LOG_GROUP_POLICY = {"logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"}
+
+
+def _allowed(statements) -> dict:
+    """{action: [its resources]} of the Allow statements."""
+    allowed: dict = {}
+    for statement in statements:
+        if statement["Effect"] == "Allow":
+            resources = statement["Resource"] if isinstance(statement["Resource"], list) else [statement["Resource"]]
+            for action in _actions(statement):
+                allowed.setdefault(action, []).extend(resources)
+    return allowed
+
+
+def test_the_author_may_set_up_the_log_delivery_of_a_pipelines_state_machine():
+    allowed = _allowed(STATEMENTS)
+    for action in LOG_DELIVERY:
+        assert allowed.get(action) == ["*"], action        # these actions take no resource type
+    log_groups = {"!Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"}
+    for action in LOG_GROUP_POLICY - {"logs:DescribeLogGroups"}:
+        assert allowed.get(action) == [log_groups], action  # the scope AWS documents for them
+    assert "logs:DescribeLogGroups" in allowed
+
+
+def test_the_state_machines_role_may_set_it_up_too():
+    allowed = _allowed(TEMPLATE["Resources"]["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]["Statement"])
+    assert LOG_DELIVERY | LOG_GROUP_POLICY <= set(allowed)

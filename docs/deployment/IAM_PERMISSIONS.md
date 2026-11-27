@@ -111,6 +111,7 @@ The platform updates the policy with itself: a new release that needs another ac
 | Create, update, delete, describe, start and stop | State machines and executions named `*-polyris-*`, never the platform's own (`run_task`, `bulk_backfill`, the test machines) of any platform; `states:DescribeStateMachine` on any state machine, for the pre-deploy resource check |
 | Write the task specs, the registry entry, the asset subscriptions | The platform's own `pipeline-specs`, `pipeline-registry` and `asset-subscriptions` tables |
 | Log groups | `/<namespace>/<stage>/polyris/*` |
+| Log delivery of a pipeline's state machine, which AWS asks of whoever creates or updates a state machine that logs | `logs:*LogDelivery` on `*` (these actions take no resource); `logs:PutResourcePolicy` and `DescribeResourcePolicies` on the log groups of the platform's region |
 | Schedules | `default/*-polyris-*-schedule` |
 | `iam:PassRole` | Two roles, each to one service: the orchestration role to Step Functions, the schedule role to EventBridge Scheduler |
 
@@ -260,6 +261,7 @@ The deploy policy keeps a pipeline author away from IAM and from the platform it
 - any Glue job (`--extra-py-files`), Batch job (command override), ECS task (task-role override to any role that trusts `ecs-tasks`), EMR cluster (`AddJobFlowSteps`), Lambda and state machine of the account;
 - the account's data through the direct steps (S3, DynamoDB, SNS, SQS on any resource — including CDK/SAM asset buckets, so code that their deploy roles later run);
 - every EventBridge connection of the account through `HttpTask`;
+- the CloudWatch Logs resource policies of the platform's region, which the log delivery of a pipeline's state machine needs the deploy policy to write;
 - any role in **another** account that trusts this one (for example `OrganizationAccountAccessRole` if the platform runs in an Organization's management account, or the roles of `cdk bootstrap --trust`), and any role of this account under `/polyris-tasks/`.
 
 One platform is one trust domain: its authors can disturb each other's pipelines and the platform's run rows, registry and facts (denial of service or confusion, never IAM escalation). polyris keeps no list of the accounts that `role=` may name.

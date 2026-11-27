@@ -2976,6 +2976,24 @@ Resources:
             Effect: Allow
             Action: logs:DescribeLogGroups
             Resource: "*"
+          # Every pipeline state machine logs to its log group. Step Functions is a "V1" vended-logs
+          # source: AWS asks whoever creates or updates it for the log delivery, and for the log
+          # group's resource policy the first time (tests/sdk/test_deploy_policy.py).
+          - Sid: PipelineStateMachineLogDelivery
+            Effect: Allow
+            Action:
+              - logs:CreateLogDelivery
+              - logs:GetLogDelivery
+              - logs:UpdateLogDelivery
+              - logs:DeleteLogDelivery
+              - logs:ListLogDeliveries
+            Resource: "*"
+          - Sid: PipelineLogGroupResourcePolicy
+            Effect: Allow
+            Action:
+              - logs:PutResourcePolicy
+              - logs:DescribeResourcePolicies
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
           - Sid: PipelineSchedule
             Effect: Allow
             Action:
