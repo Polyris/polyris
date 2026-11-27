@@ -117,10 +117,10 @@ def _generate_cfn_template(
 ) -> dict:
     """Generate CloudFormation template for a single pipeline.
 
-    The stack holds no IAM resource (PLAN_IAM 1.4.0 §6.1): its state machine runs as the platform's
+    The stack holds no IAM resource (ADR #142 §4): its state machine runs as the platform's
     orchestration role (``role_arn``), and its schedule starts it with the platform's schedule role,
     imported from the export named ``schedule_role_export``. The import keeps the platform from
-    dropping that role while a pipeline uses it (D8).
+    dropping that role while a pipeline uses it (ADR #142 §4).
     """
 
     full_name = f"{namespace}-{stage}-polyris-{dag.dag_id}"
@@ -350,7 +350,7 @@ def denies_pass_role(text: str) -> bool:
 
 def _pass_role_denied(cfn, stack_name: str, error: Exception) -> bool:
     """Whether a failed deploy failed on ``iam:PassRole``: in its error, or in a stack event of its last
-    operation. A role that lacks the platform's deploy policy fails there (PLAN_IAM 1.4.0 §6.3)."""
+    operation. A role that lacks the platform's deploy policy fails there (ADR #142 §2)."""
     if denies_pass_role(str(error)):
         return True
     try:
@@ -854,7 +854,7 @@ def deploy_pipeline(
     console_url = outputs.get("ConsoleUiUrl")
 
     # A scheduled pipeline's schedule runs as the platform's schedule role, which 1.4 adds: this
-    # check is what tells a 1.4 polyris-deploy against an older platform (PLAN_IAM 1.4.0 §6.1).
+    # check is what tells a 1.4 polyris-deploy against an older platform (ADR #142 §4).
     scheduled = bool(dag.schedule) and not dag.is_asset_triggered
     required = (OUTPUT_ORCHESTRATION_ROLE,) + (() if destroy else (
         ("PipelineSpecsTable", "StartRunFunctionArn") + ((OUTPUT_SCHEDULE_ROLE,) if scheduled else ())))
@@ -883,7 +883,7 @@ def deploy_pipeline(
                   f"and remove {_c(dag.dag_id, CYAN)} from the console")
         return
 
-    # A task's role= of the platform's account outside /polyris-tasks/ (D11): the account is known now,
+    # A task's role= of the platform's account outside /polyris-tasks/ (ADR #142 §6): the account is known now,
     # and so is the platform's own default task role.
     role_errors = same_account_role_errors(
         dag, account=caller_identity["Account"],
@@ -974,7 +974,7 @@ def deploy_pipeline(
             sys.exit(1)
         # A key nobody can predict, and the change set's template checked against what was uploaded:
         # another writer of the prefix cannot have CloudFormation run a template of theirs with this
-        # caller's rights (PLAN_IAM 1.4.0 §5.5).
+        # caller's rights (ADR #142 §8).
         digest = hashlib.sha256(template_body.encode()).hexdigest()[:16]
         key = f"cfn-pipeline-templates/{stack_name}-{digest}-{uuid.uuid4().hex}.json"
         session.client("s3").put_object(Bucket=results_bucket, Key=key, Body=template_body.encode())
@@ -984,7 +984,7 @@ def deploy_pipeline(
     try:
         # The stack holds no IAM resource, so it needs no capability. Its first update from a
         # pipeline deployed before 1.4 deletes the stack's own scheduler role, which needs none
-        # either (V-Q).
+        # either (ADR #142 §7; the release's live smoke checks it).
         change_set = create_change_set(cfn, stack_name=stack_name, capabilities=[], **source)
         if change_set is None:
             print("  No changes to deploy — the stack already matches this DAG.")

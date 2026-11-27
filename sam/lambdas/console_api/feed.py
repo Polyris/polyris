@@ -331,7 +331,7 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
             runs.append(run_entry(run_item))
             continue
         counts = run_end.summary(group['statuses'])
-        # A run from before 1.3 has no run row. One that 1.2 left unfinished shows running until its rows expire (D6).
+        # A run from before 1.3 has no run row. One that 1.2 left unfinished shows running until its rows expire (ADR #137, *Migration and upgrade*).
         status = run_end.shown_status(counts, step_failed=False)
         started_at = group['started_at'] or None
         finished_at = (group['finished_at'] or None) if status != 'running' else None

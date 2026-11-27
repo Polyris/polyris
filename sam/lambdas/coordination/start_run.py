@@ -47,7 +47,7 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
 def _start(call: core.Call, now: datetime) -> Dict[str, Any]:
     ddb = env.dynamodb()
     # The payload names the execution the engine will stop and answer: it must be one of the pipeline's own
-    # registered state machine, whatever invoked this function (PLAN_IAM 1.4.0 §6.9).
+    # registered state machine, whatever invoked this function (ADR #142 §5).
     registered = ddb.Table(env.PIPELINES_TABLE).get_item(
         Key={"pipeline_name": call.pipeline}, ConsistentRead=True, ProjectionExpression="sfn_arn").get("Item") or {}
     core.check_execution(call, registered.get("sfn_arn"))

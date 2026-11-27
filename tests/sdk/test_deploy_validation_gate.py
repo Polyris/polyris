@@ -245,7 +245,7 @@ def test_schedule_name_dag_id_length_guardrail(mocker, dag_id, code):
     → len(ns)+len(stage)+len(dag_id) ≤ 45.
 
     With ns=5, stage=4 (total 9), dag_id may have 36 chars and not 37. Since 1.4 the pipeline
-    creates no scheduler role, whose name was the limit before (PLAN_IAM 1.4.0 §6.2).
+    creates no scheduler role, whose name was the limit before (ADR #142 §4).
     Guard only fires for time-triggered DAGs (dag.schedule truthy, not asset-triggered).
     """
     # A project with config.py: its own naming applies, so the guard runs

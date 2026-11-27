@@ -69,7 +69,7 @@ CASES = [
     (['success', 'aborted', 'stopped'], 'aborted'),
     (['failed', 'aborted'], 'failed'),              # a genuine failure outranks the stop
     # A run from before 1.3 (these have no run row) with a row left unfinished shows running until its rows
-    # expire (D6).
+    # expire (ADR #137, *Migration and upgrade*).
     (['running'], 'running'),
     (['running', 'success'], 'running'),
     (['waiting_decision', 'failed'], 'running'),

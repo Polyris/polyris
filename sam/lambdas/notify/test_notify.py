@@ -19,7 +19,6 @@ def failure():
         'execution_name': 'extract-2026-06-23-abc',
         'error': 'boom: connection refused',
         'date': '2026-06-23',
-        'links': [{'href': 'https://console/exec', 'text': 'Task SFN Execution'}],
     }
 
 
@@ -82,12 +81,61 @@ class TestRegistry:
         assert isinstance(get_notifier('dummy', {}), DummyNotifier)
 
 
+# ── the platform's rows, as notify reads them (moto) ──────────────────────
+
+REGION = 'us-east-1'
+EXECUTION = 'extract-2026-06-23-abc'
+
+
+class Platform:
+    """The registry and the task rows that the platform wrote, in moto."""
+
+    def __init__(self, ddb):
+        self.ddb = ddb
+
+    def configure(self, pipeline, **channels):
+        self.ddb.Table('registry').put_item(Item={'pipeline_name': pipeline, 'alert_config': {
+            'enabled_channels': list(channels), **channels}})
+
+    def task_row(self, execution_name=EXECUTION, *, pipeline='acme-daily', task='extract', date='2026-06-23'):
+        self.ddb.Table('tokens').put_item(Item={'execution_name': execution_name, 'pipeline_name': pipeline,
+                                                'task_name': task, 'date': date, 'status': 'waiting_decision'})
+
+
+@pytest.fixture
+def platform(monkeypatch):
+    import boto3
+    import registry
+    from moto import mock_aws
+
+    for name, value in {'AWS_ACCESS_KEY_ID': 'testing', 'AWS_SECRET_ACCESS_KEY': 'testing', 'AWS_REGION': REGION,
+                        'AWS_DEFAULT_REGION': REGION, 'PIPELINES_TABLE': 'registry', 'TOKENS_TABLE': 'tokens'}.items():
+        monkeypatch.setenv(name, value)
+    with mock_aws():
+        monkeypatch.setattr(registry, '_dynamodb', None)
+        monkeypatch.setattr(registry, '_tokens', None)
+        ddb = boto3.resource('dynamodb', region_name=REGION)
+        for table, key in (('registry', 'pipeline_name'), ('tokens', 'execution_name')):
+            ddb.create_table(TableName=table, KeySchema=[{'AttributeName': key, 'KeyType': 'HASH'}],
+                             AttributeDefinitions=[{'AttributeName': key, 'AttributeType': 'S'}],
+                             BillingMode='PAY_PER_REQUEST')
+        yield Platform(ddb)
+
+
+@pytest.fixture
+def post(mocker):
+    return mocker.patch('notifiers._http_post_json', return_value=200)
+
+
 # ── action dispatch framework (paid actions absent in OSS) ────────────────
 
 class TestActionFramework:
-    def test_unknown_action_no_ops(self):
+    def test_unknown_action_no_ops(self, platform):
         import index
-        out = index.handler({'action': 'interactive_slack', 'pipeline_name': 'x'}, None)
+        platform.task_row()
+        # No build registers this action; the paid one registers interactive_slack.
+        out = index.handler({'action': 'no_such_action', 'pipeline_name': 'acme-daily',
+                             'failure': {'execution_name': EXECUTION}}, None)
         assert out['delivered'] is False
         assert out['reason'] == 'unknown_action'
 
@@ -102,56 +150,56 @@ class TestActionFramework:
 class TestHandler:
     """Single shape: one of the pipeline's enabled channels, its config from the registry, never the event."""
 
-    @staticmethod
-    def _config(mocker, **channels):
-        return mocker.patch('index.get_alert_config', return_value={'enabled_channels': list(channels), **channels})
-
-    def test_dispatches_to_channel_with_the_registrys_config(self, mocker, failure):
+    def test_dispatches_to_channel_with_the_registrys_config(self, mocker, platform, post, failure):
         import index
-        self._config(mocker, webhook={'url_param': '/p'})
+        platform.configure('acme-daily', webhook={'url_param': '/p'})
+        platform.task_row()
         secret = mocker.patch('notifiers._get_secret', return_value='https://hooks.example.com/x')
-        mocker.patch('notifiers._http_post_json', return_value=200)
-        out = index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'failure': failure}, None)
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'failure': failure}, None)
         assert out['channel'] == 'webhook'
         assert out['delivered'] is True
         secret.assert_called_once_with('/p')
+        assert post.call_args.args[1]['task'] == 'extract'
 
-    def test_a_config_in_the_event_is_ignored(self, mocker, failure):
-        """A pipeline's roles may invoke the function: an event must not point an alert anywhere (§6.9)."""
+    def test_a_config_in_the_event_is_ignored(self, mocker, platform, failure):
+        """A pipeline's roles may invoke the function: an event must not point an alert anywhere (ADR #142 §5)."""
         import index
-        self._config(mocker, webhook={'url_param': '/polyris/alerts/acme/dev/p/webhook-url'})
+        platform.configure('acme-daily', webhook={'url_param': '/polyris/alerts/acme/dev/p/webhook-url'})
+        platform.task_row()
         secret = mocker.patch('notifiers._get_secret', return_value=None)
-        index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'config': {'url_param': '/elsewhere'},
+        index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'config': {'url_param': '/elsewhere'},
                        'failure': failure}, None)
         secret.assert_called_once_with('/polyris/alerts/acme/dev/p/webhook-url')
 
-    def test_a_channel_the_pipeline_has_not_enabled_is_not_delivered(self, mocker, failure):
+    def test_a_channel_the_pipeline_has_not_enabled_is_not_delivered(self, platform, post, failure):
         import index
-        self._config(mocker)
-        post = mocker.patch('notifiers._http_post_json', return_value=200)
-        out = index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'config': {'url_param': '/p'},
+        platform.configure('acme-daily')
+        platform.task_row()
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'config': {'url_param': '/p'},
                              'failure': failure}, None)
         assert (out['delivered'], out['reason']) == (False, 'not_enabled')
         assert not post.called
 
     def test_no_channel_is_safe(self):
         import index
-        out = index.handler({'failure': {}}, None)
+        out = index.handler({'channel': '', 'failure': {}}, None)
         assert out['delivered'] is False
         assert out['reason'] == 'no_channel'
 
-    def test_unknown_channel_is_safe(self, mocker):
+    def test_unknown_channel_is_safe(self, platform, failure):
         import index
-        self._config(mocker, telegram={})
-        out = index.handler({'pipeline_name': 'p', 'channel': 'telegram', 'failure': {}}, None)
+        platform.configure('acme-daily', telegram={})
+        platform.task_row()
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'telegram', 'failure': failure}, None)
         assert out['delivered'] is False
         assert out['reason'] == 'unknown_channel'
 
-    def test_channel_error_does_not_raise(self, mocker, failure):
+    def test_channel_error_does_not_raise(self, mocker, platform, failure):
         import index
-        self._config(mocker, webhook={})
+        platform.configure('acme-daily', webhook={})
+        platform.task_row()
         mocker.patch('index.get_notifier', side_effect=RuntimeError('boom'))
-        out = index.handler({'pipeline_name': 'p', 'channel': 'webhook', 'failure': failure}, None)
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'failure': failure}, None)
         assert out['delivered'] is False
         assert out['reason'] == 'delivery_error'
 
@@ -159,36 +207,30 @@ class TestHandler:
 class TestBatchMode:
     """Batch shape: {pipeline_name, failure} → Lambda reads config + loops channels."""
 
-    def test_reads_config_and_fans_out(self, mocker, failure):
+    def test_reads_config_and_fans_out(self, mocker, platform, failure):
         import index
-        mocker.patch('index.get_alert_config', return_value={
-            'enabled_channels': ['webhook', 'webhook2'],
-            'webhook': {'url_param': '/s'},
-            'webhook2': {'url_param': '/p'},
-        })
-        deliver = mocker.patch('index._deliver_one',
-                               return_value={'delivered': True, 'status': 200})
+        platform.configure('acme-daily', webhook={'url_param': '/s'}, webhook2={'url_param': '/p'})
+        platform.task_row()
+        deliver = mocker.patch('index._deliver_one', return_value={'delivered': True, 'status': 200})
         out = index.handler({'pipeline_name': 'acme-daily', 'failure': failure}, None)
         assert out['delivered'] is True
         assert len(out['channels']) == 2
-        calls = [c.args[0] for c in deliver.call_args_list]
-        assert set(calls) == {'webhook', 'webhook2'}
+        assert {c.args[0] for c in deliver.call_args_list} == {'webhook', 'webhook2'}
 
-    def test_no_channels_is_clean_noop(self, mocker, failure):
+    def test_no_channels_is_clean_noop(self, mocker, platform, failure):
         import index
-        mocker.patch('index.get_alert_config', return_value={'enabled_channels': []})
+        platform.configure('acme-daily')
+        platform.task_row()
         deliver = mocker.patch('index._deliver_one')
         out = index.handler({'pipeline_name': 'acme-daily', 'failure': failure}, None)
         assert out['delivered'] is True
         assert out['channels'] == []
         deliver.assert_not_called()
 
-    def test_one_channel_failing_does_not_block_others(self, mocker, failure):
+    def test_one_channel_failing_does_not_block_others(self, mocker, platform, failure):
         import index
-        mocker.patch('index.get_alert_config', return_value={
-            'enabled_channels': ['webhook', 'webhook2'],
-            'webhook': {}, 'webhook2': {},
-        })
+        platform.configure('acme-daily', webhook={}, webhook2={})
+        platform.task_row()
         mocker.patch('index._deliver_one', side_effect=[
             {'channel': 'webhook', 'delivered': False, 'reason': 'http_error'},
             {'channel': 'webhook2', 'delivered': True, 'status': 202},
@@ -197,12 +239,99 @@ class TestBatchMode:
         assert out['delivered'] is True
         assert len(out['channels']) == 2
 
-    def test_config_read_failure_degrades_to_noop(self, mocker, failure):
+    def test_a_pipeline_without_config_is_a_clean_noop(self, platform, post, failure):
         import index
-        mocker.patch('index.get_alert_config', return_value={})
+        platform.task_row()
         out = index.handler({'pipeline_name': 'acme-daily', 'failure': failure}, None)
+        assert (out['delivered'], out['channels']) == (True, [])
+        assert not post.called
+
+
+class TestTheFailureComesFromThePlatform:
+    """A pipeline's roles may invoke notify (ADR #142 §5): a forged event must not reach a webhook, a Slack
+    button or a PagerDuty incident with a link, an execution or a task that is not the platform's."""
+
+    def test_a_forged_failure_keeps_only_its_error_and_the_rest_comes_from_the_row(self, mocker, platform, post):
+        import index
+        platform.configure('acme-daily', webhook={'url_param': '/p'})
+        platform.task_row()
+        mocker.patch('notifiers._get_secret', return_value='https://hooks.example.com/x')
+        index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'failure': {
+            'execution_name': EXECUTION, 'error': 'boom', 'task_name': 'payroll', 'date': '1999-01-01',
+            'pipeline_name': 'billing', 'links': [{'href': 'https://evil.example/login', 'text': 'Sign in'}]}}, None)
+        payload = post.call_args.args[1]
+        assert (payload['pipeline'], payload['task'], payload['date'], payload['error']) == (
+            'acme-daily', 'extract', '2026-06-23', 'boom')
+        assert 'evil.example' not in str(payload) and 'links' not in payload
+
+    @pytest.mark.parametrize("failure, reason", [
+        ({'execution_name': 'load-2026-06-23-xyz'}, 'unknown_execution'),     # a row of another pipeline
+        ({'execution_name': 'gone-2026-06-23-xyz'}, 'unknown_execution'),     # no row
+        ({'execution_name': '_run_acme-daily-run-2026-06-23-00000000'}, 'no_execution'),  # an internal row
+        ({}, 'no_execution'),
+    ])
+    def test_an_execution_that_is_no_task_row_of_the_pipeline_sends_nothing(self, platform, post, failure, reason):
+        import index
+        platform.configure('acme-daily', webhook={'url_param': '/p'})
+        platform.task_row('load-2026-06-23-xyz', pipeline='billing', task='load')
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'failure': failure}, None)
+        assert (out['delivered'], out['reason']) == (False, reason)
+        assert not post.called
+
+    def test_an_action_for_another_pipelines_execution_is_refused_before_it_runs(self, mocker, platform):
+        import index
+        platform.task_row('load-2026-06-23-xyz', pipeline='billing', task='load')
+        action = mocker.patch('index.dispatch_action')
+        out = index.handler({'action': 'interactive_slack', 'pipeline_name': 'acme-daily',
+                             'failure': {'execution_name': 'load-2026-06-23-xyz'}}, None)
+        assert (out['action'], out['delivered'], out['reason']) == ('interactive_slack', False, 'unknown_execution')
+        assert not action.called
+
+    def test_an_action_gets_the_failure_the_row_gives(self, mocker, platform):
+        import index
+        platform.task_row()
+        action = mocker.patch('index.dispatch_action', return_value={'delivered': True})
+        index.handler({'action': 'live_pagerduty', 'pipeline_name': 'acme-daily', 'failure': {
+            'execution_name': EXECUTION, 'error': 'TaskFailed', 'task_name': 'x', 'links': ['y']}}, None)
+        assert action.call_args.args[1]['failure'] == {
+            'pipeline_name': 'acme-daily', 'task_name': 'extract', 'execution_name': EXECUTION,
+            'date': '2026-06-23', 'error': 'TaskFailed'}
+
+    def test_a_row_that_cannot_be_read_sends_nothing_and_says_why(self, mocker, platform, post, monkeypatch):
+        import index
+        platform.configure('acme-daily', webhook={'url_param': '/p'})
+        monkeypatch.setenv('TOKENS_TABLE', 'no-such-table')
+        error = mocker.patch('index.log.error')
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook',
+                             'failure': {'execution_name': EXECUTION}}, None)
+        assert (out['delivered'], out['reason']) == (False, 'row_unreadable')
+        assert 'ResourceNotFoundException' in str(error.call_args) and not post.called
+
+
+class TestTestAlert:
+    """A test goes through a channel the pipeline saved and enabled, with a fixed text and no execution."""
+
+    def test_a_saved_enabled_channel_gets_the_test_message(self, mocker, platform, post):
+        import index
+        platform.configure('acme-daily', webhook={'url_param': '/p'})
+        mocker.patch('notifiers._get_secret', return_value='https://hooks.example.com/x')
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'test': True}, None)
         assert out['delivered'] is True
-        assert out['channels'] == []
+        assert post.call_args.args[1]['error'] == index.TEST_ERROR
+
+    def test_a_channel_that_is_not_enabled_gets_no_test(self, platform, post):
+        import index
+        platform.configure('acme-daily')
+        out = index.handler({'pipeline_name': 'acme-daily', 'channel': 'webhook', 'test': True}, None)
+        assert (out['delivered'], out['reason']) == (False, 'not_enabled')
+        assert not post.called
+
+    def test_an_action_is_never_a_test(self, mocker, platform):
+        import index
+        action = mocker.patch('index.dispatch_action')
+        out = index.handler({'action': 'interactive_slack', 'pipeline_name': 'acme-daily', 'test': True}, None)
+        assert (out['delivered'], out['reason']) == (False, 'not_a_test_action')
+        assert not action.called
 
 
 class TestOverlayImportGuard:

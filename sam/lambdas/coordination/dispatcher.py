@@ -39,7 +39,7 @@ goes the other way, dependants first (§4).
   as the sweeper's check does, from the rows and DescribeExecution, with at most
   two calls. A stream or narrow pass makes no DescribeExecution call.
 - A row whose run row is missing is stopped with the cause (invariant 11); a row
-  that a 1.2 run left in flight is skipped with a log line and expires (D6).
+  that a 1.2 run left in flight is skipped with a log line and expires (ADR #137, *Migration and upgrade*).
 
 Entry points: ``handler`` for the tasks table's stream and for the end of an
 execution (``on_execution_end``), ``full_pass`` for the sweeper, ``narrow_pass``
@@ -856,8 +856,10 @@ class Dispatcher:
     def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str,
                      deadline: Optional[float] = None) -> Dict[str, Any]:
         """Each row named, stopped with the cause: its run row is missing (invariant 11). A row that a 1.2 run
-        left in flight is skipped with a log line: it expires with its history TTL (D6). Past ``deadline`` the rest
-        wait for a later pass or check, which finds them again."""
+        left in flight is skipped with a log line and leaves the attention index, so no sweep takes it again and
+        the self-check's oldest overdue row is never one of them; it expires with its history TTL (ADR #137,
+        *Migration and upgrade*). Past ``deadline`` the rest wait for a later pass or check, which finds them
+        again."""
         now = self.clock()
         stopped = 0
         for index, key in enumerate(keys):
@@ -871,6 +873,7 @@ class Dispatcher:
             if dispatch.written_before_1_3(item):
                 log.info("dispatcher", "a row a 1.2 run left is not stopped; it expires with its history", run=run_key,
                          row=key, status=str(item[task_row.STATUS]))
+                self._leave_attention(key)
                 continue
             try:
                 row = dispatch.row_view(item)
@@ -887,6 +890,15 @@ class Dispatcher:
         result = {"run": run_key, "source": source, "action": "orphans", "stopped": stopped}
         log.info("dispatcher", "pass", **result)
         return result
+
+    def _leave_attention(self, key: str) -> None:
+        """Take a 1.2 row out of the attention index; one that fails stays due, and the next sweep tries again."""
+        try:
+            self.client.update_item(**dispatch_writes.leave_attention_1_2(key, table=self.tokens_table))
+        except (ClientError, BotoCoreError) as exc:
+            # ConditionalCheckFailed included: a row that gained readiness is no 1.2 row, and the next pass decides it.
+            log.error("dispatcher", "a row a 1.2 run left could not leave the attention index; it stays due", row=key,
+                      error=str(exc))
 
     # ── reads ────────────────────────────────────────────────────────────
 

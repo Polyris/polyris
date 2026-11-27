@@ -332,7 +332,7 @@ class TestSlackMentionsTemplateFlow:
         """Interactive_Slack now invokes the notify Lambda (Stage 2). Mentions and
         channel come from alert_config read by the Lambda, so the payload carries
         pipeline_name + failure, not mentions inline. The console's endpoint is the
-        Lambda's own setting, never the event's (PLAN_IAM 1.4.0 §6.9)."""
+        Lambda's own setting, never the event's (ADR #142 §5)."""
         rt = load('run_task')
         state = rt['States']['Interactive_Slack']
         assert state['Resource'] == 'arn:aws:states:::lambda:invoke'

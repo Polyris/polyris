@@ -334,7 +334,7 @@ def test_bucket_owner_status(s3, mocker):
 
 
 def test_upload_artifacts_is_content_addressed_and_uploads_every_time(s3, tmp_path, capsys):
-    """An object found under a key is not known to be the one polyris-up put there (PLAN_IAM 1.4.0 §4.4)."""
+    """An object found under a key is not known to be the one polyris-up put there (ADR #142 §8)."""
     root, manifest = up.extract_archive(_write_archive(tmp_path / "a.zip"))
     bucket = "polyris-artifacts"
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
@@ -944,7 +944,7 @@ def test_up_refuses_to_roll_back_a_newer_platform(fake_cfn, s3, tmp_path, capsys
 
 
 def test_up_installs_no_release_below_1_3(fake_cfn, s3, tmp_path, capsys):
-    """1.2 support ends with 1.4 (D6): a pipeline deployed for 1.3 has no engine on 1.2."""
+    """1.2 support ends with 1.4 (ADR #137, *Migration and upgrade*): a pipeline deployed for 1.3 has no engine on 1.2."""
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
                                          Description="Polyris platform v1.3.0")])
     archive = str(_write_archive(tmp_path / "a.zip", version="1.2.3"))
@@ -955,7 +955,7 @@ def test_up_installs_no_release_below_1_3(fake_cfn, s3, tmp_path, capsys):
 
 
 def test_up_never_takes_a_platform_below_1_4_even_with_the_flag(fake_cfn, s3, tmp_path, capsys):
-    """D8: its pipelines schedule with the schedule role, which 1.3 does not have."""
+    """ADR #142 §4: its pipelines schedule with the schedule role, which 1.3 does not have."""
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
                                          Description="Polyris platform v1.4.0")])
     archive = str(_write_archive(tmp_path / "a.zip", version="1.3.2"))
@@ -1133,7 +1133,7 @@ def test_registry_skips_state_machines_being_deleted(fake_cfn, s3, mocker):
     assert up.pipelines_on_platform(session, FakeCfn([stack]), stack, "acme-dev") == []
 
 
-# ── The upgrade to 1.4 (PLAN_IAM 1.4.0 §4) ──────────────────────────────────
+# ── The upgrade to 1.4 (ADR #142 §8) ──────────────────────────────────
 
 REGISTRY = "acme-dev-polyris-pipeline-registry"
 SPECS = "acme-dev-polyris-pipeline-specs"
@@ -1202,16 +1202,25 @@ def _pipeline(states: FakeStates, name: str, *, role: str = "same", redeployed: 
     ddb.put_item(TableName=REGISTRY, Item=item)
 
 
-def _scheduler_role(name: str = "acme-dev-polyris-orders-scheduler-role", *, policy: Dict[str, Any] | None = None,
-                    attach: str | None = None) -> str:
-    """A role named like a pipeline's scheduler role, as polyris-deploy of 1.3 made it unless changed; its ARN."""
+#: The scheduler role of the pipeline ``orders`` of the platform ``acme``/``dev``, as polyris-deploy 1.3.2 rendered
+#: it (``deploy._generate_cfn_template`` at tag ``v1.3.2``, frozen): the form polyris-up must recognise.
+SCHEDULER_ROLE_1_3 = json.loads((Path(__file__).resolve().parents[1] / "fixtures" / "scheduler_role_v1_3_2.json")
+                                .read_text())
+
+
+def _scheduler_role(name: str = "", *, policy: Dict[str, Any] | None = None, attach: str | None = None) -> str:
+    """A role named like a pipeline's scheduler role, as CloudFormation makes it from 1.3.2's template unless
+    changed; its ARN."""
     iam = boto3.client("iam", region_name=REGION)
-    trust = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole",
-                                                     "Principal": {"Service": "scheduler.amazonaws.com"}}]}
-    arn = iam.create_role(RoleName=name, AssumeRolePolicyDocument=json.dumps(trust))["Role"]["Arn"]
-    start = policy or {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "states:StartExecution",
-                                                               "Resource": f"{MACHINES}acme-dev-polyris-orders"}]}
-    iam.put_role_policy(RoleName=name, PolicyName="InvokePipelineStateMachine", PolicyDocument=json.dumps(start))
+    rendered = SCHEDULER_ROLE_1_3["Properties"]
+    name = name or rendered["RoleName"]
+    arn = iam.create_role(RoleName=name, AssumeRolePolicyDocument=json.dumps(rendered["AssumeRolePolicyDocument"]),
+                          Tags=rendered["Tags"])["Role"]["Arn"]
+    (inline,) = rendered["Policies"]
+    # CloudFormation resolves the Ref to the stack's state machine.
+    start = policy or json.loads(json.dumps(inline["PolicyDocument"]).replace(
+        json.dumps({"Ref": "PipelineStateMachine"}), json.dumps(f"{MACHINES}acme-dev-polyris-orders")))
+    iam.put_role_policy(RoleName=name, PolicyName=inline["PolicyName"], PolicyDocument=json.dumps(start))
     if attach:
         admin = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
         policy_arn = iam.create_policy(PolicyName=attach, PolicyDocument=json.dumps(admin))["Policy"]["Arn"]
@@ -1300,6 +1309,32 @@ def test_up_accepts_the_scheduler_role_polyris_deploy_made(fake_cfn, platform_1_
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
 
 
+def test_up_looks_for_a_scheduler_roles_stack_in_the_region_of_the_machine_it_starts(
+        fake_cfn, platform_1_3, s3, tmp_path, mocker):
+    """IAM is global, a stack regional: a pipeline of a platform in another region holds its scheduler role there.
+    The stack is looked for in the region of the state machine the role starts; no tag says it."""
+    machine = f"arn:aws:states:us-west-2:{ACCOUNT}:stateMachine:acme-dev-polyris-orders"
+    name = SCHEDULER_ROLE_1_3["Properties"]["RoleName"]
+    _scheduler_role(policy={"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "states:StartExecution", "Resource": machine}]})
+    fake_cfn["cfn"].resources[name] = [
+        {"StackName": "acme-dev-polyris-orders", "LogicalResourceId": "PipelineSchedulerRole", "PhysicalResourceId": name},
+        {"StackName": "acme-dev-polyris-orders", "LogicalResourceId": "PipelineStateMachine",
+         "PhysicalResourceId": machine}]
+    regions: List[Any] = []
+    routed = boto3.Session.client
+
+    def client(self, service, *a, **kw):
+        if service == "cloudformation":
+            regions.append(kw.get("region_name"))
+        return routed(self, service, *a, **kw)
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+    assert "us-west-2" in regions
+
+
 @pytest.mark.parametrize("plant, reason", [
     (lambda cfn: _scheduler_role(), "no pipeline stack made it"),
     (lambda cfn: (_scheduler_role(attach="Admin"),
@@ -1348,6 +1383,25 @@ def test_a_check_it_may_not_make_stops_polyris_up_with_the_permission(fake_cfn, 
     assert "polyris-up may not call iam:ListRoles on *, which its checks before any change need." in _err(capsys)
 
 
+def test_a_denied_read_of_the_deployed_pipelines_names_every_action_the_read_makes(
+        fake_cfn, platform_1_3, s3, tmp_path, capsys, mocker):
+    _pipeline(platform_1_3, "orders")
+    real_client = boto3.Session.client
+
+    def client(self, name, *a, **kw):
+        made = real_client(self, name, *a, **kw)
+        if name == "dynamodb":
+            mocker.patch.object(made, "scan", side_effect=ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Scan"))
+        return made
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    assert "polyris-up may not call cloudformation:DescribeStacks, dynamodb:Scan, states:DescribeStateMachine" \
+        in _err(capsys)
+
+
 @pytest.mark.parametrize("operation", ["Query", "BatchGetItem"])
 def test_a_denied_read_of_the_specs_names_every_action_the_read_makes(fake_cfn, platform_1_3, s3, tmp_path, capsys,
                                                                       mocker, operation):
@@ -1369,7 +1423,7 @@ def test_a_denied_read_of_the_specs_names_every_action_the_read_makes(fake_cfn, 
 
 
 def test_up_deploys_only_the_template_it_uploaded(fake_cfn, platform_1_3, s3, tmp_path, capsys):
-    """A writer of the bucket who swaps the template between the upload and the change set (PLAN_IAM 1.4.0 §4.4)."""
+    """A writer of the bucket who swaps the template between the upload and the change set (ADR #142 §8)."""
     cfn = fake_cfn["cfn"]
 
     def swap(change_set):
@@ -1457,7 +1511,7 @@ def test_up_with_nothing_to_change_still_lists_the_pipelines_to_redeploy(fake_cf
 
 
 def test_down_refuses_while_a_pipeline_schedules_with_the_platforms_schedule_role(fake_cfn, s3, capsys):
-    """CloudFormation would refuse to delete the export a pipeline stack imports (D8); --yes does not cover it."""
+    """CloudFormation would refuse to delete the export a pipeline stack imports (ADR #142 §4); --yes does not cover it."""
     fake_cfn["cfn"] = FakeCfn([_deployed("1.4.0", outputs=[])])
     fake_cfn["cfn"].imports["acme-dev-polyris-schedule-role-arn"] = ["acme-dev-polyris-orders"]
 

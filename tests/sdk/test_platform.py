@@ -395,7 +395,7 @@ def test_cognito_has_no_self_sign_up(template):
     assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
 
 
-# ── The platform's state machines, and the upgrade's rules (PLAN_IAM 1.4.0 §4) ─────────────
+# ── The platform's state machines, and the upgrade's rules (ADR #142 §8) ─────────────
 
 
 def _state_machines(template) -> dict:
@@ -430,7 +430,7 @@ def test_release_series():
 
 
 @pytest.mark.parametrize("version,outputs,expected", [
-    ("1.2.3", [], False),                             # a platform on 1.2 goes through 1.3 first (D6)
+    ("1.2.3", [], False),                             # a platform on 1.2 goes through 1.3 first (ADR #137, *Migration and upgrade*)
     ("1.3.0rc1", [], True),
     ("1.3.2", [], True),
     ("1.4.0", [], True),
@@ -444,7 +444,7 @@ def test_polyris_up_updates_from_1_3_only(version, outputs, expected):
 
 
 @pytest.mark.parametrize("deployed,installing,refused", [
-    ("1.4.0", "1.3.2", True),            # below 1.4: no flag allows it (D8)
+    ("1.4.0", "1.3.2", True),            # below 1.4: no flag allows it (ADR #142 §4)
     ("1.5.1", "1.3.0rc1", True),
     ("1.4.1", "1.4.0", False),           # a rollback within 1.4 is a rollback (--allow-downgrade)
     ("1.3.2", "1.3.1", False),           # a platform that never ran 1.4
@@ -462,7 +462,7 @@ def test_a_new_platforms_name_never_has_the_form_of_a_pipelines_stack(name, vali
     assert (P.new_platform_name_errors(name) == []) is valid
 
 
-# ── The scheduler roles of 1.3's pipelines (§4.1) ───────────────────────────
+# ── The scheduler roles of 1.3's pipelines (ADR #142 §7) ───────────────────────────
 
 MACHINE = "arn:aws:states:eu-central-1:123456789012:stateMachine:acme-dev-polyris-orders"
 TRUST = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "scheduler.amazonaws.com"},
@@ -521,3 +521,17 @@ def test_the_role_polyris_deploy_made_has_no_problem():
 ])
 def test_a_role_that_differs_from_what_polyris_deploy_made_says_how(over, problem):
     assert problem in P.scheduler_role_problems(_role(**over))
+
+
+@pytest.mark.parametrize("inline, region", [
+    ({"Invoke": {"Statement": [{"Effect": "Allow", "Action": "states:StartExecution",
+                                "Resource": "arn:aws:states:us-west-2:123456789012:stateMachine:acme-dev-polyris-o"}]}},
+     "us-west-2"),
+    ({"Invoke": {"Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}}, None),
+    ({"Invoke": {"Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/k"}]}}, None),
+    ({}, None),
+    ({"A": {"Statement": []}, "B": {"Statement": []}}, None),
+])
+def test_a_scheduler_roles_region_is_its_state_machines(inline, region):
+    """Where polyris-up looks for the stack that holds a scheduler role; IAM roles carry no region."""
+    assert P.scheduler_role_region(inline) == region

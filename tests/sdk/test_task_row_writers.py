@@ -319,6 +319,8 @@ CODE_WRITERS = {
         "the run row: actions.stop_run, pause_run and resume_run (a Stop of the run, Pause, Resume)",
     ("coordination/dispatcher.py", "_send_items"): "task rows and the run row's check: dispatch_writes.task_write",
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
+    ("coordination/dispatcher.py", "_leave_attention"):
+        "a 1.2 row's attention entry, while it has no readiness fields: dispatch_writes.leave_attention_1_2",
     ("coordination/dispatcher.py", "_drop_pointers"): "another table: a row's pointers once it left its wait",
     ("coordination/dispatcher.py", "_put_pointers"): "another table: a waiting row's pointers (actions.pointer_items)",
     ("coordination/dispatcher.py", "_warn"): "warning rows (records.warning_item)",

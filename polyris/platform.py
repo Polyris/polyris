@@ -71,9 +71,9 @@ OUTPUT_START_RUN = "StartRunFunctionArn"
 #: The role every pipeline's state machine runs as; a role a task names in ``role=`` trusts it.
 OUTPUT_ORCHESTRATION_ROLE = "OrchestrationRoleArn"
 # The role every scheduled pipeline's schedule starts its state machine with, which 1.4 adds; a pipeline
-# stack imports its export (``schedule_role_export``), so the platform cannot drop it while one does (D8).
+# stack imports its export (``schedule_role_export``), so the platform cannot drop it while one does (ADR #142 §4).
 OUTPUT_SCHEDULE_ROLE = "PipelineScheduleRoleArn"
-# The managed policy the role that runs polyris-deploy holds (PLAN_IAM 1.4.0 §3.5).
+# The managed policy the role that runs polyris-deploy holds (ADR #142 §2).
 OUTPUT_DEPLOY_POLICY = "PipelineDeployPolicyArn"
 
 
@@ -125,18 +125,26 @@ class PlatformNames:
 PLATFORM_NAMES = PlatformNames()
 
 
+def platform_machine(machine_name: str) -> Optional[str]:
+    """The platform state machine whose name ``machine_name`` ends like, of any namespace, or None.
+
+    Every role and policy that a pipeline or its author holds denies the platform's machines by the end
+    of their names (``*-polyris-{name}``), so a name that ends so is a platform machine's to all of them.
+    """
+    return next((machine for machine in PLATFORM_NAMES.state_machines
+                 if machine_name.endswith(f"-polyris-{machine}")), None)
+
+
 def reserved_machine(dag_id: str) -> Optional[str]:
     """The platform state machine whose name a pipeline named ``dag_id`` would end in, or None.
 
-    A pipeline's state machine is ``{namespace}-{stage}-polyris-{dag_id}``; every role and policy that a
-    pipeline or its author holds denies the platform's machines by the end of their names, of any
-    namespace (``*-polyris-{name}``), so such a pipeline could be neither deployed nor scheduled.
+    A pipeline's state machine is ``{namespace}-{stage}-polyris-{dag_id}``; such a pipeline could be
+    neither deployed nor scheduled (``platform_machine``).
     """
-    name = f"-polyris-{dag_id}"
-    return next((machine for machine in PLATFORM_NAMES.state_machines if name.endswith(f"-polyris-{machine}")), None)
+    return platform_machine(f"-polyris-{dag_id}")
 
 
-# ── The roles a task may run as (D11) ───────────────────────────────────────
+# ── The roles a task may run as (ADR #142 §6) ───────────────────────────────────────
 
 #: The IAM path of the roles of the platform's account that a task's ``role=`` may name. Only whoever creates
 #: IAM roles can give a role a path, so an author reaches no role that nobody made for pipelines.
@@ -151,7 +159,7 @@ def default_task_role_name(namespace: str, stage: str) -> str:
 
 
 def refused_task_role(role: Optional[str], *, account: str, default_task_role: Optional[str] = None) -> bool:
-    """Whether a task's ``role=`` names a role of the platform's ``account`` that polyris may not use (D11).
+    """Whether a task's ``role=`` names a role of the platform's ``account`` that polyris may not use (ADR #142 §6).
 
     A role of another account, a role under ``TASK_ROLE_PATH`` and the platform's default task role
     (``default_task_role``, its name) pass; so does anything that is no IAM ARN (``"same"``). With
@@ -175,7 +183,7 @@ def task_role_refusal(task_id: str, role: str) -> str:
     partition, account, name = parts[1], parts[4], parts[5].rsplit("/", 1)[-1]
     return (f"Task '{task_id}': role {role} is in the platform's account, and polyris may use only roles of this "
             f"account under the path {TASK_ROLE_PATH}. Ask your platform admin to create the role under that path "
-            f"(docs: Give one pipeline its own permissions) and use its ARN, e.g. "
+            f"(docs: Give a task a role of its own) and use its ARN, e.g. "
             f"arn:{partition}:iam::{account}:role{TASK_ROLE_PATH}{name}. Roles in other accounts work as before.")
 
 # AWS caps IAM role names at 64 characters. The longest role in the template
@@ -548,10 +556,10 @@ def is_downgrade(deployed: Optional[str], installing: str) -> bool:
     return old is not None and new is not None and new < old
 
 
-#: The oldest release this polyris-up updates: a platform on 1.2 upgrades to 1.3 first (D6), and a release
+#: The oldest release this polyris-up updates: a platform on 1.2 upgrades to 1.3 first (ADR #137, *Migration and upgrade*), and a release
 #: below it is not installed. A stack deployed with ``sam deploy`` names no version; the output 1.3 adds tells.
 UPGRADES_FROM = (1, 3)
-#: The release no platform goes back below once it runs it (D8): its pipelines schedule with the platform's
+#: The release no platform goes back below once it runs it (ADR #142 §4): its pipelines schedule with the platform's
 #: schedule role, which an older release does not have. CloudFormation's lock on the role's export, which every
 #: scheduled pipeline imports, holds the same line for an older polyris-up.
 NO_ROLLBACK_BELOW = (1, 4)
@@ -582,7 +590,7 @@ def outputs_of(stack: Mapping[str, Any]) -> Dict[str, str]:
 
 
 #: What no new platform stack's name may contain: every grant of the deploy policy on pipeline stacks is on
-#: ``*-polyris-*``, which would then cover the platform's own stack (PLAN_IAM 1.4.0 §4.3). The deploy policy also
+#: ``*-polyris-*``, which would then cover the platform's own stack (ADR #142 §8). The deploy policy also
 #: denies its own platform's stack by its id, which covers a platform named so before 1.4.
 PIPELINE_INFIX = "-polyris-"
 
@@ -595,7 +603,7 @@ def new_platform_name_errors(stack_name: str) -> List[str]:
     return []
 
 
-# ── The scheduler roles that the pipelines of 1.3 made (PLAN_IAM 1.4.0 §4.1, §5.3) ──
+# ── The scheduler roles that the pipelines of 1.3 made (ADR #142 §7, §8) ──
 #
 # Until 1.4 each scheduled pipeline's stack made its own scheduler role. The deploy policy of 1.4 may pass and
 # delete such roles for one release, so that a pipeline's first redeploy removes its old role, and polyris-up
@@ -648,6 +656,16 @@ def _only_statement(document: Any, keys: Iterable[str]) -> Optional[Mapping[str,
     if not set(statement) <= {"Sid", *keys} or statement.get("Effect") != "Allow":
         return None
     return statement
+
+
+def scheduler_role_region(inline: Mapping[str, Any]) -> Optional[str]:
+    """The region of the state machine that a scheduler role's one inline policy starts, or None."""
+    if len(inline) != 1:
+        return None
+    statement = _only_statement(next(iter(inline.values())), ("Effect", "Action", "Resource"))
+    resource = _one(statement.get("Resource")) if statement else None
+    parts = resource.split(":") if isinstance(resource, str) else []
+    return parts[3] if len(parts) > 3 and parts[0] == "arn" and parts[2] == "states" and parts[3] else None
 
 
 def scheduler_role_problems(role: SchedulerRole) -> List[str]:

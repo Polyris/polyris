@@ -3,7 +3,7 @@
 A work state (``Run_Task_<type>``) calls the task's service under ``Credentials``: the default task role, or
 the task's ``role=``. The default task role allowed EMR's ``RunJobFlow`` and ``TerminateJobFlows``, which
 nothing calls, and not ``AddJobFlowSteps``, which ``Run_Task_EMR`` calls, so every same-account EMR task
-failed (IAM_HOLES_VERIFIED, claim 5). Each work state's integration needs the actions below (the Step
+failed (ADR #142 §9). Each work state's integration needs the actions below (the Step
 Functions documentation of each service integration, a ``.sync`` one with its poll, its stop and, where it
 waits on an event, the managed rule); a work state or an action without its grant fails here.
 """
@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_TASK = REPO_ROOT / "sam" / "sfn_templates" / "helpers" / "run_task" / "sfn.tpl.json"
@@ -46,20 +46,7 @@ def _work_states() -> dict:
 
 
 def _default_task_role_allows() -> set:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return loader.construct_scalar(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        return loader.construct_mapping(node)
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    template = yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
+    template = load_template(tagged=False)
     allowed: set = set()
     for statement in template["Resources"]["CrossAccountPipelinePolicy"]["Properties"]["PolicyDocument"]["Statement"]:
         if statement["Effect"] == "Allow":
@@ -85,3 +72,11 @@ def test_every_task_type_has_its_work_state():
 def test_the_default_task_role_creates_and_ends_no_cluster():
     """No work state creates or ends an EMR cluster; RunJobFlow passes any service role and instance profile."""
     assert not {"elasticmapreduce:RunJobFlow", "elasticmapreduce:TerminateJobFlows"} & _default_task_role_allows()
+
+
+def test_the_how_to_lists_every_action_a_tasks_own_role_needs():
+    """A task's own role (``role=``) makes the same calls as the default task role: the guide for the
+    infrastructure engineer who creates one names each of them."""
+    guide = (REPO_ROOT / "docs" / "how-to" / "give-a-task-a-role-of-its-own.md").read_text()
+    missing = sorted(action for needs in NEEDS.values() for action in needs if f"`{action}`" not in guide)
+    assert missing == []

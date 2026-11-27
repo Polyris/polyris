@@ -151,7 +151,7 @@ def test_specs_dynamodb_leaves_unread_are_transient_so_the_states_retry_repeats_
         lambda_start_run.handler(event(version), None)
 
 
-# ── A forged payload (PLAN_IAM 1.4.0 §6.9) ──────────────────────────────────
+# ── A forged payload (ADR #142 §5) ──────────────────────────────────
 
 
 @pytest.mark.parametrize("execution_arn", [

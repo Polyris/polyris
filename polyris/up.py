@@ -11,11 +11,11 @@
 5. deploy through a CloudFormation change set and print the console URL.
 
 Before step 4, while nothing has changed, it checks the account and the
-platform (``preflight``, PLAN_IAM 1.4.0 §4.1): it refuses a platform below 1.3,
+platform (``preflight``, ADR #142 §8): it refuses a platform below 1.3,
 a rollback below 1.4, a task of a deployed pipeline whose role is a role of
 this account outside ``/polyris-tasks/``, and a role named like a pipeline's
 scheduler role that polyris-deploy did not make. The template it deploys is
-checked against what it uploaded (§4.4).
+checked against what it uploaded (ADR #142 §8).
 
 It runs from any directory and writes nothing there. The pure logic lives in
 ``polyris/platform.py``; this module is the AWS and terminal side.
@@ -94,6 +94,7 @@ from .platform import (
     rolls_back_below_floor,
     schedule_role_export,
     scheduler_role_problems,
+    scheduler_role_region,
     select_platform_stack,
     ui_prefix,
     upgrades,
@@ -420,7 +421,7 @@ def upload_artifacts(
     """Upload code, definitions and the UI. Returns (function keys, state machine keys, UI prefix).
 
     Every file is uploaded on every run, never skipped because its key exists: an object found under a
-    key is not known to be the one polyris-up put there (PLAN_IAM 1.4.0 §4.4). The keys still carry a
+    key is not known to be the one polyris-up put there (ADR #142 §8). The keys still carry a
     content digest, since CloudFormation updates a Lambda's code only when its key changes.
     """
     uploaded = 0
@@ -452,7 +453,7 @@ def _upload_template(s3, *, bucket: str, region: str, version: str, template: Di
     """Upload the template under a key nobody can predict; (its URL, the text uploaded).
 
     The change set's template is then checked against that text (``verify_change_set_template``):
-    another writer of the bucket cannot have CloudFormation run a template of theirs (PLAN_IAM 1.4.0 §4.4).
+    another writer of the bucket cannot have CloudFormation run a template of theirs (ADR #142 §8).
     """
     body = json.dumps(template, sort_keys=True)
     key = artifact_key(version, "template", hashlib.sha256(body.encode()).hexdigest(),
@@ -574,7 +575,7 @@ def run_up(args: argparse.Namespace) -> None:
             raise UpError(f"Stack {stack_name} is not a Polyris platform stack — refusing to change it.",
                           "Pick another --namespace / --stage, or name the right stack with --stack.")
         if not upgrades(deployed, outputs_of(existing)):
-            # 1.2 support ends with 1.4 (D6): a platform on 1.2 goes through 1.3 first.
+            # 1.2 support ends with 1.4 (ADR #137, *Migration and upgrade*): a platform on 1.2 goes through 1.3 first.
             raise UpError(f"{stack_name} runs v{deployed or 'an unknown version below 1.3'}, and polyris "
                           f"{installing} upgrades a platform from 1.3 only.",
                           "Upgrade it to 1.3 first: install polyris 1.3, run its polyris-up, then run this one.")
@@ -729,19 +730,25 @@ def _crosses_into_1_4(deployed: Optional[str], installing: str) -> bool:
     return new is not None and new >= NO_ROLLBACK_BELOW and (old is None or old < NO_ROLLBACK_BELOW)
 
 
+#: The migration line of the notice: 1.5 removes the grant that lets a redeploy delete a pipeline's old
+#: scheduler role (ADR #142 §7), so every scheduled pipeline is redeployed on 1.4.
+REDEPLOY_BEFORE_1_5 = ("   Running pipelines keep running. Redeploy each scheduled pipeline before 1.5: its next "
+                       "polyris-deploy moves its schedule to the shared schedule role and deletes its old scheduler "
+                       "role, which 1.5 can no longer do.")
+
+
 def _print_deploy_policy_notice(stack: Dict[str, Any]) -> None:
-    """Message A (PLAN_IAM 1.4.0 §4.6): what the platform's update asks of its pipeline authors, in order."""
+    """What the platform's update asks of its pipeline authors, in order (ADR #142 §8)."""
     arn = outputs_of(stack).get(OUTPUT_DEPLOY_POLICY, "")
     name = arn.rsplit("/", 1)[-1] if arn else "the platform's deploy policy"
     print(_c(f"\n⚠ Pipeline authors need the new deploy policy: attach {name} ({arn or 'see the stack outputs'}) to "
              "their role or CI role and detach the old one.", YELLOW))
-    print("   Running pipelines keep running; a scheduled pipeline moves to the shared schedule role at its next "
-          "polyris-deploy.")
+    print(REDEPLOY_BEFORE_1_5)
     print("   Order: platform (done) → attach the new policy → authors' CLI 1.4 → detach the old policy → run "
           "polyris-up once more (its preflight checks again that no scheduler role was planted meanwhile).")
 
 
-# ── The checks before any change (PLAN_IAM 1.4.0 §4.1) ───────────────────────
+# ── The checks before any change (ADR #142 §8) ───────────────────────
 
 
 @contextmanager
@@ -762,10 +769,10 @@ def _permission(action: str, resource: str) -> Iterator[None]:
 
 
 def preflight(session: boto3.Session, existing: Optional[Dict[str, Any]], *, region: str, account: str) -> None:
-    """Refuse, with the list to fix, what 1.4 must not take over (PLAN_IAM 1.4.0 §4.1); changes nothing.
+    """Refuse, with the list to fix, what 1.4 must not take over (ADR #142 §8); changes nothing.
 
     - On an existing platform, a task of a deployed pipeline whose ``role=`` is a role of this account
-      outside ``/polyris-tasks/`` (D11), read from each pipeline's current spec version.
+      outside ``/polyris-tasks/`` (ADR #142 §6), read from each pipeline's current spec version.
     - In the account, a role named like a pipeline's scheduler role that is not exactly what
       polyris-deploy made: the authors' deploy policy may pass and delete such roles for one release.
     """
@@ -800,7 +807,7 @@ def preflight(session: boto3.Session, existing: Optional[Dict[str, Any]], *, reg
 
 
 def _refused_task_roles(session: boto3.Session, existing: Dict[str, Any], *, account: str) -> List[Tuple[str, str, str]]:
-    """(pipeline, task, role) of every task of a deployed pipeline whose role this platform refuses (D11)."""
+    """(pipeline, task, role) of every task of a deployed pipeline whose role this platform refuses (ADR #142 §6)."""
     specs_table = outputs_of(existing).get(OUTPUT_SPECS_TABLE, "")
     registry = outputs_of(existing).get(OUTPUT_REGISTRY_TABLE, "")
     if not specs_table or not registry:
@@ -808,7 +815,9 @@ def _refused_task_roles(session: boto3.Session, existing: Dict[str, Any], *, acc
     params = parameters_of(existing)
     default_role = default_task_role_name(params.get(PARAM_NAMESPACE, ""), params.get(PARAM_STAGE, ""))
     dynamodb = session.client("dynamodb")
-    with _permission("dynamodb:Scan", registry):
+    # The calls deployed_pipelines makes; a state machine it may not describe counts as deployed, and is checked.
+    with _permission("cloudformation:DescribeStacks, dynamodb:Scan, states:DescribeStateMachine",
+                     f"the region's stacks, {registry} and the registered state machines"):
         pipelines = deployed_pipelines(session, session.client("cloudformation"), existing,
                                        str(existing.get("StackName", "")))
     refused: List[Tuple[str, str, str]] = []
@@ -855,7 +864,7 @@ def _foreign_scheduler_roles(session: boto3.Session, *, region: str) -> List[Tup
             attached = [str(policy.get("PolicyArn", ""))
                         for page in iam.get_paginator("list_attached_role_policies").paginate(RoleName=name)
                         for policy in page.get("AttachedPolicies", [])]
-        stack, logical_id, machine = _owning_stack(session, name, described, region=region)
+        stack, logical_id, machine = _owning_stack(session, name, inline, region=region)
         problems = scheduler_role_problems(SchedulerRole(
             arn=arn, path=str(described.get("Path", "")), trust=_document(described.get("AssumeRolePolicyDocument")),
             inline=inline, attached=attached, stack=stack, logical_id=logical_id, machine=machine))
@@ -864,15 +873,17 @@ def _foreign_scheduler_roles(session: boto3.Session, *, region: str) -> List[Tup
     return found
 
 
-def _owning_stack(session: boto3.Session, name: str, role: Mapping[str, Any], *,
+def _owning_stack(session: boto3.Session, name: str, inline: Mapping[str, Any], *,
                   region: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """(stack name, the role's logical id there, the stack's pipeline state machine) of the stack that holds the
-    role, in the region its CloudFormation tag names (a pipeline of a platform in another region); Nones when no
-    stack holds it."""
-    stack_id = next((str(tag.get("Value", "")) for tag in role.get("Tags") or []
-                     if tag.get("Key") == "aws:cloudformation:stack-id"), "")
-    parts = stack_id.split(":")
-    cfn = session.client("cloudformation", region_name=parts[3] if len(parts) > 3 and parts[3] else region)
+    role; Nones when no stack holds it.
+
+    IAM is global, a pipeline stack regional: the stack is looked for in the region of the state machine the
+    role's inline policy starts (a pipeline of a platform in another region), else in ``region``. The region is
+    only where to look; CloudFormation's answer is what counts, so a planted policy that names another region
+    finds no stack there that holds the role.
+    """
+    cfn = session.client("cloudformation", region_name=scheduler_role_region(inline) or region)
     try:
         with _permission("cloudformation:DescribeStackResources", name):
             resources = cfn.describe_stack_resources(PhysicalResourceId=name).get("StackResources", [])
@@ -937,7 +948,7 @@ def _print_outputs(stack: Dict[str, Any]) -> None:
         # What the role that runs polyris-deploy holds: polyris-deploy's AccessDenied hint points here.
         print(f"   Deploy policy for pipeline authors:  {_c(outputs[OUTPUT_DEPLOY_POLICY], CYAN)}")
     if OUTPUT_ORCHESTRATION_ROLE in outputs:
-        # What the trust policy of a task's own role names (docs/how-to/give-a-pipeline-its-own-permissions.md).
+        # What the trust policy of a task's own role names (docs/how-to/give-a-task-a-role-of-its-own.md).
         print(f"   Orchestration role (a task's own role trusts it):  {_c(outputs[OUTPUT_ORCHESTRATION_ROLE], CYAN)}")
 
 
@@ -1068,7 +1079,7 @@ def run_down(args: argparse.Namespace) -> None:
 
     importers = _schedule_role_importers(cfn, stack)
     if importers:
-        # CloudFormation would refuse to delete the schedule role's export, and the stack with it (D8).
+        # CloudFormation would refuse to delete the schedule role's export, and the stack with it (ADR #142 §4).
         raise UpError(
             f"{len(importers)} pipeline stack(s) still schedule with this platform's schedule role: "
             f"{', '.join(importers)}.",

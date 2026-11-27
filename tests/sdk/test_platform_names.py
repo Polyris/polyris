@@ -7,37 +7,17 @@ or this fails (Principle #28).
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
+from sam_template import load_template
 
 from polyris.platform import PLATFORM_NAMES, platform_prefix
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 PREFIX = platform_prefix("${Namespace}", "${Stage}")
-
-
-def _template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return loader.construct_scalar(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        return loader.construct_mapping(node)
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
 
 
 def _names(kind: str, key: str) -> list:
     """The end of the name, after the platform's prefix, of every resource of the template of type ``kind``."""
     names = []
-    for resource in _template()["Resources"].values():
+    for resource in load_template(tagged=False)["Resources"].values():
         if resource["Type"] == kind:
             name = resource["Properties"][key]
             assert isinstance(name, str) and name.startswith(PREFIX), name
@@ -45,12 +25,12 @@ def _names(kind: str, key: str) -> list:
     return names
 
 
-def test_the_constant_names_every_function_of_the_template():
+def test_the_constant_names_every_function_of_theload_template(tagged=False):
     functions = _names("AWS::Serverless::Function", "FunctionName") + _names("AWS::Lambda::Function", "FunctionName")
     assert sorted(functions) == sorted(PLATFORM_NAMES.functions)
 
 
-def test_the_constant_names_every_state_machine_of_the_template():
+def test_the_constant_names_every_state_machine_of_theload_template(tagged=False):
     machines = [name for kind, key in (("AWS::Serverless::StateMachine", "Name"),
                                   ("AWS::StepFunctions::StateMachine", "StateMachineName"))
                 for name in _names(kind, key)]
@@ -67,13 +47,13 @@ def test_the_groups_of_the_constant_do_not_overlap():
 
 def _machines(names, *, executions=()) -> list:
     """What a deny list holds for these state machines, of the platform of any namespace in the account
-    (D9): each machine, qualified (``:*``) too, and the executions of those named in ``executions``."""
+    (ADR #142 §10): each machine, qualified (``:*``) too, and the executions of those named in ``executions``."""
     arns = [f"arn:aws:states:*:*:stateMachine:*-polyris-{n}{q}" for n in names for q in ("", ":*")]
     return sorted(arns + [f"arn:aws:states:*:*:execution:*-polyris-{n}:*" for n in executions])
 
 
 def _deny(resource: str, sid: str) -> dict:
-    properties = _template()["Resources"][resource]["Properties"]
+    properties = load_template(tagged=False)["Resources"][resource]["Properties"]
     documents = ([properties["PolicyDocument"]] if "PolicyDocument" in properties
                  else [p["PolicyDocument"] for p in properties["Policies"]])
     found = [s for doc in documents for s in doc["Statement"] if s.get("Sid") == sid]
@@ -113,3 +93,12 @@ def test_the_deploy_policy_touches_none_of_the_platforms_machines():
 def test_the_console_starts_no_run_task():
     statement = _deny("ConsoleApiRole", "NeverStartRunTask")
     assert sorted(statement["Resource"]) == _machines((PLATFORM_NAMES.run_task,))
+
+
+def test_the_engine_stops_no_execution_of_a_platform_machine_but_run_task():
+    """The dispatcher, the sweeper and AssetFanout stop a row's run_task and a run's own execution; a run row
+    that names a backfill or a test machine of any platform is a forged one (ADR #142 §5)."""
+    statement = _deny("CoordinationReconcilePolicy", "NeverStopThePlatformsOtherMachines")
+    others = [m for m in PLATFORM_NAMES.state_machines if m != PLATFORM_NAMES.run_task]
+    assert sorted(statement["Resource"]) == sorted(f"arn:aws:states:*:*:execution:*-polyris-{m}:*" for m in others)
+    assert statement["Action"] == ["states:StopExecution"]

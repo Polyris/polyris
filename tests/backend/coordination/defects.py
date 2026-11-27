@@ -34,7 +34,7 @@ DEFECTS = {
     "R-W1": "A limit that falls due during a pause fires in the pause, or is lost; it must fire after the "
             "Resume, moved by the paused time",
     "R-U1": "A 1.2 row left in flight, which has no readiness fields, fails its pass and warns at every sweep "
-            "instead of being skipped with a log line (D6)",
+            "instead of being skipped with a log line (ADR #137, *Migration and upgrade*)",
     "R-N2": "A task that runs after a final failure reads an older run's output of the same date; the upstream "
             "must reach it as its status alone (ADR #137 §1, ADR #138 §2)",
     "R-T2": "A timed-out attempt ends the task without its retries; a timeout is a failed attempt (ADR #137 §1)",

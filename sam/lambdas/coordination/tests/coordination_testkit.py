@@ -183,7 +183,7 @@ def legacy_fact(asset: str, key: str, *, event_time: str) -> Dict[str, Any]:
 
 def register(ddb, pipeline: str, execution_arn: str) -> None:
     """The registry names the state machine of ``execution_arn`` as ``pipeline``'s, as the pipeline's registration
-    does before its Start_Run: Start_Run writes rows only for an execution of it (PLAN_IAM 1.4.0 §6.9)."""
+    does before its Start_Run: Start_Run writes rows only for an execution of it (ADR #142 §5)."""
     machine = execution_arn.replace(":execution:", ":stateMachine:", 1).rsplit(":", 1)[0]
     ddb.Table(TABLES["PIPELINES_TABLE"][1]).update_item(
         Key={"pipeline_name": pipeline}, UpdateExpression="SET sfn_arn = :arn", ExpressionAttributeValues={":arn": machine})

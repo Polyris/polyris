@@ -281,7 +281,7 @@ def test_pipeline_dag_no_dag_in_registry(mocker):
 
 
 def test_a_1_2_runs_dag_snapshot_is_not_read_the_pipelines_specs_are(mocker, deploy_specs):
-    """D6: 1.4 reads no DAG snapshot of a 1.2 run; such a run shows the pipeline's current graph."""
+    """ADR #137, *Migration and upgrade*: 1.4 reads no DAG snapshot of a 1.2 run; such a run shows the pipeline's current graph."""
     snapshot_dag = {'nodes': [{'id': 'a'}, {'id': 'b'}, {'id': 'c'}], 'edges': []}
     mock_pipelines = MockRepo([deploy_specs('daily', [{'task_id': 'a'}, {'task_id': 'b'}, {'task_id': 'd'}])])
     mock_execs = MockRepo([

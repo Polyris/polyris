@@ -1,9 +1,9 @@
-"""A task's ``role=`` of the platform's account: only a role under ``/polyris-tasks/`` (D11, PLAN_IAM 1.4.0 §6.4).
+"""A task's ``role=`` of the platform's account: only a role under ``/polyris-tasks/`` (ADR #142 §6).
 
 The orchestration role may assume a role of its own account only under that path, or the platform's default
 task role, so ``polyris-validate`` (with ``account_id`` in ``config.py``) and ``polyris-deploy`` (after
-``sts:GetCallerIdentity``) refuse any other with message C. A role in another account passes, as before.
-A ``dag_id`` whose state machine would end like a platform machine's is refused too (§6.5).
+``sts:GetCallerIdentity``) refuse any other, naming the fix. A role in another account passes, as before.
+A ``dag_id`` whose state machine would end like a platform machine's is refused too (ADR #142 §5).
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_message_c_names_the_role_the_path_and_the_arn_to_use():
     assert message == (
         f"Task 'load': role arn:aws:iam::{ACCOUNT}:role/etl-role is in the platform's account, and polyris may use "
         f"only roles of this account under the path {TASK_ROLE_PATH}. Ask your platform admin to create the role "
-        "under that path (docs: Give one pipeline its own permissions) and use its ARN, e.g. "
+        "under that path (docs: Give a task a role of its own) and use its ARN, e.g. "
         f"arn:aws:iam::{ACCOUNT}:role/polyris-tasks/etl-role. Roles in other accounts work as before.")
 
 

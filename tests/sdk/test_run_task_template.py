@@ -687,7 +687,7 @@ def test_lambda_user_payload_merges_under_orchestration(template):
 def test_the_platforms_keys_win_over_the_run_input(state, field):
     """A run's input reaches a task's input as its variables, and a console user may set any of them. The
     pipeline's name and the tokens table are the platform's: a variable of either name pointed the task's
-    xcom at another pipeline's outputs or at another table (IAM_HOLES_VERIFIED, claim 4). The date keys
+    xcom at another pipeline's outputs or at another table (ADR #142, *Context*). The date keys
     stay the variables' to change."""
     from sfn_jsonata import evaluate, load_template
 

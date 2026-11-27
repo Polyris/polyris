@@ -62,7 +62,8 @@ def _http_post_json(url: str, payload: dict, timeout: int = 5) -> int:
 class Notifier:
     """Base class. A notifier formats a failure into a channel-specific payload
     and delivers it. `config` is the per-channel dict from alert_config;
-    `failure` is the failure context (pipeline, task, error, links, …)."""
+    `failure` is the failure that index.platform_failure built from the platform's
+    rows: pipeline_name, task_name, execution_name, date and error."""
 
     channel = 'base'
 
@@ -112,7 +113,6 @@ class WebhookNotifier(Notifier):
             "task": failure.get('task_name'),
             "error": self._error_short(failure),
             "date": failure.get('date', ''),
-            "links": failure.get('links') or [],
         }
         try:
             status = _http_post_json(url, payload)

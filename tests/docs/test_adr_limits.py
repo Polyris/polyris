@@ -30,7 +30,7 @@ CAP_SLACK = 1_024
 OVER_THE_LIMIT = {
     # hub of the engine; compressed from 179 KB, then raised by the review of the branch to
     # keep the probed AWS behaviour that code and tests cite (*Probed AWS behaviour*)
-    "adr-137-tasks-as-rows.md": 125_676,
+    "adr-137-tasks-as-rows.md": 121_712,
     # hub; compressed from 67 KB, then raised by the same review for §6.1's DependsOn rule
     "adr-130-coordination-reconciler.md": 34_900,
     "adr-51-backfill-unification.md": 24_800,  # era spec, not yet split

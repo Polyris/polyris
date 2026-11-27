@@ -1,5 +1,6 @@
 """
-Pipeline-registry reads for the notify Lambda (ADR #103).
+The platform's rows that the notify Lambda reads (ADR #103): the registry's alert config, and the task row a
+failure names (ADR #142 §5).
 
 The single source of truth for per-pipeline alert config is the registry table's
 ``alert_config`` attribute. Both the batch fan-out (index.py) and the directed
@@ -42,3 +43,22 @@ def get_alert_config(pipeline_name: str) -> Dict[str, Any]:
         log.error('registry', 'Failed to read alert_config',
                   pipeline=pipeline_name, error_type=type(e).__name__, error=str(e))
         return {}
+
+
+_tokens = None
+
+
+def tokens_table():
+    """Lazy DynamoDB *resource* table for the task rows (``pipeline-tokens``)."""
+    global _tokens
+    if _tokens is None:
+        _tokens = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+    return _tokens.Table(os.environ.get('TOKENS_TABLE', 'pipeline-tokens'))
+
+
+def get_task_row(execution_name: str) -> Dict[str, Any]:
+    """The task row under ``execution_name``, consistently, or {} when there is none. A failed read raises: the
+    caller decides that an alert it cannot check is not sent, and says so."""
+    resp = tokens_table().get_item(Key={'execution_name': execution_name}, ConsistentRead=True)
+    item = resp.get('Item') or {}
+    return item if isinstance(item, dict) else {}

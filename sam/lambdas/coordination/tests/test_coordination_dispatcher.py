@@ -995,7 +995,9 @@ def test_a_countdown_that_ended_at_the_check_is_no_lost_hint(world):
 
 @pytest.mark.parametrize("status", ["waiting", "waiting_delay", "running"])
 def test_a_row_a_12_run_left_is_skipped_with_a_log_line_and_never_warns(world, status):
-    """1.4 no longer stops such a row: it expires with its history TTL (D6), and no sweep turns it into an error."""
+    """1.4 no longer stops such a row: it expires with its history TTL (ADR #137, *Migration and upgrade*), no
+    sweep turns it into an error, and it leaves the attention index, so neither the sweeps nor the self-check's
+    oldest overdue row meet it again."""
     old = "load-2026-11-12-run-2026-11-12-0ld0ld01"
     row = {"execution_name": old, "task_name": "load", "status": status, "pipeline_execution": "old-run",
            "attention": attention.attention(attention.WAITING, old), "attention_at": "2026-11-12T05:00:00.000Z"}
@@ -1005,6 +1007,7 @@ def test_a_row_a_12_run_left_is_skipped_with_a_log_line_and_never_warns(world, s
                                             check=True, orphan_keys=[old])
         assert (result["action"], result["stopped"]) == ("orphans", 0)
     assert item(world, old)["status"] == status
+    assert not {"attention", "attention_at"} & set(item(world, old))
     assert world.client.get_item(TableName=table("TOKENS_TABLE"),
                                  Key={"execution_name": {"S": f"_notify_warn_coordination_{old}"}}).get("Item") is None
 

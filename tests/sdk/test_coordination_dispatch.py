@@ -473,7 +473,7 @@ def test_a_run_row_reads_back_with_its_pipeline_and_its_start():
     assert dispatch.run_view({run_row.TABLE_KEY: "_run_orders"}).started_at is None
 
 
-# ── the rows that a 1.2 run left (invariant 11, D6) ──────────────────────────
+# ── the rows that a 1.2 run left (invariant 11, ADR #137, *Migration and upgrade*) ──────────────────────────
 
 def test_a_row_without_readiness_fields_is_one_a_12_run_left_and_no_pass_reads_it():
     old = {task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value}

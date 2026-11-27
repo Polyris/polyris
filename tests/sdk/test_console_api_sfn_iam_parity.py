@@ -109,7 +109,7 @@ def _statements() -> list:
 
 
 def test_the_console_starts_only_the_platforms_state_machines_and_never_run_task():
-    """The console started any state machine of the account (IAM_HOLES_VERIFIED, claim 6c). Its Run starts a
+    """The console started any state machine of the account (ADR #142, *Context*). Its Run starts a
     registered pipeline, the overlay's backfill bulk_backfill; run_task is the dispatcher's alone, of any
     platform in the account."""
     from polyris.platform import PLATFORM_NAMES

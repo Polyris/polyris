@@ -1,40 +1,19 @@
-"""The platform's roles that a pipeline and its schedule run as (PLAN_IAM 1.4.0 §3.1–§3.3, D11).
+"""The platform's roles that a pipeline and its schedule run as (ADR #142 §4–§6).
 
 A pipeline author can run any ASL under the orchestration role, so its grants, not the DSL, are the
-boundary (IAM_HOLES_VERIFIED). These pin what each role may never do; the deny lists' names are pinned to
+boundary (ADR #142 §5, §10). These pin what each role may never do; the deny lists' names are pinned to
 ``platform.PLATFORM_NAMES`` in ``test_platform_names.py``, the deploy policy in ``test_deploy_policy.py``,
 each work state of run_task in ``test_run_task_work_iam.py``.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
+from sam_template import load_template
 
 from polyris.platform import (NAMESPACE_STAGE_MAX_LEN, OUTPUT_DEPLOY_POLICY, OUTPUT_SCHEDULE_ROLE,
                               schedule_role_export)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
-
-def _template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {node.tag: loader.construct_scalar(node)}
-        if isinstance(node, yaml.SequenceNode):
-            return {node.tag: loader.construct_sequence(node)}
-        return loader.construct_mapping(node)
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
-
-
-TEMPLATE = _template()
+TEMPLATE = load_template(tagged=True)
 RESOURCES = TEMPLATE["Resources"]
 THIS_ACCOUNT = {"StringEquals": {"aws:SourceAccount": {"!Ref": "AWS::AccountId"}}}
 
@@ -59,7 +38,7 @@ def _trust(role: str) -> list:
     return RESOURCES[role]["Properties"]["AssumeRolePolicyDocument"]["Statement"]
 
 
-# ── The schedule role (§3.1) ────────────────────────────────────────────────────────────────────────
+# ── The schedule role (ADR #142 §4) ────────────────────────────────────────────────────────────────────────
 
 
 def test_the_schedule_role_is_trusted_by_scheduler_of_this_account_alone():
@@ -83,7 +62,7 @@ def test_the_schedule_roles_name_fits_iam_and_stays_out_of_the_migration_grant()
 
 
 def test_the_schedule_role_is_exported_under_the_name_polyris_deploy_imports():
-    """A pipeline stack imports it (D8): CloudFormation keeps the platform from dropping it while one does.
+    """A pipeline stack imports it (ADR #142 §4): CloudFormation keeps the platform from dropping it while one does.
     polyris-deploy names the export from the platform's Namespace and Stage (Principle #28)."""
     output = TEMPLATE["Outputs"][OUTPUT_SCHEDULE_ROLE]
     assert output["Value"] == {"!GetAtt": "PipelineScheduleRole.Arn"}
@@ -91,7 +70,17 @@ def test_the_schedule_role_is_exported_under_the_name_polyris_deploy_imports():
     assert TEMPLATE["Outputs"][OUTPUT_DEPLOY_POLICY]["Value"] == {"!Ref": "PipelineDeployPolicy"}
 
 
-# ── The orchestration role (§3.2) ───────────────────────────────────────────────────────────────────
+# ── The orchestration role (ADR #142 §5) ───────────────────────────────────────────────────────────────────
+
+
+def test_the_default_task_role_is_trusted_by_the_orchestration_role_and_step_functions_of_this_account():
+    """Step Functions of any account could take it as a service principal without the account's condition."""
+    orchestration, service = _trust("CrossAccountPipelineRole")
+    assert orchestration["Principal"] == {
+        "AWS": {"!Sub": "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-orchestration-role"}}
+    assert "Condition" not in orchestration
+    assert service["Principal"] == {"Service": "states.amazonaws.com"}
+    assert service["Condition"] == THIS_ACCOUNT
 
 
 def test_the_orchestration_role_is_trusted_by_step_functions_of_this_account_alone():
@@ -102,12 +91,12 @@ def test_the_orchestration_role_is_trusted_by_step_functions_of_this_account_alo
 
 
 def test_the_orchestration_role_assumes_no_role_of_this_account_but_the_default_task_role_and_polyris_tasks():
-    """A same-account role= reached any role that trusts the account, a CDK deploy role among them (claim 2, D11)."""
+    """A same-account role= reached any role that trusts the account, a CDK deploy role among them (ADR #142 §6)."""
     (deny,) = [s for s in _statements("OrchestrationRolePolicy") if s.get("Sid") == "DenyAssumeRoleInThisAccount"]
     assert deny["Effect"] == "Deny" and _actions(deny) == ["sts:AssumeRole"]
     assert deny["NotResource"] == [{"!GetAtt": "CrossAccountPipelineRole.Arn"},
                                    {"!Sub": "arn:aws:iam::${AWS::AccountId}:role/polyris-tasks/*"}]
-    # IfExists: a request without the key is denied, so a gap fails closed (V-C).
+    # IfExists: a request without the key is denied, so a gap fails closed (ADR #142 §6).
     assert deny["Condition"] == {"StringEqualsIfExists": {"aws:ResourceAccount": {"!Ref": "AWS::AccountId"}}}
 
 
@@ -130,7 +119,7 @@ def test_the_roles_a_pipeline_runs_as_pass_a_role_to_ecs_tasks_alone():
         assert all(_actions(s) == ["iam:PassRole"] for s in passes), policy
 
 
-# ── The default task role (§3.3) ────────────────────────────────────────────────────────────────────
+# ── The default task role (ADR #142 §5) ────────────────────────────────────────────────────────────────────
 
 
 def test_the_default_task_role_describes_and_stops_executions_by_their_arn():

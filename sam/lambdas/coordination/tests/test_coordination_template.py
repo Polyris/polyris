@@ -428,7 +428,8 @@ def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(reso
                   if s["Action"] == ["states:DescribeExecution"]]
     [ended] = [s for s in _statements(resources, "ReconcileRole", managed=False)
                if s["Action"] == ["states:DescribeExecution"]]
-    [stop] = [s for s in _statements(resources, "ReconcileRole") if s["Action"] == ["states:StopExecution"]]
+    [stop] = [s for s in _statements(resources, "ReconcileRole")
+             if s["Action"] == ["states:StopExecution"] and s["Effect"] == "Allow"]
     execution = "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:"
     for statement in (describe, ended, stop):
         [arn] = statement["Resource"]

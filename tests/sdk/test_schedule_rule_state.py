@@ -6,10 +6,9 @@ History, in order:
 
 1. `dag.is_paused_upon_creation=True` had ZERO effect on the real deployed
    CloudFormation resource — the template's "State" property was hardcoded
-   "ENABLED" unconditionally in deploy.py's real code path. A DIFFERENT,
-   never-called function (generators.generate_eventbridge_schedule) already
-   had the correct conditional logic, but nothing in the real deploy flow
-   ever invoked it — dead code that looked like it worked.
+   "ENABLED" unconditionally in deploy.py's real code path, while a function
+   nothing in the deploy flow called had the right logic. 1.4 removed that
+   function; deploy.py's template is the one place a schedule is written.
 
 2. `aws cloudformation deploy` only diffs the new template against what
    CloudFormation tracked as the last-applied template, not the resource's
@@ -26,7 +25,7 @@ History, in order:
    get_schedule/update_schedule instead of the classic events client's
    enable_rule/disable_rule, since Scheduler has no simple toggle API.
 
-4. 1.4 (PLAN_IAM 1.4.0 §6.1): the pipeline stack creates no role. Its schedule
+4. 1.4 (ADR #142 §4): the pipeline stack creates no role. Its schedule
    starts the state machine with the platform's shared schedule role, imported
    from the platform's export; polyris-deploy needs no IAM write action.
 """
@@ -89,7 +88,7 @@ class TestScheduleResourceInTemplate:
         assert rule["Properties"]["FlexibleTimeWindow"] == {"Mode": "OFF"}
 
     def test_the_pipeline_stack_holds_no_iam_resource(self):
-        """An author holds no IAM write action (D3): the stack creates no role, so its deploy needs none."""
+        """An author holds no IAM write action (ADR #142 §1): the stack creates no role, so its deploy needs none."""
         template = _generate_cfn_template(
             _scheduled_dag(), namespace="test", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
@@ -101,7 +100,7 @@ class TestScheduleResourceInTemplate:
     def test_schedule_target_imports_the_platforms_schedule_role(self):
         """The schedule's Target.RoleArn is the platform's schedule role, imported from its export, not
         role_arn (the pipeline's Step Functions execution role): two roles, two trust policies. The import
-        keeps the platform from dropping the role while a pipeline uses it (D8)."""
+        keeps the platform from dropping the role while a pipeline uses it (ADR #142 §4)."""
         dag = _scheduled_dag()
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
@@ -333,7 +332,7 @@ _OUTPUTS_1_3 = [o for o in _SAM_OUTPUTS if o["OutputKey"] not in ("PipelineSched
 
 
 class TestTheDeployHoldsNoIam:
-    """PLAN_IAM 1.4.0 §5.5, §6.1, §6.3: the pipeline stack creates no role, so polyris-deploy needs no IAM
+    """ADR #142 §2, §4: the pipeline stack creates no role, so polyris-deploy needs no IAM
     write and no capability; its schedule imports the platform's role; a role without the deploy policy
     is told which policy to attach."""
 
@@ -405,7 +404,7 @@ class TestTheDeployHoldsNoIam:
 
 
 class TestALargeTemplateIsTheOneUploaded:
-    """PLAN_IAM 1.4.0 §5.5: a template over the inline limit goes through the results bucket. Its key is
+    """ADR #142 §8: a template over the inline limit goes through the results bucket. Its key is
     one nobody can predict, and the change set runs only the template that was uploaded."""
 
     @pytest.fixture(autouse=True)

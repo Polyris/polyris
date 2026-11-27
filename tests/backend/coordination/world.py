@@ -654,7 +654,7 @@ class World:
                            body={"date": run.date, "pipeline_execution": run.name, "with_dependants": True})
 
     def upgrade_platform(self, *, statuses: Optional[Dict[str, str]] = None) -> None:
-        """Make the runs the World started into what a 1.2 platform left in flight when it was upgraded (D6).
+        """Make the runs the World started into what a 1.2 platform left in flight when it was upgraded (ADR #137, *Migration and upgrade*).
 
         The World runs 1.3's engine alone, so the runs it started stand in for 1.2's and are made into what 1.2
         leaves: their executions were stopped as the update's cleanup began; they have no run row and no

@@ -166,7 +166,7 @@ def row_view(item: Mapping[str, Any]) -> RowView:
 
 def written_before_1_3(item: Mapping[str, Any]) -> bool:
     """Whether a task row was written by a run of 1.2: it carries no readiness fields. 1.4 no longer stops such a
-    row, whose run row is missing; it expires with its history TTL (D6)."""
+    row, whose run row is missing; it expires with its history TTL (ADR #137, *Migration and upgrade*)."""
     return task_row.READINESS not in item
 
 

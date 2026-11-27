@@ -11,8 +11,8 @@ lease; a run that cannot take it exits. Within its budget it:
       that never became active (§4). An execution's end on EventBridge makes
       that check come at once for its own execution; a lost event leaves it
       to this one (§7). The rows of a run whose run row is
-      missing, such as those a 1.2 run left in flight, are stopped
-      (invariant 11);
+      missing are stopped (invariant 11); a row a 1.2 run left in
+      flight is skipped and leaves the attention index, and expires;
     * after each check moves the run row's due time on by the backoff (at most
       30 minutes) and clears its ``left_at``, a failed pass included, so one
       broken run holds neither the budget nor the System status; the

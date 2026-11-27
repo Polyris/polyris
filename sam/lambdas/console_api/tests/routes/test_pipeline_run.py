@@ -2,7 +2,7 @@
 
 For a name the registry did not hold, the route listed every state machine of the account and
 started the one whose name was closest, and its 404 listed them all: a console user could start
-`run_task`, `bulk_backfill` or any state machine of the account (IAM_HOLES_VERIFIED, claim 6c).
+`run_task`, `bulk_backfill` or any state machine of the account (ADR #142, *Context*).
 The registry is the one source now; the tables are moto and Step Functions is the faked boundary
 (Principle #14).
 """

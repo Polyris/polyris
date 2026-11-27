@@ -80,7 +80,7 @@ def _template() -> dict:
 
 
 #: The one resource a step may need its actions on that is narrower than any: HttpTask reads the credentials of
-#: the EventBridge connection it names, which AWS keeps in a secret of the connection's own (PLAN_IAM 1.4.0 §3.2).
+#: the EventBridge connection it names, which AWS keeps in a secret of the connection's own (ADR #142 §5).
 CONNECTION_SECRETS = "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:events!connection/*"
 
 
@@ -101,7 +101,7 @@ def _allowed_on_any_resource() -> set:
 
 def test_the_role_reads_no_secret_but_a_connections():
     """Secrets on any resource let every pipeline author read every secret of the account with one state
-    (IAM_HOLES_VERIFIED, claim 6a)."""
+    (ADR #142, *Context*)."""
     policy = _template()["Resources"]["OrchestrationRolePolicy"]["Properties"]["PolicyDocument"]
     resources = [st["Resource"] for st in policy["Statement"]
                  if any(a.startswith("secretsmanager:") for a in ([st["Action"]] if isinstance(st["Action"], str)
@@ -130,7 +130,7 @@ def test_every_direct_step_class_is_checked():
 def test_the_direct_steps_never_reach_the_platforms_own_data(policy):
     """AllowDirectSteps reaches any table and bucket, and the default task role any bucket. The console's
     tokens, the task specs, the dependency pointers, the console's files, the release's artifacts and the
-    pipeline templates a deployer is about to run stay out of reach, of every platform in the account (D9): a
+    pipeline templates a deployer is about to run stay out of reach, of every platform in the account (ADR #142 §10): a
     DynamoDBTask could write the console an admin token, an S3Task the console's files or the artifacts the
     next platform update deploys (the break review of ADR #140). Neither role uses them."""
     statements = {s.get("Sid"): s for s in _template()["Resources"][policy]["Properties"]["PolicyDocument"]["Statement"]}

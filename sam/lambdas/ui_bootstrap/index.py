@@ -21,7 +21,7 @@ Delete:
 Every value it acts on comes from its environment, which the template sets
 (``SETTINGS``), never from the event: a ``Custom::`` resource of another stack can
 name this function as its ServiceToken, and its event would otherwise choose the
-buckets, the distribution and the parent stack (PLAN_IAM 1.4.0 §6.9). The custom
+buckets, the distribution and the parent stack (ADR #142 §5). The custom
 resource's properties carry the same values only so that CloudFormation sends an
 Update when one changes; the template test holds them equal.
 

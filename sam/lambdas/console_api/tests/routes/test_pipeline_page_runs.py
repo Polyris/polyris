@@ -164,7 +164,7 @@ def test_a_1_3_run_draws_the_spec_version_its_run_row_names(world):
 
 
 def test_a_1_2_run_draws_no_dag_snapshot_but_the_pipelines_graph(world):
-    """D6: a run from before 1.3 has no run row, and 1.4 reads no DAG snapshot: the run shows the pipeline's
+    """ADR #137, *Migration and upgrade*: a run from before 1.3 has no run row, and 1.4 reads no DAG snapshot: the run shows the pipeline's
     current graph, here inferred from its rows since the registry names no specs."""
     legacy = 'orders-run-2026-11-20-legacy01'
     world.table.put_item(Item={'execution_name': f'dag_snapshot::{legacy}', 'pipeline_execution': legacy,
@@ -230,7 +230,7 @@ def test_the_history_names_a_failed_direct_step(world):
 
 
 def test_a_run_from_before_1_3_left_unfinished_shows_its_rows_as_they_are(world):
-    """D6: 1.4 marks nothing stale. A run of 1.2 with a row left unfinished shows running until its rows expire."""
+    """ADR #137, *Migration and upgrade*: 1.4 marks nothing stale. A run of 1.2 with a row left unfinished shows running until its rows expire."""
     from polyris.coordination import task_spec
     from routes.tasks import get_all_tasks
     old = 'orders-run-2026-11-19-0ld0ld00'

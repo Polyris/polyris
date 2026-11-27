@@ -71,7 +71,7 @@ def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
     1. ``run`` — a run started on 1.3: the specs of the version its run row names, the
        graph it ran with (ADR #137 §8);
     2. ``registry`` — the specs of the version the registry names: the current definition, which a
-       run from before 1.3 (no run row) shows too (D6);
+       run from before 1.3 (no run row) shows too (ADR #137, *Migration and upgrade*);
     3. ``inferred`` — from the run's task rows, or the latest run of the date's, when no
        specs can be read. No route scans the tasks table (ADR #137 §5).
     """

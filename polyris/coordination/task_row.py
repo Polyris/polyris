@@ -37,7 +37,7 @@ SPEC_ID = run_row.SPEC_ID
 SPEC_HASH = task_spec.ROW_TEXT_HASH
 READINESS = task_spec.ROW_READINESS
 #: The fence of every write of a task row (ADR #137 §3, Rule 47): under the generation the writer holds. A row
-#: without one is a 1.2 run's, which no writer of 1.4 writes (D6).
+#: without one is a 1.2 run's, which no writer of 1.4 writes (ADR #137, *Migration and upgrade*).
 FENCE = "#g = :g"
 #: The index of a run's rows by the run's execution name (template.yaml). A pass reads it only for a run whose run
 #: row is missing, which names no spec version to find them by (invariant 11).

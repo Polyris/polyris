@@ -307,7 +307,7 @@ def test_template_api_url_matches_deploy_sh():
 
 
 def test_the_template_sets_every_value_the_lambda_reads_and_the_properties_repeat_them(lam):
-    """The function reads its environment (PLAN_IAM 1.4.0 §6.9); each property of the custom resource
+    """The function reads its environment (ADR #142 §5); each property of the custom resource
     holds the same value, so CloudFormation sends an Update exactly when one of them changes."""
     resources = _template()["Resources"]
     variables = resources["UiBootstrapFunction"]["Properties"]["Environment"]["Variables"]

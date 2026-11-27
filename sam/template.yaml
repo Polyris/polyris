@@ -647,11 +647,19 @@ Resources:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
+          # A run_task work state assumes it through its Credentials, as the orchestration role.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-orchestration-role"
+            Action: sts:AssumeRole
+          # Step Functions of this account alone, as the orchestration role's trust (ADR #142 §5).
           - Effect: Allow
             Principal:
               Service: states.amazonaws.com
-              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-orchestration-role"
             Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
       Description: >
         Role assumed by orchestration when running task SFNs in same account.
         For cross-account: replace with a role in the target account.
@@ -708,7 +716,7 @@ Resources:
             Condition:
               StringEquals:
                 iam:PassedToService: ecs-tasks.amazonaws.com
-          # The managed rules through which a .sync work state learns its job ended (V-S).
+          # The managed rules through which a .sync work state learns its job ended (ADR #142 §9).
           - Effect: Allow
             Action:
               - events:PutTargets
@@ -791,8 +799,7 @@ Resources:
               - batch:TerminateJob
             Resource: "*"
           # A pipeline invokes start-run and notify; the platform's other functions are its own, of
-          # every platform in the account. The
-          # qualified ARNs (:*) cover a version or alias (V-I).
+          # every platform in the account. The qualified ARNs (:*) cover a version or alias.
           - Sid: NeverThePlatformsFunctions
             Effect: Deny
             Action: lambda:InvokeFunction
@@ -972,9 +979,9 @@ Resources:
               - sts:AssumeRole
             Resource: "*"
           # A task's role= may name a role in another account, or a role of this account under
-          # the path /polyris-tasks/, which only whoever creates IAM roles can give (D11).
+          # the path /polyris-tasks/, which only whoever creates IAM roles can give (ADR #142 §6).
           # IfExists denies when the request carries no aws:ResourceAccount, so a gap fails
-          # closed (V-C).
+          # closed (ADR #142 §6).
           - Sid: DenyAssumeRoleInThisAccount
             Effect: Deny
             Action:
@@ -1028,7 +1035,7 @@ Resources:
               - elasticmapreduce:CancelSteps
               - elasticmapreduce:DescribeStep
             Resource: "*"
-          # HttpTask: an EventBridge connection keeps its credentials in a secret of its own (V-E).
+          # HttpTask: an EventBridge connection keeps its credentials in a secret of its own (ADR #142 §5).
           - Sid: AllowSecrets
             Effect: Allow
             Action:
@@ -1055,8 +1062,7 @@ Resources:
               - dynamodb:Scan
             Resource: "*"
           # A pipeline invokes start-run and notify; the platform's other functions are its own, of
-          # every platform in the account. The
-          # qualified ARNs (:*) cover a version or alias (V-I).
+          # every platform in the account. The qualified ARNs (:*) cover a version or alias.
           - Sid: NeverThePlatformsFunctions
             Effect: Deny
             Action: lambda:InvokeFunction
@@ -1262,8 +1268,10 @@ Resources:
       Environment:
         Variables:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+          # The task row an alert names: its pipeline, task and date come from there, never from the event.
+          TOKENS_TABLE: !Ref PipelineTokensTable
           # The console's API, which an action's message links to. From here, never from the event: a
-          # pipeline's roles may invoke this function (PLAN_IAM 1.4.0 §6.9).
+          # pipeline's roles may invoke this function (ADR #142 §5).
           CONSOLE_API_ENDPOINT: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
 
   ReconcileFunction:
@@ -1589,6 +1597,12 @@ Resources:
                   - dynamodb:GetItem
                 Resource:
                   - !GetAtt PipelineRegistryTable.Arn
+              # The task row an alert names, which must be one of the event's pipeline (ADR #142 §5).
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -1669,6 +1683,17 @@ Resources:
               - states:StopExecution
             Resource:
               - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*-polyris-*:*"
+          # No run is an execution of a platform machine but run_task: a forged Start_Run payload, or a run row a
+          # direct step wrote, must not have the engine stop a backfill or a test machine of any platform (ADR #142 §5).
+          - Sid: NeverStopThePlatformsOtherMachines
+            Effect: Deny
+            Action:
+              - states:StopExecution
+            Resource:
+              - "arn:aws:states:*:*:execution:*-polyris-bulk-backfill:*"
+              - "arn:aws:states:*:*:execution:*-polyris-test-quick:*"
+              - "arn:aws:states:*:*:execution:*-polyris-test-success:*"
+              - "arn:aws:states:*:*:execution:*-polyris-test-failure:*"
 
   ReconcileRole:
     Type: AWS::IAM::Role
@@ -1943,7 +1968,7 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # The role every scheduled pipeline's schedule starts its state machine with (PLAN_IAM 1.4.0 §3.1):
+  # The role every scheduled pipeline's schedule starts its state machine with (ADR #142 §4):
   # pipeline stacks import its ARN, so the platform cannot drop it while a pipeline uses it.
   PipelineScheduleRole:
     Type: AWS::IAM::Role
@@ -2636,7 +2661,7 @@ Resources:
       LoggingConfig:
         LogFormat: Text
         LogGroup: !Ref UiBootstrapLogGroup
-      # What it acts on, from here and never from its event (PLAN_IAM 1.4.0 §6.9). UiBootstrap's
+      # What it acts on, from here and never from its event (ADR #142 §5). UiBootstrap's
       # properties repeat these values so that CloudFormation sends an Update when one changes.
       Environment:
         Variables:
@@ -2815,7 +2840,7 @@ Resources:
                 "dynamodb:LeadingKeys":
                   - "output#*"
 
-  # The policy a pipeline author's role or CI role holds for polyris-deploy (PLAN_IAM 1.4.0 §5):
+  # The policy a pipeline author's role or CI role holds for polyris-deploy (ADR #142 §2):
   # the infrastructure engineer attaches it once. No IAM write action but the migration grant
   # below; each role it may pass is named with the one service it goes to. Never change its
   # name or Description: CloudFormation would replace it (Principle #33).
@@ -2923,7 +2948,7 @@ Resources:
             Condition:
               StringEquals:
                 iam:PassedToService: scheduler.amazonaws.com
-          # The migration grant, for 1.4 only (PLAN_IAM 1.4.0 §5.3): a pipeline deployed before 1.4
+          # The migration grant, for 1.4 only (ADR #142 §7): a pipeline deployed before 1.4
           # has a scheduler role of its own, which its first redeploy deletes, and which a failed
           # redeploy passes back to its schedule. polyris-up refuses to install 1.4 unless every
           # such role is the form polyris-deploy generated. tests/sdk/test_deploy_policy.py fails

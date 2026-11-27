@@ -1,42 +1,24 @@
-"""The deploy policy, the platform's managed policy that a pipeline author holds (PLAN_IAM 1.4.0 §5, D3, D7).
+"""The deploy policy, the platform's managed policy that a pipeline author holds (ADR #142 §1, §2).
 
 The author held `iam:CreateRole`, `PutRolePolicy` and `UpdateAssumeRolePolicy` on `*-polyris-*-scheduler-role`
-and `states:*` on any state machine, and so could make a role with any rights and run it (IAM_HOLES_VERIFIED,
-claim 1). The author now holds no IAM write action except the migration grant, which goes in 1.5, and passes
+and `states:*` on any state machine, and so could make a role with any rights and run it (ADR #142,
+*Context*). The author now holds no IAM write action except the migration grant, which goes in 1.5, and passes
 two named roles, each to its one service.
 """
 from __future__ import annotations
 
-from pathlib import Path
+import importlib
 
-import yaml
+from sam_template import load_template
 
 import polyris
 from polyris.platform import release_series
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ("MigrationPassTheOldSchedulerRoles", "MigrationRemoveTheOldSchedulerRoles")
 OLD_SCHEDULER_ROLES = {"!Sub": "arn:aws:iam::${AWS::AccountId}:role/*-polyris-*-scheduler-role"}
 
 
-def _template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {node.tag: loader.construct_scalar(node)}
-        if isinstance(node, yaml.SequenceNode):
-            return {node.tag: loader.construct_sequence(node)}
-        return loader.construct_mapping(node)
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
-
-
-TEMPLATE = _template()
+TEMPLATE = load_template(tagged=True)
 POLICY = TEMPLATE["Resources"]["PipelineDeployPolicy"]
 STATEMENTS = POLICY["Properties"]["PolicyDocument"]["Statement"]
 BY_SID = {s["Sid"]: s for s in STATEMENTS}
@@ -106,20 +88,42 @@ def test_the_author_cannot_change_the_platforms_own_stack():
     assert writes == set(_actions(deny))
 
 
+#: The code that serves the move from the scheduler roles of 1.3, which goes with the grant (ADR #142 §7): the
+#: preflight's scan for planted roles and the rules it applies, the notice of the update that crosses into 1.4,
+#: with its line that asks for a redeploy before 1.5.
+MIGRATION_CODE = (
+    ("polyris.up", "_foreign_scheduler_roles"), ("polyris.up", "_owning_stack"),
+    ("polyris.up", "_crosses_into_1_4"), ("polyris.up", "_print_deploy_policy_notice"),
+    ("polyris.up", "REDEPLOY_BEFORE_1_5"),
+    ("polyris.platform", "SchedulerRole"), ("polyris.platform", "scheduler_role_problems"),
+    ("polyris.platform", "scheduler_role_region"), ("polyris.platform", "is_scheduler_role"),
+    ("polyris.platform", "SCHEDULER_ROLE_PATTERN"), ("polyris.platform", "SCHEDULER_ROLE_LOGICAL_ID"),
+    ("polyris.platform", "PIPELINE_MACHINE_LOGICAL_ID"), ("polyris.platform", "SCHEDULER_SERVICE"),
+)
+
+
+def _present(module: str, name: str) -> bool:
+    return hasattr(importlib.import_module(module), name)
+
+
 def test_the_migration_grant_goes_in_1_5():
-    """PLAN_IAM 1.4.0 §5.3: the grant lets the first redeploy of a pipeline from before 1.4 delete its own
-    scheduler role, for one release. From 1.5.0 this fails until both statements go."""
+    """ADR #142 §7: the grant lets the first redeploy of a pipeline from before 1.4 delete its own
+    scheduler role, for one release. From 1.5.0 this fails until both statements and the code that serves
+    them go."""
     if release_series(polyris.__version__) < (1, 5):
         return
-    assert not set(MIGRATION) & set(BY_SID), (
-        "PLAN_IAM 1.4.0 §5.3: 1.5 removes the deploy policy's migration grant (and this guard); "
-        "polyris-up 1.5 refuses while a pipeline stack still holds PipelineSchedulerRole")
+    left = sorted(f"{module}.{name}" for module, name in MIGRATION_CODE if _present(module, name))
+    assert not set(MIGRATION) & set(BY_SID) and not left, (
+        "ADR #142 §7: 1.5 removes the deploy policy's migration grant, the code that serves it "
+        f"({', '.join(left) or 'gone'}) and this guard; polyris-up 1.5 refuses while a pipeline stack still holds "
+        "PipelineSchedulerRole")
 
 
-def test_the_guard_reads_the_statements_that_hold_the_grant_today():
+def test_the_guard_reads_the_statements_and_the_code_that_hold_the_grant_today():
     """So a rename cannot leave the guard checking nothing."""
     if release_series(polyris.__version__) < (1, 5):
         assert set(MIGRATION) <= set(BY_SID)
+        assert [f"{m}.{n}" for m, n in MIGRATION_CODE if not _present(m, n)] == []
 
 
 #: What AWS asks of whoever creates or updates a state machine that logs to CloudWatch Logs: Step Functions
