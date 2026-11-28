@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 from logger import log
+from registry import AWS_CONFIG
 
 _ssm = None
 
@@ -30,7 +31,7 @@ def _ssm_client():
     """Lazy SSM client (so unit tests can patch boto3 without a live client)."""
     global _ssm
     if _ssm is None:
-        _ssm = boto3.client('ssm', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+        _ssm = boto3.client('ssm', region_name=os.environ.get('AWS_REGION', 'us-east-1'), config=AWS_CONFIG)
     return _ssm
 
 

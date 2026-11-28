@@ -279,7 +279,7 @@ def test_a_1_2_row_left_in_flight_is_skipped_and_warns_at_no_sweep(world):
         world.sweep()
     assert (world.status(run, "load"), world.status(run, "extract")) == ("waiting", "waiting_delay")
     assert "error" not in world.row(run, "load")
-    assert "attention" not in world.row(run, "load")
+    assert "attention" not in world.row(run, "load") and "attention" not in world.row(run, "extract")
     assert not [i for i in world._items() if str(i["execution_name"]).startswith("_notify_warn_")]
 
 

@@ -449,6 +449,21 @@ def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(reso
         assert fnmatch(f"{machine}:orders-run-2026-11-24-1a2b3c4d", "*-polyris-*:*"), machine
 
 
+def test_the_engine_starts_only_state_machines_of_the_platforms_names(resources):
+    """AssetFanout and the sweeper start the pipeline the registry names, and run_task: every one is named
+    ``*-polyris-*``, so no other state machine of the account is theirs to start (least privilege, the
+    re-review of 1.4.0)."""
+    machine = "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:"
+    for role in ("AssetFanoutRole", "SweeperRole", "ReconcileRole"):
+        starts = [s for s in _statements(resources, role) if s["Action"] == ["states:StartExecution"]
+                  and s["Effect"] == "Allow"]
+        assert starts, role
+        for statement in starts:
+            for arn in statement["Resource"]:
+                value = arn["!Sub"] if isinstance(arn, dict) else arn
+                assert value.startswith(machine) and "-polyris-" in value[len(machine):], (role, value)
+
+
 def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_is_consistent(
         resources, ddb, monkeypatch):
     """Start_Run's paths: a first attempt, a retry that finds its rows, an earlier attempt that arrives late."""

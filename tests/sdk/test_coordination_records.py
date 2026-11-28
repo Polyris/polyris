@@ -2,10 +2,8 @@
 
 import hashlib
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
-import yaml
 
 from polyris.coordination import attention as att
 from polyris.coordination.records import (
@@ -17,6 +15,7 @@ from polyris.coordination.records import (
     warning_item,
 )
 from polyris.coordination.times import format_utc, parse_utc
+from sam_template import load_template
 
 NOW = datetime(2026, 11, 12, 6, 0, 0, 123456, tzinfo=timezone.utc)
 
@@ -51,12 +50,7 @@ class TestTimes:
 
 
 def _template() -> dict:
-    """sam/template.yaml with intrinsic functions kept as opaque values."""
-    class Loader(yaml.SafeLoader):
-        pass
-
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
-    return yaml.load((Path(__file__).parents[2] / "sam" / "template.yaml").read_text(), Loader=Loader)
+    return load_template(tagged=False)
 
 
 def _index(table: str, name: str) -> dict:

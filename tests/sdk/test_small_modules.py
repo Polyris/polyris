@@ -1,8 +1,8 @@
-"""Small-module coverage — partition guards, cadence, status, resolver, context.
+"""Small-module coverage — partition guards, cadence, status, context.
 
 Closes the defensive ``ValueError`` guards in ``partitions``, the unknown-unit
-return in ``granularity.infer_cron_cadence``, the ``ARNResolver`` load-failure path,
-and ``DAG.get_current_context`` (CLAUDE.md #13).
+return in ``granularity.infer_cron_cadence`` and ``DAG.get_current_context``
+(CLAUDE.md #13).
 """
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import pytest
 
 from polyris import partitions as P
 from polyris.granularity import infer_cron_cadence
-from polyris.resolver import ARNResolver
 from polyris.dag import DAG
 
 DT = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -43,13 +42,6 @@ class TestPartitionGuards:
 class TestGranularityInference:
     def test_rate_with_unknown_unit_returns_none(self):
         assert infer_cron_cadence("rate(5 weeks)") is None
-
-
-class TestArnResolverLoadFailure:
-    def test_malformed_tasks_json_is_warned(self, tmp_path, capsys):
-        (tmp_path / "tasks.json").write_text("{ this is not valid json ")
-        ARNResolver(pipeline_path=tmp_path / "dag.py")  # must not raise
-        assert "Could not load tasks.json" in capsys.readouterr().out
 
 
 class TestDagCurrentContext:

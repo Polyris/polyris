@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONSOLE_API = REPO_ROOT / "sam" / "lambdas" / "console_api"
@@ -32,20 +32,7 @@ _NOT_OPERATIONS = {"get_paginator", "get_waiter", "can_paginate", "close"}
 
 
 def _template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return loader.construct_scalar(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        return loader.construct_mapping(node)
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
+    return load_template(tagged=False)
 
 
 def _granted_states_actions() -> set[str]:

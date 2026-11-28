@@ -1842,13 +1842,13 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt AssetSubscriptionsTable.Arn
-              # Push: start a consumer pipeline (deterministic name, so never twice). Any state machine: a pipeline
-              # may take a namespace and stage of its own (config.py), and only the registry names the one to start.
+              # Push: start a consumer pipeline (deterministic name, so never twice). A pipeline may take a namespace
+              # and stage of its own (config.py), so any of the platform's names, and run_task, which its passes start.
               - Effect: Allow
                 Action:
                   - states:StartExecution
                 Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -1912,12 +1912,13 @@ Resources:
                   - dynamodb:GetItem
                 Resource:
                   - !GetAtt PipelineRegistryTable.Arn
-              # Push retries and the catch-up start consumer pipelines (deterministic names), of any namespace.
+              # Push retries and the catch-up start consumer pipelines (deterministic names), of any namespace, and
+              # its passes run_task: the platform's names alone.
               - Effect: Allow
                 Action:
                   - states:StartExecution
                 Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*-polyris-*"
               # Self-check: are the streams of the asset-events and tasks tables on (ADR #130 §9, ADR #137 §6)?
               - Effect: Allow
                 Action:

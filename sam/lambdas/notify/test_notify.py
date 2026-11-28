@@ -8,7 +8,14 @@ actions are in notify/ee/ and tested in the ee build; in the OSS build they are
 absent and get_notifier / dispatch_action no-op on them.
 """
 
+import json
+import re
+from pathlib import Path
+
 import pytest
+
+from polyris.constants import TaskStatus
+from polyris.coordination import task_row
 
 
 @pytest.fixture
@@ -97,9 +104,12 @@ class Platform:
         self.ddb.Table('registry').put_item(Item={'pipeline_name': pipeline, 'alert_config': {
             'enabled_channels': list(channels), **channels}})
 
-    def task_row(self, execution_name=EXECUTION, *, pipeline='acme-daily', task='extract', date='2026-06-23'):
-        self.ddb.Table('tokens').put_item(Item={'execution_name': execution_name, 'pipeline_name': pipeline,
-                                                'task_name': task, 'date': date, 'status': 'waiting_decision'})
+    def task_row(self, execution_name=EXECUTION, *, pipeline='acme-daily', task='extract', date='2026-06-23',
+                 status=TaskStatus.WAITING_DECISION.value):
+        """A task row under the field names the platform's own writers use (``task_row``)."""
+        self.ddb.Table('tokens').put_item(Item={task_row.TABLE_KEY: execution_name, task_row.PIPELINE: pipeline,
+                                                task_row.TASK_NAME: task, task_row.DATE: date,
+                                                task_row.STATUS: status})
 
 
 @pytest.fixture
@@ -113,7 +123,6 @@ def platform(monkeypatch):
         monkeypatch.setenv(name, value)
     with mock_aws():
         monkeypatch.setattr(registry, '_dynamodb', None)
-        monkeypatch.setattr(registry, '_tokens', None)
         ddb = boto3.resource('dynamodb', region_name=REGION)
         for table, key in (('registry', 'pipeline_name'), ('tokens', 'execution_name')):
             ddb.create_table(TableName=table, KeySchema=[{'AttributeName': key, 'KeyType': 'HASH'}],
@@ -306,6 +315,83 @@ class TestTheFailureComesFromThePlatform:
                              'failure': {'execution_name': EXECUTION}}, None)
         assert (out['delivered'], out['reason']) == (False, 'row_unreadable')
         assert 'ResourceNotFoundException' in str(error.call_args) and not post.called
+
+
+class TestTheRowMustWaitForADecision:
+    """``run_task`` alerts after its Ask wrote ``waiting_decision``; a role that names another row of the
+    pipeline, a running or a finished one, gets no alert out (ADR #142 §5)."""
+
+    @pytest.mark.parametrize("status", [TaskStatus.RUNNING.value, TaskStatus.SUCCESS.value,
+                                        TaskStatus.FAILED.value])
+    def test_an_alert_for_a_row_that_does_not_wait_for_a_decision_is_refused(self, mocker, platform, post,
+                                                                             status):
+        import index
+        platform.configure('acme-daily', webhook={'url_param': '/p'})
+        platform.task_row(status=status)
+        action = mocker.patch('index.dispatch_action')
+        for event in ({'pipeline_name': 'acme-daily', 'channel': 'webhook'},
+                      {'action': 'interactive_slack', 'pipeline_name': 'acme-daily'}):
+            out = index.handler({**event, 'failure': {'execution_name': EXECUTION}}, None)
+            assert (out['delivered'], out['reason']) == (False, 'not_waiting_decision')
+        assert not post.called and not action.called
+
+    def test_a_resolve_closes_the_incident_of_a_row_in_any_status(self, mocker, platform):
+        import index
+        platform.task_row(status=TaskStatus.SUCCESS.value)
+        action = mocker.patch('index.dispatch_action', return_value={'delivered': True})
+        index.handler({'action': index.RESOLVE_ACTION, 'pipeline_name': 'acme-daily',
+                       'failure': {'execution_name': EXECUTION}}, None)
+        assert action.call_args.args[0] == index.RESOLVE_ACTION
+
+    def test_the_fields_notify_reads_are_the_ones_the_platform_writes(self):
+        """Principle #28: notify carries no SDK, so its names are literals."""
+        import index
+        assert (index.ROW_PIPELINE, index.ROW_TASK, index.ROW_DATE, index.ROW_STATUS) == (
+            task_row.PIPELINE, task_row.TASK_NAME, task_row.DATE, task_row.STATUS)
+        assert index.ALERTING_STATUS == TaskStatus.WAITING_DECISION.value
+
+
+RUN_TASK = Path(__file__).resolve().parents[2] / 'sfn_templates' / 'helpers' / 'run_task' / 'sfn.tpl.json'
+_INPUT = re.compile(r'^\{% \$states\.context\.Execution\.Input\.([a-z_]+) %\}$')
+
+
+def _run_task_payload(state: str, execution_input: dict) -> dict:
+    """The payload ``run_task``'s state sends notify, its expressions evaluated against the execution's input
+    (the error expression to the error a failed work state gives)."""
+    definition = json.loads(re.sub(r'\$\{[a-z_]+\}', 'x', RUN_TASK.read_text()))
+
+    def evaluate(value):
+        if isinstance(value, dict):
+            return {k: evaluate(v) for k, v in value.items()}
+        if isinstance(value, str) and value.startswith('{%'):
+            field = _INPUT.match(value)
+            if field:
+                return execution_input[field.group(1)]
+            assert '$states.input.error_obj.Error' in value, f'an expression this test cannot read: {value}'
+            return 'TaskFailed'
+        return value
+
+    return evaluate(definition['States'][state]['Arguments']['Payload'])
+
+
+class TestWhatRunTaskSends:
+    """The real payloads of ``run_task``'s alert states reach their action through the real handler."""
+
+    @pytest.mark.parametrize("state, action, status", [
+        ('Interactive_Slack', 'interactive_slack', TaskStatus.WAITING_DECISION.value),
+        ('Send_PagerDuty_Alert', 'live_pagerduty', TaskStatus.WAITING_DECISION.value),
+        ('Resolve_PagerDuty', 'resolve_pagerduty', TaskStatus.SUCCESS.value),
+    ])
+    def test_each_alert_state_reaches_its_action_with_the_rows_failure(self, mocker, platform, state, action,
+                                                                       status):
+        import index
+        platform.task_row(status=status)
+        dispatched = mocker.patch('index.dispatch_action', return_value={'delivered': True})
+        payload = _run_task_payload(state, {'pipeline_name': 'acme-daily', 'task_name': 'extract',
+                                            'execution_name': EXECUTION, 'date': '2026-06-23'})
+        index.handler(payload, None)
+        assert dispatched.call_args.args[0] == action
+        assert dispatched.call_args.args[1]['failure']['execution_name'] == EXECUTION
 
 
 class TestTestAlert:

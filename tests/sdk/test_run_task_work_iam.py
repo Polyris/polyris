@@ -74,9 +74,30 @@ def test_the_default_task_role_creates_and_ends_no_cluster():
     assert not {"elasticmapreduce:RunJobFlow", "elasticmapreduce:TerminateJobFlows"} & _default_task_role_allows()
 
 
-def test_the_how_to_lists_every_action_a_tasks_own_role_needs():
+#: The decorator of each integration, as the how-to's table names it.
+DECORATORS = {
+    "arn:aws:states:::states:startExecution.sync:2": "@task.sfn",
+    "arn:aws:states:::lambda:invoke": "@task.lambda_function",
+    "arn:aws:states:::glue:startJobRun.sync": "@task.glue_job",
+    "arn:aws:states:::ecs:runTask.sync": "@task.ecs_task",
+    "arn:aws:states:::athena:startQueryExecution.sync": "@task.athena_query",
+    "arn:aws:states:::elasticmapreduce:addStep.sync": "@task.emr_step",
+    "arn:aws:states:::batch:submitJob.sync": "@task.batch_job",
+}
+
+
+def test_the_how_to_lists_every_action_a_tasks_own_role_needs_in_the_row_of_its_task():
     """A task's own role (``role=``) makes the same calls as the default task role: the guide for the
-    infrastructure engineer who creates one names each of them."""
+    infrastructure engineer who creates one names each of them in the row of the task that makes it, and
+    the managed rule for exactly the tasks that need it."""
     guide = (REPO_ROOT / "docs" / "how-to" / "give-a-task-a-role-of-its-own.md").read_text()
-    missing = sorted(action for needs in NEEDS.values() for action in needs if f"`{action}`" not in guide)
-    assert missing == []
+    rows = {cells[0].strip("` "): cells[1] for line in guide.splitlines() if line.startswith("| `@task.")
+            for cells in [line.strip("|").split("|")]}
+    assert set(DECORATORS) == set(NEEDS) and set(rows) == set(DECORATORS.values())
+    for resource, needs in NEEDS.items():
+        row = rows[DECORATORS[resource]]
+        missing = sorted(action for action in needs - _MANAGED_RULES if f"`{action}`" not in row)
+        assert missing == [], DECORATORS[resource]
+        assert ("managed rule" in row) == bool(needs & _MANAGED_RULES), DECORATORS[resource]
+    section = guide.split("### The managed rule", 1)[1].split("\n## ", 1)[0]
+    assert all(f"`{action}`" in section for action in _MANAGED_RULES)

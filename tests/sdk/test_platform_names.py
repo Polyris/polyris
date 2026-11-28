@@ -25,12 +25,12 @@ def _names(kind: str, key: str) -> list:
     return names
 
 
-def test_the_constant_names_every_function_of_theload_template(tagged=False):
+def test_the_constant_names_every_function_of_the_template():
     functions = _names("AWS::Serverless::Function", "FunctionName") + _names("AWS::Lambda::Function", "FunctionName")
     assert sorted(functions) == sorted(PLATFORM_NAMES.functions)
 
 
-def test_the_constant_names_every_state_machine_of_theload_template(tagged=False):
+def test_the_constant_names_every_state_machine_of_the_template():
     machines = [name for kind, key in (("AWS::Serverless::StateMachine", "Name"),
                                   ("AWS::StepFunctions::StateMachine", "StateMachineName"))
                 for name in _names(kind, key)]

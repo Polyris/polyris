@@ -1335,6 +1335,35 @@ def test_up_looks_for_a_scheduler_roles_stack_in_the_region_of_the_machine_it_st
     assert "us-west-2" in regions
 
 
+def test_up_names_a_scheduler_role_whose_region_it_cannot_reach(fake_cfn, platform_1_3, s3, tmp_path, mocker,
+                                                                capsys):
+    """A region that does not exist, or that the account has not opted in to: the refusal names the role and
+    the region, never a bare connection error (the review of 1.4.0)."""
+    from botocore.exceptions import EndpointConnectionError
+
+    machine = f"arn:aws:states:xx-nowhere-1:{ACCOUNT}:stateMachine:acme-dev-polyris-orders"
+    name = SCHEDULER_ROLE_1_3["Properties"]["RoleName"]
+    _scheduler_role(policy={"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "states:StartExecution", "Resource": machine}]})
+    routed = boto3.Session.client
+
+    def client(self, service, *a, **kw):
+        if service == "cloudformation" and kw.get("region_name") == "xx-nowhere-1":
+            unreachable = mocker.MagicMock()
+            unreachable.describe_stack_resources.side_effect = EndpointConnectionError(
+                endpoint_url="https://cloudformation.xx-nowhere-1.amazonaws.com")
+            return unreachable
+        return routed(self, service, *a, **kw)
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    err = _err(capsys)
+    assert f"Role {name} starts a state machine in xx-nowhere-1" in err
+    assert "polyris-deploy did not make the role: delete it" in err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
 @pytest.mark.parametrize("plant, reason", [
     (lambda cfn: _scheduler_role(), "no pipeline stack made it"),
     (lambda cfn: (_scheduler_role(attach="Admin"),

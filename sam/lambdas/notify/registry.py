@@ -15,20 +15,29 @@ import os
 from typing import Any, Dict
 
 import boto3
+from botocore.config import Config
 from logger import log
 
+#: Every AWS call fails well inside the function's 30 s timeout (Principle #53): botocore's defaults (ten
+#: DynamoDB attempts, a 60 s read) outlast it, and a function that times out cannot say what failed.
+AWS_CONFIG = Config(retries={'mode': 'standard', 'total_max_attempts': 3}, connect_timeout=2, read_timeout=5)
+
 _dynamodb = None
+
+
+def _resource():
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-1'),
+                                   config=AWS_CONFIG)
+    return _dynamodb
 
 
 def registry_table():
     """Lazy DynamoDB *resource* table for the pipeline registry (holds
     alert_config). A resource (not a low-level client) auto-deserializes typed
     attributes to plain Python on read."""
-    global _dynamodb
-    if _dynamodb is None:
-        _dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
-    name = os.environ.get('PIPELINES_TABLE', 'pipeline-registry')
-    return _dynamodb.Table(name)
+    return _resource().Table(os.environ.get('PIPELINES_TABLE', 'pipeline-registry'))
 
 
 def get_alert_config(pipeline_name: str) -> Dict[str, Any]:
@@ -45,15 +54,9 @@ def get_alert_config(pipeline_name: str) -> Dict[str, Any]:
         return {}
 
 
-_tokens = None
-
-
 def tokens_table():
     """Lazy DynamoDB *resource* table for the task rows (``pipeline-tokens``)."""
-    global _tokens
-    if _tokens is None:
-        _tokens = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
-    return _tokens.Table(os.environ.get('TOKENS_TABLE', 'pipeline-tokens'))
+    return _resource().Table(os.environ.get('TOKENS_TABLE', 'pipeline-tokens'))
 
 
 def get_task_row(execution_name: str) -> Dict[str, Any]:

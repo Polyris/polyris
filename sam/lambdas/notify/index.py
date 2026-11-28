@@ -37,7 +37,10 @@ an alert, a link or a button comes from the event:
   must be a row of the event's pipeline: its task, date and execution come from
   the row, and only the error text from the event, as a failed task's own error
   is its author's anyway. ``links`` and any other field of the event's failure
-  are dropped. An event whose execution is no row of its pipeline is refused.
+  are dropped. An event whose execution is no row of its pipeline is refused, and
+  so is an alert for a row that does not wait for a decision: ``run_task`` alerts
+  after its Ask has written ``waiting_decision``. A resolve closes an incident
+  whatever the row's status, as a decision or a later success ends the wait.
 
 Delivery never raises out of the handler: a channel failing is captured in the
 result, not propagated, so one bad channel never blocks the others.
@@ -55,6 +58,16 @@ TEST_TASK = 'test-alert'
 TEST_ERROR = 'This is a test alert from Polyris. If you can see this, the channel works.'
 #: The longest error text an alert carries.
 ERROR_LIMIT = 2000
+#: The task row's fields notify reads, as the platform writes them (``polyris.coordination.task_row``; this
+#: package carries no SDK, so test_notify's parity test pins them).
+ROW_PIPELINE = 'pipeline_name'
+ROW_TASK = 'task_name'
+ROW_DATE = 'date'
+ROW_STATUS = 'status'
+#: The only status a row has while an alert about it may go out (``TaskStatus.WAITING_DECISION``).
+ALERTING_STATUS = 'waiting_decision'
+#: The action that closes an incident, for a row in any status.
+RESOLVE_ACTION = 'resolve_pagerduty'
 
 
 def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
@@ -73,7 +86,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         if not action and 'channel' in event and not event.get('channel'):
             log.warn('notify', 'No channel in event; skipping')
             return {'channel': 'unknown', 'delivered': False, 'reason': 'no_channel'}
-        failure, refusal = platform_failure(event, test_allowed=not action)
+        failure, refusal = platform_failure(event, test_allowed=not action, alerting=action != RESOLVE_ACTION)
         if failure is None:
             key = {'action': action} if action else {'channel': event.get('channel', '')}
             return {**key, 'delivered': False, 'reason': refusal}
@@ -90,11 +103,13 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         return {'delivered': False, 'reason': 'unhandled_error'}
 
 
-def platform_failure(event: Dict[str, Any], *, test_allowed: bool) -> Tuple[Optional[Dict[str, Any]], str]:
+def platform_failure(event: Dict[str, Any], *, test_allowed: bool,
+                     alerting: bool) -> Tuple[Optional[Dict[str, Any]], str]:
     """The failure to deliver, from the platform's rows, or None and the reason it is refused.
 
     The event names a pipeline and the execution of a failed task; the task row must exist and be the
-    pipeline's. A test (``test``, for a channel, not an action) names no execution.
+    pipeline's, and an alert (``alerting``: anything but a resolve) needs the row to wait for a decision.
+    A test (``test``, for a channel, not an action) names no execution.
     """
     pipeline_name = event.get('pipeline_name')
     if not isinstance(pipeline_name, str) or not pipeline_name:
@@ -117,13 +132,17 @@ def platform_failure(event: Dict[str, Any], *, test_allowed: bool) -> Tuple[Opti
         log.error('notify', 'Could not read the task row the alert names; nothing sent',
                   pipeline=pipeline_name, execution_name=execution_name, error_type=type(e).__name__, error=str(e))
         return None, 'row_unreadable'
-    if not row.get('task_name') or row.get('pipeline_name') != pipeline_name:
+    if not row.get(ROW_TASK) or row.get(ROW_PIPELINE) != pipeline_name:
         log.warn('notify', 'The execution is no task row of the pipeline; nothing sent',
                  pipeline=pipeline_name, execution_name=execution_name)
         return None, 'unknown_execution'
+    if alerting and row.get(ROW_STATUS) != ALERTING_STATUS:
+        log.warn('notify', 'The task does not wait for a decision; no alert sent',
+                 pipeline=pipeline_name, execution_name=execution_name, status=row.get(ROW_STATUS))
+        return None, 'not_waiting_decision'
     error = claimed.get('error')
-    return {'pipeline_name': pipeline_name, 'task_name': str(row['task_name']), 'execution_name': execution_name,
-            'date': str(row.get('date') or ''),
+    return {'pipeline_name': pipeline_name, 'task_name': str(row[ROW_TASK]), 'execution_name': execution_name,
+            'date': str(row.get(ROW_DATE) or ''),
             'error': str(error)[:ERROR_LIMIT] if error is not None else ''}, ''
 
 

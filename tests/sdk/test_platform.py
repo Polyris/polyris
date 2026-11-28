@@ -9,9 +9,9 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
 
 from polyris import platform as P
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "sam" / "template.yaml"
@@ -19,20 +19,7 @@ TEMPLATE_PATH = REPO_ROOT / "sam" / "template.yaml"
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {"__tag__": node.tag, "value": node.value}
-        if isinstance(node, yaml.SequenceNode):
-            return {"__tag__": node.tag, "value": loader.construct_sequence(node)}
-        return {"__tag__": node.tag, "value": loader.construct_mapping(node)}
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load(TEMPLATE_PATH.read_text(), Loader=_Loader)
+    return load_template(tagged=True)
 
 
 # ── Parity with sam/template.yaml ────────────────────────────────────────────
@@ -56,7 +43,7 @@ def test_outputs_exist_in_template(template, name):
 def test_bucket_names_match_template(template):
     """polyris-up pre-checks exactly the names the template will try to create."""
     sub = {
-        lid: res["Properties"]["BucketName"]["value"]
+        lid: res["Properties"]["BucketName"]["!Sub"]
         for lid, res in template["Resources"].items()
         if res["Type"] == "AWS::S3::Bucket"
     }
@@ -71,8 +58,8 @@ def test_namespace_stage_limit_matches_longest_role_name(template):
     fixed = []
     for res in template["Resources"].values():
         role = (res.get("Properties") or {}).get("RoleName")
-        if isinstance(role, dict) and role.get("__tag__") == "!Sub":
-            text = role["value"]
+        if isinstance(role, dict) and "!Sub" in role:
+            text = role["!Sub"]
             assert set(re.findall(r"\$\{(\w+)\}", text)) <= {"Namespace", "Stage"}
             fixed.append(len(text.replace("${Namespace}", "").replace("${Stage}", "")))
     assert P.NAMESPACE_STAGE_MAX_LEN == 64 - max(fixed)
@@ -405,7 +392,7 @@ def _state_machines(template) -> dict:
     for res in template["Resources"].values():
         if res["Type"].endswith("::StateMachine"):
             props = res["Properties"]
-            name = (props.get("StateMachineName") or props["Name"])["value"]
+            name = (props.get("StateMachineName") or props["Name"])["!Sub"]
             assert name.startswith(prefix), name
             found[name[len(prefix):]] = props.get("StateMachineType") or props.get("Type") or "STANDARD"
     return found

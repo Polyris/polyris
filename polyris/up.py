@@ -873,6 +873,16 @@ def _foreign_scheduler_roles(session: boto3.Session, *, region: str) -> List[Tup
     return found
 
 
+_UNREACHABLE_REGION_HINTS = (
+    "If the platform runs a pipeline in that region, let polyris-up reach it and run polyris-up again.",
+    "If no pipeline of yours runs there, polyris-deploy did not make the role: delete it, then run polyris-up again.")
+
+
+def _unreachable_region(role: str, region: str, error: Exception) -> str:
+    return (f"Role {role} starts a state machine in {region}, and polyris-up could not look there for the stack "
+            f"that holds it, so it cannot tell that polyris-deploy made it: {error}")
+
+
 def _owning_stack(session: boto3.Session, name: str, inline: Mapping[str, Any], *,
                   region: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """(stack name, the role's logical id there, the stack's pipeline state machine) of the stack that holds the
@@ -883,14 +893,23 @@ def _owning_stack(session: boto3.Session, name: str, inline: Mapping[str, Any], 
     only where to look; CloudFormation's answer is what counts, so a planted policy that names another region
     finds no stack there that holds the role.
     """
-    cfn = session.client("cloudformation", region_name=scheduler_role_region(inline) or region)
+    named = scheduler_role_region(inline)
+    look_in = named or region
     try:
+        cfn = session.client("cloudformation", region_name=look_in)
         with _permission("cloudformation:DescribeStackResources", name):
             resources = cfn.describe_stack_resources(PhysicalResourceId=name).get("StackResources", [])
     except ClientError as e:
         if error_code(e) == "ValidationError":
             return None, None, None     # "Stack for <name> does not exist": no stack holds the role
-        raise
+        if named is None or named == region:
+            raise
+        raise UpError(_unreachable_region(name, named, e), *_UNREACHABLE_REGION_HINTS) from e
+    except BotoCoreError as e:
+        # A region that does not exist, or one the account has not opted in to, cannot be reached.
+        if named is None or named == region:
+            raise
+        raise UpError(_unreachable_region(name, named, e), *_UNREACHABLE_REGION_HINTS) from e
     own: Mapping[str, Any] = next((r for r in resources if r.get("PhysicalResourceId") == name), {})
     machine = next((str(r.get("PhysicalResourceId", "")) for r in resources
                     if r.get("LogicalResourceId") == PIPELINE_MACHINE_LOGICAL_ID), None)

@@ -13,13 +13,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
 from polyris.generators import _generate_step_state
 from polyris.steps import (
     AthenaTask, BedrockTask, DynamoDBTask, ECSTask, EventBridgeTask, GlueTask, HttpTask,
     LambdaTask, S3Task, SNSTask, SQSTask,
 )
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,20 +63,7 @@ def _actions(resource: str) -> set:
 
 
 def _template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return loader.construct_scalar(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        return loader.construct_mapping(node)
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
+    return load_template(tagged=False)
 
 
 #: The one resource a step may need its actions on that is narrower than any: HttpTask reads the credentials of
