@@ -515,7 +515,7 @@ class TaskDecorator:
     Every decorator orchestrates an *existing* AWS resource; polyris does not
     provision the state machine / function / job / cluster on your behalf.
 
-        @task.sfn(arn="${workflow_arn}")                              # Step Function
+        @task.sfn(arn="arn:aws:states:...:stateMachine:etl")          # Step Function
         @task.lambda_function(function_name="...")                    # Lambda
         @task.glue_job(job_name="...")                                # Glue Job
         @task.ecs_task(cluster="...", task_definition="...")          # ECS / Fargate
@@ -546,7 +546,7 @@ class TaskDecorator:
         # Build helpful error message
         error_msg = (
             "Base @task decorator is not allowed. Use a service-specific decorator:\n"
-            "  @task.sfn(arn='${...}')                              - Step Function\n"
+            "  @task.sfn(arn='...')                                 - Step Function\n"
             "  @task.lambda_function(function_name='...')           - Lambda\n"
             "  @task.glue_job(job_name='...')                       - Glue Job\n"
             "  @task.ecs_task(cluster='...', task_definition='...') - ECS / Fargate\n"
@@ -742,32 +742,32 @@ class TaskDecorator:
         Step Function task decorator. Executes a nested Step Function.
         
         Args:
-            arn: Step Function ARN (required). Can use ${var} syntax.
+            arn: Step Function ARN (required), as a full ARN.
             outlets: List of Assets this task produces
             inlets: List of Assets this task consumes
             wait_for: List of Assets to wait for before execution (pull-based)
             skip_on_backfill: If True, task is skipped by default during backfill
         
         Example:
-            @task.sfn(arn="${nested_workflow_arn}", outlets=[my_asset])
+            @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:nested-workflow", outlets=[my_asset])
             def nested_workflow(): pass
             
             # Cross-pipeline dependency (pull-based)
-            @task.sfn(arn="${proc_arn}", wait_for=[inventory_asset])
+            @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:process", wait_for=[inventory_asset])
             def process(): pass
             
             # With freshness constraint
-            @task.sfn(arn="${proc_arn}", wait_for=[inventory_asset.within(hours=24)])
+            @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:process", wait_for=[inventory_asset.within(hours=24)])
             def process(): pass
             
             # Skip scraper during backfill
-            @task.sfn(arn="${scraper_arn}", skip_on_backfill=True)
+            @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:scraper", skip_on_backfill=True)
             def scraper(): pass
         """
         if not arn.strip():
             raise ValueError(
                 "@task.sfn arn must not be empty — pass the Step Function ARN, "
-                "e.g. arn='${my_sfn_arn}' (CloudFormation substitution) or a full ARN string."
+                "e.g. arn='arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job'."
             )
         _validate_common_kwargs("sfn", common)
         return self._create_task(

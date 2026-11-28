@@ -16,7 +16,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
   - [Cognito (1 user pool + 1 client)](#cognito-1-user-pool--1-client)
   - [CloudFront + API Gateway (Console UI)](#cloudfront--api-gateway-console-ui)
   - [CloudWatch log groups (10)](#cloudwatch-log-groups-10)
-  - [IAM (11 roles + 3 managed policies)](#iam-11-roles--3-managed-policies)
+  - [IAM (12 roles + 4 managed policies)](#iam-12-roles--4-managed-policies)
 - [Tags](#tags)
 - [Where does each pipeline run's state live?](#where-does-each-pipeline-runs-state-live)
 - [Stack outputs to read after deploy](#stack-outputs-to-read-after-deploy)
@@ -141,15 +141,15 @@ One per state machine (the test machines share one) and one per Lambda, except b
 
 Your workload logs (Lambdas / Glue jobs / ECS tasks that your pipelines invoke) are NOT in this list — they go to wherever YOU configured them.
 
-### IAM (11 roles + 3 managed policies)
+### IAM (12 roles + 4 managed policies)
 
 Roles the stack creates during install, all named `${Namespace}-${Stage}-polyris-*-role`. Full inventory + purpose per role in [IAM_PERMISSIONS.md#iam-roles-polyris-creates](IAM_PERMISSIONS.md#iam-roles-polyris-creates).
 
-Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam). The third, `polyris-reconcile`, holds the dispatcher's own grants; the stack attaches it to its reconcile, asset-fanout and sweeper roles.
+Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam). The third, `polyris-reconcile`, holds the dispatcher's own grants; the stack attaches it to its reconcile, asset-fanout and sweeper roles. The fourth, `polyris-deploy-policy`, is for the roles that run `polyris-deploy`.
 
 ## Tags
 
-Every resource in the stack that AWS can tag carries three tags. The resources `polyris-deploy` creates for a pipeline (its state machine, log group and scheduler role) carry four:
+Every resource in the stack that AWS can tag carries three tags. The resources `polyris-deploy` creates for a pipeline (its state machine and log group) carry four:
 
 | Key | Value |
 |---|---|
@@ -191,7 +191,8 @@ aws cloudformation describe-stacks --stack-name acme-dev --query "Stacks[0].Outp
 | `ConsoleUiUrl` | The console's address; `polyris-up` and `polyris-deploy` print it |
 | `ConsoleApiUrl` | The REST API's base URL ([API.md](../operations/API.md)) |
 | `CognitoUserPoolId`, `CognitoClientId` | Adding console users; the console's sign-in |
-| `OrchestrationRoleArn`, `StartRunFunctionArn`, `PipelineSpecsTable`, `PipelineRegistryTable`, `PipelineTokensTable`, `AssetSubscriptionsTable`, `ResultsBucket` | Read by `polyris-deploy` |
+| `OrchestrationRoleArn`, `StartRunFunctionArn`, `PipelineSpecsTable`, `PipelineRegistryTable`, `PipelineTokensTable`, `AssetSubscriptionsTable`, `ResultsBucket`, `PipelineScheduleRoleArn` | Read by `polyris-deploy`; `PipelineScheduleRoleArn` is also exported, and every scheduled pipeline's stack imports it |
+| `PipelineDeployPolicyArn` | The managed policy to attach to the roles that run `polyris-deploy` ([IAM_PERMISSIONS.md](IAM_PERMISSIONS.md#the-deploy-policy)) |
 | `TestQuickSfnArn`, `TestFailureSfnArn` | The demo state machines; `polyris-init --hello` reads `TestQuickSfnArn` |
 | `PolyrisTaskReadPolicyArn`, `PolyrisTaskWritePolicyArn` | The managed policies to attach to your task roles for xcom |
 | `ConsoleUiBucket`, `ConsoleUiDistributionId` | The UI upload of a from-source deploy ([FROM_SOURCE.md](FROM_SOURCE.md)) |
@@ -211,6 +212,6 @@ Explicit non-scope, in case you're auditing:
 
 - **Your data plane.** No S3 buckets for your raw / bronze / silver / gold tables. No Glue databases (except a shared workgroup in the `examples/testing-infra/` companion stack, not the main stack).
 - **Your task compute.** No Lambda functions, Glue jobs, ECS clusters, Batch queues, EMR clusters for your workloads. See [DSL.md](../features/DSL.md#how-polyris-relates-to-aws).
-- **Schedules for your pipelines.** Each pipeline's `polyris-deploy` creates its EventBridge Scheduler schedule in its own per-pipeline CFN stack, not in the main polyris stack.
+- **Schedules for your pipelines.** Each pipeline's `polyris-deploy` creates its EventBridge Scheduler schedule in its own per-pipeline CFN stack, not in the main polyris stack. Every schedule starts its pipeline with the platform's schedule role, `polyris-schedule-role`, which the pipeline's stack imports from the export `<namespace>-<stage>-polyris-schedule-role-arn`.
 - **VPCs, subnets, security groups.** Polyris runs Lambdas without VPC attachment. If your Glue/ECS/Batch tasks need VPC access, that's your infra — see the AWS docs for those services.
 - **KMS keys.** All polyris data uses the default encryption of DynamoDB and S3, with keys AWS owns. No template parameter sets a customer-managed KMS key: for one, add an encryption config to the DDB tables and S3 buckets in `sam/template.yaml` and deploy from source ([FROM_SOURCE.md](FROM_SOURCE.md)).

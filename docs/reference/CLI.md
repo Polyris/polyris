@@ -55,13 +55,12 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
 | `--yes` | Don't ask for confirmation |
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
-| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
+| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback), never below 1.4. A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
 | `--disable-rollback` | If the update fails, keep what it already changed (`UPDATE_FAILED`) instead of rolling back. Fix the cause and run the same command again; if the release has nothing more to change, retry the failed update from the CloudFormation console. A first install always rolls back. Use it when the release notes ask for it |
-| `--accept-stopped-runs` | Only for the upgrade from 1.2: [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md) |
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`). At the end of an upgrade, `polyris-up` lists the pipelines that need a redeploy, with the command for each.
 
-Upgrading from 1.2: see [upgrade-1.2-to-1.3.md](../how-to/upgrade-1.2-to-1.3.md).
+`polyris-up` updates a platform from 1.3 or newer. A platform on 1.2 upgrades to 1.3 first with the polyris-up of 1.3: see the guide of polyris 1.3, `docs/how-to/upgrade-1.2-to-1.3.md` at tag `v1.3.2`. Before it uploads or changes anything, it checks the account and stops with a list to fix: [What the checks may refuse](../how-to/manage-the-platform.md#what-the-checks-may-refuse). At its end it prints the deploy policy that pipeline authors need.
 
 ---
 
@@ -80,7 +79,7 @@ polyris-down --delete-data      # also delete task results
 | `--stack`, `--profile`, `--region` | As for `polyris-up` |
 | `--yes` | Don't ask for confirmation |
 
-It refuses a stack that isn't a polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines and prints how many of each. The artifacts bucket is deleted when no other platform stack is left in the region.
+It refuses a stack that isn't a polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. Even with `--yes`, it refuses while a pipeline stack imports the platform's schedule role: destroy the scheduled pipelines first. Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines and prints how many of each. The artifacts bucket is deleted when no other platform stack is left in the region.
 
 ---
 
@@ -144,6 +143,8 @@ polyris-validate --json       # JSON output
 | `--file`, `-f` | Pipeline file (default: `dag.py`) |
 | `--test` | Run each task's Python body locally and report the ones that raise |
 | `--json` | Output results as JSON |
+
+It also refuses a `dag_id` that ends like one of the platform's state machines (`bulk-backfill`, `test-quick`), and, when `config.py` sets the stage's `account_id`, a task whose `role=` names a role of that account outside the path `/polyris-tasks/`.
 
 ---
 
@@ -221,9 +222,11 @@ polyris-deploy --all                  # every pipeline folder in this folder
 
 **What it deploys.** One stack per pipeline, `<namespace>-<stage>-polyris-<dag_id>`, with:
 - the pipeline's state machine (`AWS::StepFunctions::StateMachine`) and its log group;
-- for a `cron(…)`, `rate(…)` or preset schedule, an EventBridge Scheduler schedule and the role it starts the state machine with. A pipeline scheduled on assets, with `@once` or with `schedule=None`, has none.
+- for a `cron(…)`, `rate(…)` or preset schedule, an EventBridge Scheduler schedule, which starts the state machine with the platform's schedule role. A pipeline scheduled on assets, with `@once` or with `schedule=None`, has none.
 
-**Before the stack.** `polyris-deploy` checks that the AWS resources your tasks name exist, and stops if one does not. It writes each task's spec to the platform's `pipeline-specs` table, reads the version back and checks it; a spec it cannot write or confirm stops the deploy before the stack changes. A pipeline beyond a limit of [DSL.md → Pipeline limits](../features/DSL.md#pipeline-limits) is refused before anything reaches AWS. After the stack deploys, it records the pipeline in the console's registry and prints `✅ <dag_id> deployed successfully!`.
+The stack holds no IAM role.
+
+**Before the stack.** `polyris-deploy` refuses a task whose `role=` names a role of the platform's account outside the path `/polyris-tasks/` ([give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md)). It checks that the AWS resources your tasks name exist, and stops if one does not. It writes each task's spec to the platform's `pipeline-specs` table, reads the version back and checks it; a spec it cannot write or confirm stops the deploy before the stack changes. A pipeline beyond a limit of [DSL.md → Pipeline limits](../features/DSL.md#pipeline-limits) is refused before anything reaches AWS. After the stack deploys, it records the pipeline in the console's registry and prints `✅ <dag_id> deployed successfully!`.
 
 **Which platform.** The stack: `--stack`, then `stack_name` in `config.py`, then the one stack `polyris-up` tagged in the region; several tagged stacks and no name is an error that asks for `--stack`. Without a `config.py`, the namespace and the stage come from that platform stack.
 

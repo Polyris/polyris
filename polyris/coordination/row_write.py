@@ -16,15 +16,12 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from boto3.dynamodb.types import TypeSerializer
 
-from . import attention, ownership, retention, task_row, transitions
+from . import attention, retention, task_row, transitions
 from .times import format_utc
 
 _serializer = TypeSerializer()
 #: A task row's write is conditional on what its writer read of it.
 ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"
-#: The same for a row that a 1.2 run left with no generation or with 0 (``ownership.LEGACY``); only its stop writes
-#: such a row (*Migration and upgrade*).
-LEGACY_ROW_CONDITION = "#status = :read AND (attribute_not_exists(#g) OR #g = :legacy)"
 
 
 def task_update(*, key: str, read_status: str, read_generation: int, writer: str, transition: Optional[str],
@@ -48,9 +45,8 @@ def task_update(*, key: str, read_status: str, read_generation: int, writer: str
         status = move.target
     names = {"#status": task_row.STATUS, "#g": task_row.GENERATION, "#ttl": task_row.TTL,
              "#att": attention.KEY, "#due": attention.DUE}
-    legacy = read_generation == ownership.LEGACY
     values: Dict[str, Any] = {":read": read_status, ":ttl": retention.ttl(now, retention.HISTORY),
-                              **({":legacy": ownership.LEGACY} if legacy else {":g": read_generation})}
+                              ":g": read_generation}
     sets = ["#ttl = :ttl"]
     removes: List[str] = []
     fields = dict(fields)
@@ -77,7 +73,7 @@ def task_update(*, key: str, read_status: str, read_generation: int, writer: str
         sets += ["#att = :att", "#due = :due"]
     return {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": key}},
             "UpdateExpression": "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else ""),
-            "ConditionExpression": LEGACY_ROW_CONDITION if legacy else ROW_CONDITION,
+            "ConditionExpression": ROW_CONDITION,
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": typed(values)}
 

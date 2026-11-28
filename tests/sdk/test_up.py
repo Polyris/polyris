@@ -1,11 +1,10 @@
 """Tests for polyris-up / polyris-down (polyris/up.py, ADR #131).
 
-Boundaries (Principle #14): S3, STS and DynamoDB run on moto; the release
+Boundaries (Principle #14): S3, STS, IAM and DynamoDB run on moto; the release
 download is mocked at ``urllib.request.urlopen``. CloudFormation is a small
 fake client, because moto cannot expand the SAM transform or run change sets
 — the fake records every call so the tests can assert the exact request
-polyris-up sends. Step Functions, where a test of the move from 1.2 to 1.3
-needs executions, is ``fake_states.FakeStates`` behind a real boto3 client.
+polyris-up sends, and reads a change set's template from moto's S3.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import hashlib
 import io
 import json
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -23,9 +22,9 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from fake_states import FakeStates, answering, refuse
+from fake_states import FakeStates
 from polyris import __version__
-from polyris import up, upgrade
+from polyris import up
 from polyris.platform import (
     PLATFORM_TAG_KEY,
     PLATFORM_TAG_VALUE,
@@ -36,9 +35,8 @@ from polyris.platform import (
 
 ACCOUNT = "123456789012"  # moto's default account
 REGION = "eu-central-1"
-#: An older platform that already runs 1.3's engine, by its version or, for a stack that names none,
-#: by the output 1.3 adds. An update of one makes no checks of the move from 1.2 (ADR #137, *Migration and upgrade*),
-#: which the tests under "The move from 1.2 to 1.3" cover.
+#: An older platform that polyris-up updates: 1.3 or newer, by its version or, for a stack that names none,
+#: by the output 1.3 adds.
 OLDER = "1.3.0a1"
 ROWS_OUTPUTS = [{"OutputKey": "StartRunFunctionArn",
                  "OutputValue": f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:acme-dev-polyris-start-run"}]
@@ -74,13 +72,6 @@ def no_tty(monkeypatch):
 def isolated_cache(monkeypatch, tmp_path):
     """Archive extraction goes to XDG_CACHE_HOME — never the developer's real ~/.cache."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
-
-
-@pytest.fixture(autouse=True)
-def no_waiting(monkeypatch):
-    """The stop of 1.2's executions lists again at once, and the wait for the index asks again at once."""
-    monkeypatch.setattr(upgrade, "STOP_SETTLE_S", 0)
-    monkeypatch.setattr(upgrade, "INDEX_POLL_S", 0)
 
 
 def _template() -> Dict[str, Any]:
@@ -137,6 +128,12 @@ class FakeCfn:
         self._progress: List[str] = []
         self.on_wait = None
         self.calls: List[tuple] = []
+        #: The stacks that import an export, by its name (ListImports).
+        self.imports: Dict[str, List[str]] = {}
+        #: What DescribeStackResources answers for a physical id; no entry: no stack holds it.
+        self.resources: Dict[str, List[Dict[str, Any]]] = {}
+        #: Called between a change set's creation and the read of its template (a writer of the bucket).
+        self.on_create = None
 
     # describe_stacks / paginator
     def describe_stacks(self, StackName=None):
@@ -160,6 +157,11 @@ class FakeCfn:
                     return [fake.describe_stacks()]
                 if name == "list_change_sets":
                     return [{"Summaries": fake.stacks[kw["StackName"]].get("_change_sets", [])}]
+                if name == "list_imports":
+                    if not fake.imports.get(kw["ExportName"]):
+                        raise ClientError({"Error": {"Code": "ValidationError", "Message": (
+                            f"Export '{kw['ExportName']}' is not imported by any stack.")}}, "ListImports")
+                    return [{"Imports": fake.imports[kw["ExportName"]]}]
                 return [{"StackResourceSummaries": fake.stacks[kw["StackName"]].get("_resources", [])}]
         return _P()
 
@@ -169,6 +171,22 @@ class FakeCfn:
     def create_change_set(self, **kw):
         self.calls.append(("create_change_set", kw))
         self.last_change_set = kw
+        if self.on_create:
+            self.on_create(kw)
+
+    def get_template(self, StackName, ChangeSetName, TemplateStage):
+        """The change set's template as CloudFormation read it: the object behind its TemplateURL, now."""
+        self.calls.append(("get_template", {"StackName": StackName, "TemplateStage": TemplateStage}))
+        bucket, key = _s3_location(self.last_change_set["TemplateURL"])
+        body = boto3.client("s3", region_name=REGION).get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+        return {"TemplateBody": json.loads(body)}
+
+    def describe_stack_resources(self, PhysicalResourceId):
+        if PhysicalResourceId not in self.resources:
+            raise ClientError({"Error": {"Code": "ValidationError",
+                                         "Message": f"Stack for {PhysicalResourceId} does not exist"}},
+                              "DescribeStackResources")
+        return {"StackResources": self.resources[PhysicalResourceId]}
 
     def describe_change_set(self, StackName, ChangeSetName):
         return {"Status": self.change_status, "StatusReason": self.status_reason,
@@ -210,6 +228,12 @@ class FakeCfn:
 
     def names(self) -> List[str]:
         return [c[0] for c in self.calls]
+
+
+def _s3_location(url: str) -> Tuple[str, str]:
+    """(bucket, key) of a virtual-hosted S3 URL, as polyris-up builds it."""
+    host, key = url.split("://", 1)[1].split("/", 1)
+    return host.split(".s3.", 1)[0], key
 
 
 @pytest.fixture
@@ -309,7 +333,8 @@ def test_bucket_owner_status(s3, mocker):
         up.ensure_artifacts_bucket(s3, "theirs", region=REGION, owner=ACCOUNT)
 
 
-def test_upload_artifacts_is_content_addressed_and_idempotent(s3, tmp_path, capsys):
+def test_upload_artifacts_is_content_addressed_and_uploads_every_time(s3, tmp_path, capsys):
+    """An object found under a key is not known to be the one polyris-up put there (ADR #142 §8)."""
     root, manifest = up.extract_archive(_write_archive(tmp_path / "a.zip"))
     bucket = "polyris-artifacts"
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
@@ -322,7 +347,7 @@ def test_upload_artifacts_is_content_addressed_and_idempotent(s3, tmp_path, caps
     assert again == (fkeys, skeys, prefix)
     # 1 Lambda zip + 1 SFN definition + 2 UI files
     assert first == "artifacts: 4 uploaded"
-    assert second == "artifacts: 0 uploaded, 4 already in the bucket"
+    assert second == "artifacts: 4 uploaded"
     digest = hashlib.sha256(b"zip-bytes").hexdigest()[:16]
     assert fkeys == {"ConsoleApiFunction": f"v{__version__}/lambdas/{digest}/ConsoleApiFunction.zip"}
     keys = {o["Key"] for o in s3.list_objects_v2(Bucket=bucket)["Contents"]}
@@ -865,13 +890,10 @@ def test_every_artifact_request_names_the_expected_owner(s3, tmp_path, mocker):
     root, manifest = up.extract_archive(_write_archive(tmp_path / "a.zip"))
     bucket = "polyris-artifacts-owner-check"
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-    head_object = mocker.spy(s3, "head_object")
     upload_file = mocker.spy(s3, "upload_file")
 
     up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
 
-    assert head_object.call_count and all(c.kwargs["ExpectedBucketOwner"] == ACCOUNT
-                                          for c in head_object.call_args_list)
     assert upload_file.call_count and all(c.kwargs["ExtraArgs"] == {"ExpectedBucketOwner": ACCOUNT}
                                           for c in upload_file.call_args_list)
 
@@ -902,21 +924,6 @@ def _with_head_bucket(client, head_bucket, service):
     return client
 
 
-def test_root_index_html_is_uploaded_last(s3, tmp_path, mocker):
-    """Route pages are index.html files too; only the ROOT one marks a complete upload."""
-    archive = _write_archive(tmp_path / "a.zip", extra={"ui/pipelines/index.html": b"p", "ui/runs/index.html": b"r"})
-    root, manifest = up.extract_archive(archive)
-    bucket = "polyris-artifacts-order"
-    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-    upload_file = mocker.spy(s3, "upload_file")
-
-    _, _, prefix = up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
-
-    ui_keys = [c.args[2] for c in upload_file.call_args_list if c.args[2].startswith(prefix)]
-    assert ui_keys[-1] == f"{prefix}/index.html"
-    assert f"{prefix}/pipelines/index.html" in ui_keys[:-1]
-
-
 def test_session_reads_aws_region(aws, monkeypatch):
     monkeypatch.delenv("AWS_DEFAULT_REGION")
     monkeypatch.setenv("AWS_REGION", "ap-south-1")
@@ -926,7 +933,7 @@ def test_session_reads_aws_region(aws, monkeypatch):
 
 def test_up_refuses_to_roll_back_a_newer_platform(fake_cfn, s3, tmp_path, capsys):
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
-                                         Description="Polyris platform v999.0.0")])
+                                         Description="Polyris platform v1.3.99", Outputs=ROWS_OUTPUTS)])
     archive = str(_write_archive(tmp_path / "a.zip"))
 
     assert up._run(up.run_up, _up_args(archive=archive)) == 1
@@ -936,15 +943,26 @@ def test_up_refuses_to_roll_back_a_newer_platform(fake_cfn, s3, tmp_path, capsys
     assert up._run(up.run_up, _up_args(archive=archive, allow_downgrade=True)) == 0
 
 
-def test_up_never_puts_1_2_back_under_a_platform_that_runs_1_3(fake_cfn, s3, tmp_path, capsys):
-    """The architect's review of TR-8 (A-15), the maintainer's choice: a pipeline deployed for 1.3 has no engine on
-    1.2, so no flag rolls a 1.3 platform back below 1.3."""
+def test_up_installs_no_release_below_1_3(fake_cfn, s3, tmp_path, capsys):
+    """1.2 support ends with 1.4 (ADR #137, *Migration and upgrade*): a pipeline deployed for 1.3 has no engine on 1.2."""
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
                                          Description="Polyris platform v1.3.0")])
     archive = str(_write_archive(tmp_path / "a.zip", version="1.2.3"))
 
     assert up._run(up.run_up, _up_args(archive=archive, allow_downgrade=True)) == 1
-    assert "No flag allows this" in capsys.readouterr().err
+    assert "installs 1.3 or newer only" in capsys.readouterr().err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
+def test_up_never_takes_a_platform_below_1_4_even_with_the_flag(fake_cfn, s3, tmp_path, capsys):
+    """ADR #142 §4: its pipelines schedule with the schedule role, which 1.3 does not have."""
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
+                                         Description="Polyris platform v1.4.0")])
+    archive = str(_write_archive(tmp_path / "a.zip", version="1.3.2"))
+
+    assert up._run(up.run_up, _up_args(archive=archive, allow_downgrade=True)) == 1
+    err = capsys.readouterr().err
+    assert "no platform goes back below 1.4" in err and "No flag allows this" in err
     assert "create_change_set" not in fake_cfn["cfn"].names()
 
 
@@ -1044,7 +1062,7 @@ def test_every_artifacts_bucket_request_carries_expected_owner(s3, tmp_path):
     up.bucket_owner_status(s3, bucket, owner=ACCOUNT)
 
     ops = [(op, p) for op, p in calls if p.get("Bucket") == bucket and op != "CreateBucket"]
-    assert {op for op, _ in ops} >= {"HeadBucket", "HeadObject", "PutObject", "PutPublicAccessBlock",
+    assert {op for op, _ in ops} >= {"HeadBucket", "PutObject", "PutPublicAccessBlock",
                                      "PutBucketEncryption", "PutBucketTagging", "ListObjectVersions",
                                      "DeleteObjects"}
     missing = [op for op, p in ops if p.get("ExpectedBucketOwner") != ACCOUNT]
@@ -1115,386 +1133,405 @@ def test_registry_skips_state_machines_being_deleted(fake_cfn, s3, mocker):
     assert up.pipelines_on_platform(session, FakeCfn([stack]), stack, "acme-dev") == []
 
 
-# ── The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*) ─────────────
-#
-# polyris/upgrade.py's own tests cover each check; these cover what polyris-up does with them.
+# ── The upgrade to 1.4 (ADR #142 §8) ──────────────────────────────────
 
-TOKENS = "acme-dev-polyris-pipeline-tokens"
 REGISTRY = "acme-dev-polyris-pipeline-registry"
 SPECS = "acme-dev-polyris-pipeline-specs"
-ENGINE_1_2 = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter",
-              "dep-run-task-helper", "bulk-backfill")
 MACHINES = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:"
-#: What the stack of acme-dev names once it runs 1.3, beside its tasks table.
+#: What the stack of acme-dev names on 1.3.
 OUTPUTS_1_3 = [*ROWS_OUTPUTS, {"OutputKey": "PipelineRegistryTable", "OutputValue": REGISTRY},
                {"OutputKey": "PipelineSpecsTable", "OutputValue": SPECS},
                {"OutputKey": "ConsoleUiUrl", "OutputValue": "https://d123.cloudfront.net"}]
-#: What the update to this polyris changes of the stack, and the cleanup it then passes through.
-UPGRADED = {"updated": {"Description": f"Polyris platform v{__version__}",
-                        "Outputs": [{"OutputKey": "PipelineTokensTable", "OutputValue": TOKENS}, *OUTPUTS_1_3]},
-            "progress": ["UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"]}
+POLICY = f"arn:aws:iam::{ACCOUNT}:policy/acme-dev-polyris-deploy-policy"
+ORCHESTRATION = f"arn:aws:iam::{ACCOUNT}:role/acme-dev-polyris-orchestration-role"
+#: What the update to 1.4 changes of the stack.
+UPDATED_1_4 = {"updated": {"Description": "Polyris platform v1.4.0",
+                           "Outputs": [*OUTPUTS_1_3, {"OutputKey": "PipelineDeployPolicyArn", "OutputValue": POLICY},
+                                       {"OutputKey": "OrchestrationRoleArn", "OutputValue": ORCHESTRATION}]}}
 
 
-def _deployed(version: str | None = "1.2.3", *, outputs: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
-    """The stack of the platform acme-dev at ``version``; None is a stack that `sam deploy` made,
-    which names no version. ``outputs`` are those it has beside its tasks table."""
+def _deployed(version: str | None = "1.3.2", *, outputs: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+    """The stack of the platform acme-dev at ``version``; None is a stack that `sam deploy` made, which names
+    no version."""
     described = {"Description": f"Polyris platform v{version}"} if version else {}
     return _platform("acme-dev", StackStatus="UPDATE_COMPLETE", **described,
                      Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"},
                                  {"ParameterKey": "Stage", "ParameterValue": "dev"}],
-                     Outputs=[{"OutputKey": "PipelineTokensTable", "OutputValue": TOKENS},
-                              {"OutputKey": "PipelineRegistryTable", "OutputValue": REGISTRY}, *(outputs or [])])
+                     Outputs=OUTPUTS_1_3 if outputs is None else outputs)
 
 
 @pytest.fixture
-def platform_1_2(fake_cfn) -> FakeStates:
-    """A 1.2 platform that is ready for 1.3: its adoption settled three days ago, and nothing runs.
-
-    Returns its Step Functions, where a test starts what it needs running. ``pipeline-specs`` is
-    there as the 1.3 update creates it: what started before this moment is 1.2's.
-    """
-    finished = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def platform_1_3(fake_cfn) -> FakeStates:
+    """A 1.3 platform with its registry and specs tables; returns its Step Functions."""
     ddb = boto3.client("dynamodb", region_name=REGION)
-    ddb.create_table(TableName=TOKENS, BillingMode="PAY_PER_REQUEST",
-                     KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
-                     AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"},
-                                           {"AttributeName": "start_day", "AttributeType": "S"}],
-                     # The index that the 1.3 update adds: it is there, built, once the update is through.
-                     GlobalSecondaryIndexes=[{"IndexName": "run-start-index",
-                                              "KeySchema": [{"AttributeName": "start_day", "KeyType": "HASH"}],
-                                              "Projection": {"ProjectionType": "ALL"}}])
-    for table, key in ((REGISTRY, "pipeline_name"), (SPECS, "pk")):
-        ddb.create_table(TableName=table, BillingMode="PAY_PER_REQUEST",
-                         KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
-                         AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}])
-    ddb.put_item(TableName=TOKENS, Item={
-        "execution_name": {"S": "_engine_health"}, "adoption_generation": {"N": "1"},
-        "adopt_tasks_cursor": {"S": ""}, "adopt_tasks_until": {"S": finished},
-        "adopt_facts_cursor": {"S": ""}, "adopt_facts_until": {"S": finished}})
+    ddb.create_table(TableName=REGISTRY, BillingMode="PAY_PER_REQUEST",
+                     KeySchema=[{"AttributeName": "pipeline_name", "KeyType": "HASH"}],
+                     AttributeDefinitions=[{"AttributeName": "pipeline_name", "AttributeType": "S"}])
+    ddb.create_table(TableName=SPECS, BillingMode="PAY_PER_REQUEST",
+                     KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+                     AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"},
+                                           {"AttributeName": "sk", "AttributeType": "S"}])
     states = FakeStates()
-    for name in ENGINE_1_2:
-        states.machine(f"acme-dev-polyris-{name}")
     fake_cfn["cfn"] = FakeCfn([_deployed()])
     fake_cfn["stepfunctions"] = states.client
     return states
 
 
-def _a_run_in_flight(states: FakeStates, machine: str = "dependency-wrapper") -> None:
-    states.run(f"acme-dev-polyris-{machine}", "orders-run-2026-11-23-ab12cd34",
-               started=datetime.now(timezone.utc) - timedelta(hours=1))
+def _pipeline(states: FakeStates, name: str, *, role: str = "same", redeployed: bool = True,
+              specs: bool = True) -> None:
+    """A deployed pipeline: its state machine, its registry row and, with ``specs``, its current spec version,
+    whose one task runs as ``role``. The row has the format only once 1.3's polyris-deploy ``redeployed`` it."""
+    from polyris import DAG, task
+    from polyris.coordination import spec_store
+    from polyris.generators import build_spec_version
 
-
-def _pipeline(states: FakeStates, name: str, *, registered: bool = True, redeployed: bool = False) -> None:
-    """A deployed pipeline: its state machine and its registry row. The row has the ARN only once the
-    pipeline ``registered``, and the format only once 1.3's polyris-deploy ``redeployed`` it."""
     states.machine(f"acme-dev-polyris-{name}")
-    arn = {"sfn_arn": {"S": f"{MACHINES}acme-dev-polyris-{name}"}} if registered else {}
-    deployed_format = {"format_version": {"N": "1"}} if redeployed else {}
-    boto3.client("dynamodb", region_name=REGION).put_item(
-        TableName=REGISTRY, Item={"pipeline_name": {"S": name}, **arn, **deployed_format})
+    with DAG(name, schedule=None) as dag:
+        @task.sfn(arn=f"{MACHINES}work", role=role)
+        def load():
+            pass
+        load()
+    ddb = boto3.client("dynamodb", region_name=REGION)
+    version = build_spec_version(dag)
+    item: Dict[str, Any] = {"pipeline_name": {"S": name}, "sfn_arn": {"S": f"{MACHINES}acme-dev-polyris-{name}"}}
+    if specs:
+        spec_store.write(ddb, SPECS, version)
+        item.update({"spec_id": {"S": version.spec_id}, "task_count": {"N": str(version.task_count)}})
+    if redeployed:
+        item["format_version"] = {"N": "1"}
+    ddb.put_item(TableName=REGISTRY, Item=item)
 
 
-def _a_1_2_run(states: FakeStates, pipeline: str = "orders") -> None:
-    """A run of ``pipeline`` that started an hour before the 1.3 update: its execution, a wrapper and its work."""
-    started = datetime.now(timezone.utc) - timedelta(hours=1)
-    states.run(f"acme-dev-polyris-{pipeline}", f"{pipeline}-run-2026-11-23-ab12cd34", started=started)
-    states.run("acme-dev-polyris-dependency-wrapper", f"{pipeline}-extract-wrapper", started=started)
-    states.run("acme-dev-polyris-dep-run-task-helper", f"{pipeline}-extract-work", started=started)
+#: The scheduler role of the pipeline ``orders`` of the platform ``acme``/``dev``, as polyris-deploy 1.3.2 rendered
+#: it (``deploy._generate_cfn_template`` at tag ``v1.3.2``, frozen): the form polyris-up must recognise.
+SCHEDULER_ROLE_1_3 = json.loads((Path(__file__).resolve().parents[1] / "fixtures" / "scheduler_role_v1_3_2.json")
+                                .read_text())
 
 
-def test_up_upgrades_a_1_2_platform_that_is_ready(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+def _scheduler_role(name: str = "", *, policy: Dict[str, Any] | None = None, attach: str | None = None) -> str:
+    """A role named like a pipeline's scheduler role, as CloudFormation makes it from 1.3.2's template unless
+    changed; its ARN."""
+    iam = boto3.client("iam", region_name=REGION)
+    rendered = SCHEDULER_ROLE_1_3["Properties"]
+    name = name or rendered["RoleName"]
+    arn = iam.create_role(RoleName=name, AssumeRolePolicyDocument=json.dumps(rendered["AssumeRolePolicyDocument"]),
+                          Tags=rendered["Tags"])["Role"]["Arn"]
+    (inline,) = rendered["Policies"]
+    # CloudFormation resolves the Ref to the stack's state machine.
+    start = policy or json.loads(json.dumps(inline["PolicyDocument"]).replace(
+        json.dumps({"Ref": "PipelineStateMachine"}), json.dumps(f"{MACHINES}acme-dev-polyris-orders")))
+    iam.put_role_policy(RoleName=name, PolicyName=inline["PolicyName"], PolicyDocument=json.dumps(start))
+    if attach:
+        admin = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
+        policy_arn = iam.create_policy(PolicyName=attach, PolicyDocument=json.dumps(admin))["Policy"]["Arn"]
+        iam.attach_role_policy(RoleName=name, PolicyArn=policy_arn)
+    return arn
 
-    assert "checking the platform before its upgrade to 1.3" in capsys.readouterr().out
-    assert "execute_change_set" in fake_cfn["cfn"].names()
+
+def _made_by_the_pipeline_stack(cfn: FakeCfn, name: str = "acme-dev-polyris-orders-scheduler-role") -> None:
+    stack = "acme-dev-polyris-orders"
+    cfn.resources[name] = [
+        {"StackName": stack, "LogicalResourceId": "PipelineSchedulerRole", "PhysicalResourceId": name},
+        {"StackName": stack, "LogicalResourceId": "PipelineStateMachine",
+         "PhysicalResourceId": f"{MACHINES}acme-dev-polyris-orders"}]
 
 
-def test_up_refuses_a_1_2_platform_with_a_run_in_flight_before_it_changes_anything(
-        fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    _a_run_in_flight(platform_1_2)
+def _err(capsys) -> str:
+    captured = capsys.readouterr()
+    return captured.out + captured.err
+
+
+@pytest.mark.parametrize("stack", [_deployed("1.2.3"), _deployed(None, outputs=[])])
+def test_up_refuses_a_platform_below_1_3_before_it_changes_anything(fake_cfn, s3, tmp_path, capsys, stack):
+    fake_cfn["cfn"] = FakeCfn([stack])
 
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
 
-    err = capsys.readouterr().err
-    assert "A run is in flight on acme-dev" in err and "--accept-stopped-runs" in err
+    err = _err(capsys)
+    assert "upgrades a platform from 1.3 only" in err and "Upgrade it to 1.3 first" in err
     assert "create_change_set" not in fake_cfn["cfn"].names()
-    assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION), owner=ACCOUNT) == "missing"
-    assert platform_1_2.stopped == []
+    assert artifacts_bucket_name(ACCOUNT, REGION) not in [b["Name"] for b in s3.list_buckets()["Buckets"]]
 
 
-def test_up_with_the_flag_upgrades_a_platform_with_a_run_in_flight(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    _a_run_in_flight(platform_1_2)
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
-
-    assert up._run(up.run_up, args) == 0
-
-    assert "--accept-stopped-runs: 1.2's adoption and the runs in flight were not checked." in capsys.readouterr().out
-    assert "execute_change_set" in fake_cfn["cfn"].names()
-
-
-def test_up_never_upgrades_a_platform_older_than_1_2(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    fake_cfn["cfn"] = FakeCfn([_deployed("1.1.4")])
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True, yes=True)
-
-    assert up._run(up.run_up, args) == 1
-
-    err = capsys.readouterr().err
-    assert "acme-dev runs v1.1.4, and 1.3 upgrades a platform from 1.2 only" in err
-    assert "--accept-stopped-runs does not cover this check" in err
-    assert "create_change_set" not in fake_cfn["cfn"].names()
-
-
-def test_up_tells_a_sam_deployed_1_2_from_1_1_4_by_the_health_row(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """`sam deploy` stamps no version into the stack: the row only 1.2 writes tells."""
+def test_up_updates_a_sam_deployed_1_3_platform(fake_cfn, platform_1_3, s3, tmp_path):
     fake_cfn["cfn"] = FakeCfn([_deployed(None)])
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")))
-    assert up._run(up.run_up, args) == 0
-
-    boto3.client("dynamodb", region_name=REGION).delete_item(
-        TableName=TOKENS, Key={"execution_name": {"S": "_engine_health"}})
-    fake_cfn["cfn"] = FakeCfn([_deployed(None)])
-    assert up._run(up.run_up, args) == 1
-    assert "acme-dev looks older than 1.2.0" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("stack", [
-    _deployed("1.3.0rc1"),                               # a pre-release of 1.3.0 runs 1.3's engine
-    _deployed("1.3.0"),
-    _deployed(None, outputs=ROWS_OUTPUTS),               # from `sam deploy`: the output 1.3 adds tells
-], ids=["1.3.0rc1", "1.3.0", "sam deploy of 1.3"])
-def test_up_makes_no_such_checks_on_a_platform_that_runs_1_3(fake_cfn, platform_1_2, s3, tmp_path, capsys, stack):
-    """In 1.3 a run_task execution is running almost all the time: a check for runs in flight
-    would refuse every patch release."""
-    fake_cfn["cfn"] = FakeCfn([stack])
-    _a_run_in_flight(platform_1_2, "dep-run-task-helper")
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.3.1")), yes=True)
-
-    assert up._run(up.run_up, args) == 0
-
-    assert "checking the platform" not in capsys.readouterr().out
-    assert "execute_change_set" in fake_cfn["cfn"].names()
-
-
-def test_up_makes_no_such_checks_for_a_release_that_keeps_1_2s_engine(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """An --archive of a 1.2 build deletes nothing a run needs."""
-    _a_run_in_flight(platform_1_2)
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.2.4")))
-
-    assert up._run(up.run_up, args) == 0
-
-    assert "checking the platform" not in capsys.readouterr().out
-
-
-def test_up_stops_what_1_2_left_running_as_the_cleanup_begins(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """The cleanup that deletes 1.2's state machines waits for their executions (TR-0 A2), so they are
-    stopped before polyris-up waits for the stack to settle; the runs to start again are printed."""
-    _pipeline(platform_1_2, "orders")
-    _a_1_2_run(platform_1_2)
-    fake_cfn["cfn"] = cfn = FakeCfn([_deployed()], **UPGRADED)
-    stopped_when_the_wait_began: List[str] = []
-    cfn.on_wait = lambda waiter: stopped_when_the_wait_began.extend(platform_1_2.stopped)
-    updated_when_stopped: List[bool] = []
-    platform_1_2.on_stop = lambda name: updated_when_stopped.append("execute_change_set" in cfn.names())
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
-
-    assert up._run(up.run_up, args) == 0
-
-    assert stopped_when_the_wait_began == ["orders-run-2026-11-23-ab12cd34", "orders-extract-wrapper",
-                                           "orders-extract-work"]
-    assert updated_when_stopped == [True] * 3, "nothing is stopped before the update has succeeded"
-    assert platform_1_2.running() == []
-    out = capsys.readouterr().out
-    assert "Stopped what 1.2 left running: 1 run(s), and 2 execution(s) of the engine's state machines." in out
-    assert "acme-dev-polyris-orders  orders-run-2026-11-23-ab12cd34  (started " in out
-    assert "start these again once their pipelines are redeployed" in out
-
-
-def test_up_keeps_what_started_after_the_1_3_update(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """An ordinary update of a platform that runs 1.3 stops none of its runs."""
-    _pipeline(platform_1_2, "orders")
-    later = datetime.now(timezone.utc) + timedelta(hours=1)
-    platform_1_2.run("acme-dev-polyris-orders", "orders-run-2026-11-24-0f0f0f0f", started=later)
-    platform_1_2.run("acme-dev-polyris-dep-run-task-helper", "extract-work", started=later)
-    fake_cfn["cfn"] = FakeCfn([_deployed("1.3.0a1", outputs=OUTPUTS_1_3)], **UPGRADED)
-
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
 
-    listed = {params["stateMachineArn"] for name, params in platform_1_2.calls if name == "ListExecutions"}
-    assert {f"{MACHINES}acme-dev-polyris-orders", f"{MACHINES}acme-dev-polyris-dep-run-task-helper"} <= listed
-    assert platform_1_2.stopped == []
-    assert "Stopped what 1.2 left running" not in capsys.readouterr().out
 
-
-def test_a_polyris_up_stops_what_is_left_of_1_2_while_its_state_machines_are_there(fake_cfn, platform_1_2, s3,
-                                                                                    tmp_path, capsys):
-    """Also one with nothing to change: an upgrade interrupted after its update is finished by the next run, as
-    long as a state machine of 1.2 is left (upgrade.left_by_1_2)."""
-    _pipeline(platform_1_2, "orders")
-    _a_1_2_run(platform_1_2)
-    fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
-                              status_reason="didn't contain changes")
-
-    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
-
-    out = capsys.readouterr().out
-    assert "already up to date" in out and "Stopped what 1.2 left running: 1 run(s)" in out
-    assert platform_1_2.running() == []
-
-
-def test_a_platform_that_finished_its_upgrade_is_asked_for_no_execution(fake_cfn, platform_1_2, s3, tmp_path,
-                                                                       capsys):
-    """The architect's review of TR-8 (B-1): every polyris-up on 1.3 listed and stopped executions, which the
-    install's permissions do not grant, and failed after a good update with a message about 1.2. Once none of
-    1.2's state machines is left, it only sees so (DescribeStateMachine)."""
-    for name in ENGINE_1_2[:4]:                     # REMOVED_STANDARD_MACHINES: the upgrade's cleanup deleted them
-        platform_1_2.machines.pop(f"{MACHINES}acme-dev-polyris-{name}")
-    _pipeline(platform_1_2, "orders", redeployed=True)
-    fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
-                              status_reason="didn't contain changes")
-
-    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
-
-    assert "already up to date" in capsys.readouterr().out
-    assert not {"ListExecutions", "StopExecution", "ListStateMachines"} & set(platform_1_2.operations())
-
-
-def test_up_finishes_an_upgrade_that_was_interrupted_in_its_cleanup(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """The stack is updated and its cleanup waits for a wrapper: polyris-up stops it and waits, where
-    it used to say the stack is busy."""
-    platform_1_2.run("acme-dev-polyris-dependency-wrapper", "orders-extract-wrapper",
-                     started=datetime.now(timezone.utc) - timedelta(hours=1))
-    stack = _deployed(__version__, outputs=OUTPUTS_1_3)
-    stack["StackStatus"] = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"
-    fake_cfn["cfn"] = cfn = FakeCfn([stack], change_status="FAILED", status_reason="didn't contain changes")
-    cfn.on_wait = lambda waiter: cfn.calls.append(("stopped", list(platform_1_2.stopped)))
-
-    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
-
-    assert ("stopped", ["orders-extract-wrapper"]) in cfn.calls, "before it waits for the stack"
-    assert cfn.names().index("wait") < cfn.names().index("create_change_set")
-    out = capsys.readouterr().out
-    assert "acme-dev is still cleaning up after its last update" in out and "already up to date" in out
-
-
-def test_up_stops_nothing_for_a_stack_that_is_no_platform(fake_cfn, platform_1_2, capsys):
-    """`--stack my-app` on a stack that only looks like one in its cleanup: refused before any stop."""
-    platform_1_2.run("acme-dev-polyris-dependency-wrapper", "someone-elses",
-                     started=datetime.now(timezone.utc) - timedelta(hours=1))
-    fake_cfn["cfn"] = FakeCfn([{"StackName": "acme-dev", "StackStatus": "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
-                                "Tags": [], "Description": "Polyris platform v1.3.0",
-                                "Parameters": [{"ParameterKey": "TableName", "ParameterValue": "invoices"}]}])
-
-    assert up._run(up.run_up, _up_args(stack="acme-dev", yes=True)) == 1
-
-    assert "not a Polyris platform stack" in capsys.readouterr().err
-    assert platform_1_2.calls == []
-
-
-def test_up_still_refuses_a_stack_that_another_update_keeps_busy(fake_cfn, platform_1_2, capsys):
-    """A cleanup on a platform below 1.3 has nothing of 1.2 to stop: it is some other update's."""
-    stack = _deployed()
-    stack["StackStatus"] = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"
-    fake_cfn["cfn"] = FakeCfn([stack])
-
-    assert up._run(up.run_up, _up_args()) == 1
-
-    assert "busy (UPDATE_COMPLETE_CLEANUP_IN_PROGRESS)" in capsys.readouterr().err
-
-
-def test_up_says_what_it_could_not_stop_and_how_to_go_on(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    _pipeline(platform_1_2, "orders")
-    _a_1_2_run(platform_1_2)
-    platform_1_2.denied.add("StopExecution")
-    fake_cfn["cfn"] = FakeCfn([_deployed()], **UPGRADED)
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
+def test_up_never_creates_a_platform_named_like_a_pipeline_stack(fake_cfn, s3, tmp_path, capsys):
+    args = _up_args(stack="acme-polyris-dev", namespace="acme", stage="dev", admin_email="",
+                    archive=str(_write_archive(tmp_path / "a.zip")))
 
     assert up._run(up.run_up, args) == 1
 
-    err = capsys.readouterr().err
-    assert "acme-dev is updated, but polyris-up could not stop what 1.2 left running" in err
-    assert "AccessDeniedException" in err and "run polyris-up again" in err
-
-
-@pytest.mark.parametrize("flag", [False, True])
-def test_up_is_refused_before_the_update_when_it_may_not_read_the_registry(
-        fake_cfn, platform_1_2, s3, tmp_path, capsys, flag):
-    """The stop reads the registry after the update: better refused now, while nothing has changed."""
-    fake_cfn["dynamodb"] = ddb = boto3.client("dynamodb", region_name=REGION)
-    refuse(ddb, "Scan")
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=flag)
-
-    assert up._run(up.run_up, args) == 1
-
-    assert f"polyris-up may not call dynamodb:Scan on {REGISTRY}" in capsys.readouterr().err
+    assert "A platform stack may not be named 'acme-polyris-dev'" in _err(capsys)
     assert "create_change_set" not in fake_cfn["cfn"].names()
 
 
-def test_up_finds_a_pipeline_the_registry_does_not_name_by_its_state_machines_name(
-        fake_cfn, platform_1_2, s3, tmp_path):
-    """A pipeline whose registration never finished, and one that has only its stack."""
-    _pipeline(platform_1_2, "pending", registered=False)
-    platform_1_2.machine("acme-dev-polyris-unregistered")
-    platform_1_2.machine("acme-prod-polyris-pending")                     # another platform's pipeline
-    for machine in ("acme-dev-polyris-pending", "acme-dev-polyris-unregistered", "acme-prod-polyris-pending"):
-        platform_1_2.run(machine, f"a-run-of-{machine}", started=datetime.now(timezone.utc) - timedelta(hours=1))
-    fake_cfn["cfn"] = FakeCfn([_deployed(), {"StackName": "acme-dev-polyris-unregistered", "Tags": []}], **UPGRADED)
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
+def test_up_refuses_a_task_that_runs_as_a_role_of_the_account_outside_the_tasks_path(
+        fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    _pipeline(platform_1_3, "orders", role=f"arn:aws:iam::{ACCOUNT}:role/etl-role")
+    _pipeline(platform_1_3, "reports", role=f"arn:aws:iam::{ACCOUNT}:role/polyris-tasks/finance-writer")
+    _pipeline(platform_1_3, "warehouse", role="arn:aws:iam::222222222222:role/etl-role")
+    _pipeline(platform_1_3, "basic")
 
-    assert up._run(up.run_up, args) == 0
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
 
-    assert platform_1_2.running() == ["a-run-of-acme-prod-polyris-pending"]
-    assert "ListStateMachines" in platform_1_2.operations()
+    err = _err(capsys)
+    assert "1 task(s) of deployed pipelines run as a role of this account outside /polyris-tasks/" in err
+    assert f"pipeline orders, task load: arn:aws:iam::{ACCOUNT}:role/etl-role" in err
+    assert "aws iam create-role --path /polyris-tasks/ --role-name etl-role" in err
+    assert f"arn:aws:iam::{ACCOUNT}:role/polyris-tasks/etl-role" in err
+    assert "reports" not in err and "warehouse" not in err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
 
 
-def test_up_stops_nothing_for_a_release_that_keeps_1_2s_engine(fake_cfn, platform_1_2, s3, tmp_path):
-    _pipeline(platform_1_2, "orders")
-    _a_1_2_run(platform_1_2)
-    fake_cfn["cfn"] = FakeCfn([_deployed()], progress=["UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"])
-    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.2.4")))
+def test_up_reads_only_each_pipelines_current_spec_version(fake_cfn, platform_1_3, s3, tmp_path):
+    """A version an older deploy wrote stays in pipeline-specs for good; the registry names the current one."""
+    _pipeline(platform_1_3, "orders", role=f"arn:aws:iam::{ACCOUNT}:role/etl-role")
+    _pipeline(platform_1_3, "orders", role=f"arn:aws:iam::{ACCOUNT}:role/polyris-tasks/etl-role")
 
-    assert up._run(up.run_up, args) == 0
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
 
-    assert platform_1_2.stopped == []
+
+def test_up_skips_a_pipeline_deployed_before_1_3_which_has_no_specs(fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    _pipeline(platform_1_3, "old", specs=False, redeployed=False)
+    fake_cfn["cfn"] = FakeCfn([_deployed()], updated={"Outputs": OUTPUTS_1_3})
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+    assert "polyris-deploy --select old" in capsys.readouterr().out
+
+
+def test_up_accepts_the_scheduler_role_polyris_deploy_made(fake_cfn, platform_1_3, s3, tmp_path):
+    _scheduler_role()
+    _made_by_the_pipeline_stack(fake_cfn["cfn"])
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+
+def test_up_looks_for_a_scheduler_roles_stack_in_the_region_of_the_machine_it_starts(
+        fake_cfn, platform_1_3, s3, tmp_path, mocker):
+    """IAM is global, a stack regional: a pipeline of a platform in another region holds its scheduler role there.
+    The stack is looked for in the region of the state machine the role starts; no tag says it."""
+    machine = f"arn:aws:states:us-west-2:{ACCOUNT}:stateMachine:acme-dev-polyris-orders"
+    name = SCHEDULER_ROLE_1_3["Properties"]["RoleName"]
+    _scheduler_role(policy={"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "states:StartExecution", "Resource": machine}]})
+    fake_cfn["cfn"].resources[name] = [
+        {"StackName": "acme-dev-polyris-orders", "LogicalResourceId": "PipelineSchedulerRole", "PhysicalResourceId": name},
+        {"StackName": "acme-dev-polyris-orders", "LogicalResourceId": "PipelineStateMachine",
+         "PhysicalResourceId": machine}]
+    regions: List[Any] = []
+    routed = boto3.Session.client
+
+    def client(self, service, *a, **kw):
+        if service == "cloudformation":
+            regions.append(kw.get("region_name"))
+        return routed(self, service, *a, **kw)
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+    assert "us-west-2" in regions
+
+
+def test_up_names_a_scheduler_role_whose_region_it_cannot_reach(fake_cfn, platform_1_3, s3, tmp_path, mocker,
+                                                                capsys):
+    """A region that does not exist, or that the account has not opted in to: the refusal names the role and
+    the region, never a bare connection error (the review of 1.4.0)."""
+    from botocore.exceptions import EndpointConnectionError
+
+    machine = f"arn:aws:states:xx-nowhere-1:{ACCOUNT}:stateMachine:acme-dev-polyris-orders"
+    name = SCHEDULER_ROLE_1_3["Properties"]["RoleName"]
+    _scheduler_role(policy={"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "states:StartExecution", "Resource": machine}]})
+    routed = boto3.Session.client
+
+    def client(self, service, *a, **kw):
+        if service == "cloudformation" and kw.get("region_name") == "xx-nowhere-1":
+            unreachable = mocker.MagicMock()
+            unreachable.describe_stack_resources.side_effect = EndpointConnectionError(
+                endpoint_url="https://cloudformation.xx-nowhere-1.amazonaws.com")
+            return unreachable
+        return routed(self, service, *a, **kw)
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    err = _err(capsys)
+    assert f"Role {name} starts a state machine in xx-nowhere-1" in err
+    assert "polyris-deploy did not make the role: delete it" in err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
+@pytest.mark.parametrize("plant, reason", [
+    (lambda cfn: _scheduler_role(), "no pipeline stack made it"),
+    (lambda cfn: (_scheduler_role(attach="Admin"),
+                  _made_by_the_pipeline_stack(cfn)), "managed policies are attached to it"),
+    (lambda cfn: (_scheduler_role(policy={"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "*", "Resource": "*"}]}), _made_by_the_pipeline_stack(cfn)),
+     "its inline policies do more than start its pipeline's state machine"),
+])
+def test_up_refuses_a_scheduler_role_that_polyris_deploy_did_not_make(
+        fake_cfn, platform_1_3, s3, tmp_path, capsys, plant, reason):
+    plant(fake_cfn["cfn"])
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+
+    err = _err(capsys)
+    assert "1 role(s) named like a pipeline's scheduler role are not what polyris-deploy made" in err
+    assert f"arn:aws:iam::{ACCOUNT}:role/acme-dev-polyris-orders-scheduler-role: " in err and reason in err
+    assert "CloudTrail's CreateRole, PutRolePolicy, AttachRolePolicy and UpdateAssumeRolePolicy" in err
+    assert "Delete a role that is not a pipeline's." in err and "rename" not in err   # IAM renames no role
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
+def test_up_checks_the_scheduler_roles_of_a_new_install_too(fake_cfn, s3, tmp_path, capsys):
+    """The new platform's deploy policy may pass such a role as soon as it exists."""
+    _scheduler_role()
+    args = _up_args(namespace="acme", stage="dev", admin_email="", archive=str(_write_archive(tmp_path / "a.zip")))
+
+    assert up._run(up.run_up, args) == 1
+    assert "not what polyris-deploy made" in _err(capsys)
+
+
+def test_a_check_it_may_not_make_stops_polyris_up_with_the_permission(fake_cfn, platform_1_3, s3, tmp_path, capsys,
+                                                                       mocker):
+    real_client = boto3.Session.client
+
+    def client(self, service, *a, **kw):
+        made = real_client(self, service, *a, **kw)
+        if service == "iam":
+            mocker.patch.object(made, "get_paginator", side_effect=ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "no"}}, "ListRoles"))
+        return made
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    assert "polyris-up may not call iam:ListRoles on *, which its checks before any change need." in _err(capsys)
+
+
+def test_a_denied_read_of_the_deployed_pipelines_names_every_action_the_read_makes(
+        fake_cfn, platform_1_3, s3, tmp_path, capsys, mocker):
+    _pipeline(platform_1_3, "orders")
+    real_client = boto3.Session.client
+
+    def client(self, name, *a, **kw):
+        made = real_client(self, name, *a, **kw)
+        if name == "dynamodb":
+            mocker.patch.object(made, "scan", side_effect=ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Scan"))
+        return made
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    assert "polyris-up may not call cloudformation:DescribeStacks, dynamodb:Scan, states:DescribeStateMachine" \
+        in _err(capsys)
+
+
+@pytest.mark.parametrize("operation", ["Query", "BatchGetItem"])
+def test_a_denied_read_of_the_specs_names_every_action_the_read_makes(fake_cfn, platform_1_3, s3, tmp_path, capsys,
+                                                                      mocker, operation):
+    _pipeline(platform_1_3, "orders")
+    real_client = boto3.Session.client
+    method = {"Query": "query", "BatchGetItem": "batch_get_item"}[operation]
+
+    def client(self, service, *a, **kw):
+        made = real_client(self, service, *a, **kw)
+        if service == "dynamodb":
+            mocker.patch.object(made, method, side_effect=ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, operation))
+        return made
+
+    mocker.patch.object(boto3.Session, "client", client)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    assert f"polyris-up may not call dynamodb:Query, dynamodb:BatchGetItem on {SPECS}" in _err(capsys)
+
+
+def test_up_deploys_only_the_template_it_uploaded(fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    """A writer of the bucket who swaps the template between the upload and the change set (ADR #142 §8)."""
+    cfn = fake_cfn["cfn"]
+
+    def swap(change_set):
+        bucket, key = _s3_location(change_set["TemplateURL"])
+        s3.put_object(Bucket=bucket, Key=key, Body=json.dumps({"Resources": {"Evil": {}}}).encode())
+    cfn.on_create = swap
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+
+    assert "is not the one uploaded for acme-dev" in _err(capsys)
+    assert "delete_change_set" in cfn.names() and "execute_change_set" not in cfn.names()
+
+
+def test_up_uploads_its_template_under_a_key_nobody_can_predict(fake_cfn, platform_1_3, s3, tmp_path):
+    archive = str(_write_archive(tmp_path / "a.zip"))
+    urls = []
+    for _ in range(2):
+        fake_cfn["cfn"] = FakeCfn([_deployed()])
+        assert up._run(up.run_up, _up_args(archive=archive)) == 0
+        urls.append(fake_cfn["cfn"].last_change_set["TemplateURL"])
+        assert "get_template" in fake_cfn["cfn"].names(), "the change set's template is checked"
+    assert urls[0] != urls[1]
+
+
+def test_the_update_to_1_4_tells_the_authors_to_take_the_new_deploy_policy(fake_cfn, platform_1_3, s3, tmp_path,
+                                                                           capsys):
+    fake_cfn["cfn"] = FakeCfn([_deployed()], **UPDATED_1_4)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.4.0")))) == 0
+
+    out = capsys.readouterr().out
+    assert (f"⚠ Pipeline authors need the new deploy policy: attach acme-dev-polyris-deploy-policy ({POLICY}) to "
+            "their role or CI role and detach the old one.") in out
+    assert "Order: platform (done) → attach the new policy → authors' CLI 1.4 → detach the old policy" in out
+    assert f"Deploy policy for pipeline authors:  {POLICY}" in out
+
+
+def test_the_outputs_name_the_role_a_tasks_own_role_trusts(fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    """The how-to's trust policy names the orchestration role: polyris-up prints its ARN with its outputs."""
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.4.0")], **UPDATED_1_4)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.4.1")))) == 0
+
+    assert f"Orchestration role (a task's own role trusts it):  {ORCHESTRATION}" in capsys.readouterr().out
+
+
+def test_an_update_within_1_4_says_nothing_of_the_policy_move(fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.4.0")], **UPDATED_1_4)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.4.1")))) == 0
+    assert "need the new deploy policy" not in capsys.readouterr().out
 
 
 def test_up_lists_the_pipelines_that_still_need_a_redeploy_with_the_command_for_each(
-        fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """Until its redeploy a 1.2 pipeline's runs fail at once: the list says which, and how."""
-    _pipeline(platform_1_2, "orders")
-    _pipeline(platform_1_2, "customers", redeployed=True)                  # from CI, while the upgrade ran
-    _pipeline(platform_1_2, "pending", registered=False)
+        fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    """A pipeline deployed with an older format fails its runs until its redeploy: the list says which, and how."""
+    _pipeline(platform_1_3, "orders", redeployed=False)
+    _pipeline(platform_1_3, "customers")
     boto3.client("dynamodb", region_name=REGION).put_item(TableName=REGISTRY, Item={      # destroyed since
         "pipeline_name": {"S": "retired"}, "sfn_arn": {"S": f"{MACHINES}acme-dev-polyris-retired"}})
-    fake_cfn["cfn"] = FakeCfn([_deployed(), {"StackName": "acme-dev-polyris-unregistered", "Tags": []}], **UPGRADED)
+    fake_cfn["cfn"] = FakeCfn([_deployed(), {"StackName": "acme-dev-polyris-unregistered", "Tags": []}],
+                              updated={"Outputs": OUTPUTS_1_3})
     args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), stack="acme-dev")
 
     assert up._run(up.run_up, args) == 0
 
     out = capsys.readouterr().out
-    assert "3 pipeline(s) were deployed with an older pipeline format. Their runs fail at once" in out
+    assert "2 pipeline(s) were deployed with an older pipeline format. Their runs fail at once" in out
     listed = [line.strip() for line in out.splitlines() if line.strip().startswith("polyris-deploy --select")]
     assert listed == [f"polyris-deploy --select {name} --stack acme-dev --region {REGION}"
-                      for name in ("orders", "pending", "unregistered")]
+                      for name in ("orders", "unregistered")]
     assert "polyris-deploy --all" in out
-    assert "a first pipeline" not in out, "the redeploy comes next"
-
-
-def test_up_lists_none_once_every_pipeline_is_redeployed(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    _pipeline(platform_1_2, "orders", redeployed=True)
-    fake_cfn["cfn"] = FakeCfn([_deployed("1.3.0a1", outputs=OUTPUTS_1_3)], **UPGRADED)
-
-    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
-
-    out = capsys.readouterr().out
-    assert "older pipeline format" not in out and "polyris-deploy --select" not in out
     # An update said "Next — a first pipeline" to a platform of 22 pipelines (1.3.0 on dev)
     assert "a first pipeline" not in out, "an update: the pipelines run as before"
 
 
-def test_up_with_nothing_to_change_still_lists_the_pipelines_to_redeploy(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    _pipeline(platform_1_2, "orders")
-    fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
-                              status_reason="didn't contain changes")
+def test_up_with_nothing_to_change_still_lists_the_pipelines_to_redeploy(fake_cfn, platform_1_3, s3, tmp_path, capsys):
+    _pipeline(platform_1_3, "orders", redeployed=False)
+    fake_cfn["cfn"] = FakeCfn([_deployed(__version__)], change_status="FAILED", status_reason="didn't contain changes")
 
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
 
@@ -1502,28 +1539,14 @@ def test_up_with_nothing_to_change_still_lists_the_pipelines_to_redeploy(fake_cf
     assert "already up to date" in out and f"polyris-deploy --select orders --region {REGION}" in out
 
 
-def test_up_waits_until_dynamodb_has_built_the_index_that_1_3_adds(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """CloudFormation reports the table updated while the index is still being built (TR-0 A3)."""
-    building = {"Table": {"TableName": TOKENS, "GlobalSecondaryIndexes": [
-        {"IndexName": "run-start-index", "IndexStatus": "CREATING", "Backfilling": True}]}}
-    fake_cfn["dynamodb"] = ddb = boto3.client("dynamodb", region_name=REGION)
-    answering(ddb, "DescribeTable", building, building, where={"TableName": TOKENS})
-    fake_cfn["cfn"] = FakeCfn([_deployed()], **UPGRADED)
+def test_down_refuses_while_a_pipeline_schedules_with_the_platforms_schedule_role(fake_cfn, s3, capsys):
+    """CloudFormation would refuse to delete the export a pipeline stack imports (ADR #142 §4); --yes does not cover it."""
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.4.0", outputs=[])])
+    fake_cfn["cfn"].imports["acme-dev-polyris-schedule-role-arn"] = ["acme-dev-polyris-orders"]
 
-    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+    assert up._run(up.run_down, _down_args(yes=True, delete_data=True)) == 1
 
-    out = capsys.readouterr().out
-    assert out.index("is up: acme-dev") < out.index(f"waiting for DynamoDB to build run-start-index on {TOKENS}")
-    assert "run-start-index is active" in out
-
-
-def test_up_makes_none_of_this_of_a_first_install(fake_cfn, s3, tmp_path, capsys):
-    """A new platform has nothing of 1.2, its index is built with its table, and it has no pipeline yet."""
-    fake_cfn["stepfunctions"] = (states := FakeStates()).client
-    args = _up_args(namespace="acme", stage="dev", admin_email="", archive=str(_write_archive(tmp_path / "a.zip")))
-
-    assert up._run(up.run_up, args) == 0
-
-    assert states.calls == []
-    assert "a first pipeline" in capsys.readouterr().out
-
+    err = _err(capsys)
+    assert "1 pipeline stack(s) still schedule with this platform's schedule role: acme-dev-polyris-orders." in err
+    assert "Destroy the scheduled pipelines first" in err
+    assert "delete_stack" not in fake_cfn["cfn"].names()

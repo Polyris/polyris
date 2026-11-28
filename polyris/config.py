@@ -19,7 +19,10 @@ Example config.py in your pipelines repo:
             "profile": "my-dev-profile",   # optional
             "account_id": "123456789012",  # optional guard
             "roles": {
-                "etl": "arn:aws:iam::123456789012:role/etl-role",
+                # a role of the platform's account: only under the path /polyris-tasks/
+                "etl": "arn:aws:iam::123456789012:role/polyris-tasks/etl-role",
+                # a role in another account
+                "warehouse": "arn:aws:iam::333333333333:role/warehouse-role",
             },
         },
         "prod": {

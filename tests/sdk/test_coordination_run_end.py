@@ -56,14 +56,13 @@ def test_the_console_shows_a_run_running_until_every_row_its_summary_counts_is_f
 
 
 def test_the_console_shows_no_status_beyond_its_set():
-    """A run list filtered by another status reads no run row (SHOWN_STATUSES): what ``shown_status`` gives, and
-    ``stale``, which the console gives a run from before 1.3 left unfinished (D123)."""
+    """A run list filtered by another status reads no run row (SHOWN_STATUSES): what ``shown_status`` gives."""
     from itertools import combinations
 
     statuses = sorted(FINAL | {"running", "waiting", "waiting_decision", "deps_ready"})
     shown = {run_end.shown_status(dict.fromkeys(combo, 1), step_failed=step)
              for n in (1, 2) for combo in combinations(statuses, n) for step in (False, True)}
-    assert shown | {"stale"} == run_end.SHOWN_STATUSES
+    assert shown == run_end.SHOWN_STATUSES
 
 
 @pytest.mark.parametrize("counts,expected", [

@@ -135,6 +135,7 @@ class Bindings:
         self._set(env, "TOKENS_TABLE", tables["PipelineTokensTable"])
         self._set(env, "SUBSCRIPTIONS_TABLE", tables["DependencySubscriptionsTable"])
         self._set(env, "SPECS_TABLE", tables["PipelineSpecsTable"])
+        self._set(env, "PIPELINES_TABLE", tables["PipelineRegistryTable"])
         self._set(start_run, "datetime", _clocked_datetime(self.clock))
         handler = as_component("lambda:start-run", start_run.handler)
         self.stack.bind_lambda("StartRunFunction", handler)

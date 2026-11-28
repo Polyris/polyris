@@ -4,7 +4,7 @@ Closes the bulk of the remaining ``polyris.generators`` branches (CLAUDE.md #13)
 the ``if step.<optional>:`` arms of the per-service state builders, the Map-state
 validation in ``validate_asl``, ``generate_debug_info`` enrichment, the tracked
 Glue/ECS/Athena step paths in ``generate_dag_json`` / ``generate_mermaid``, the
-asset-lineage iterator, ``generate_eventbridge_schedule`` and ``generate_all_assets``.
+asset-lineage iterator and ``generate_all_assets``.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from polyris.generators import (
     generate_debug_info,
     generate_dag_json,
     generate_mermaid,
-    generate_eventbridge_schedule,
     generate_all_assets,
 )
 
@@ -167,14 +166,6 @@ class TestGeneratorOutputs:
             step()
         kinds = {kind for _tid, _asset, kind in _iter_dag_assets(dag)}
         assert kinds == {"inlet", "outlet"}
-
-    def test_eventbridge_schedule_none_without_config(self):
-        with DAG("noeb", schedule=None) as dag:
-            @task.sfn(arn=ARN)
-            def a():
-                pass
-            a()
-        assert generate_eventbridge_schedule(dag) is None
 
     def test_generate_all_assets_records_triggers(self):
         upstream = Asset("ns/u")

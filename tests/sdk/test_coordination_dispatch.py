@@ -473,24 +473,16 @@ def test_a_run_row_reads_back_with_its_pipeline_and_its_start():
     assert dispatch.run_view({run_row.TABLE_KEY: "_run_orders"}).started_at is None
 
 
-# ── the rows that a 1.2 run left in flight (*Migration and upgrade*, invariant 11) ──────
+# ── the rows that a 1.2 run left (invariant 11, ADR #137, *Migration and upgrade*) ──────────────────────────
 
-def test_a_row_without_readiness_fields_reads_back_for_its_stop_alone():
-    legacy = dispatch.stop_view({task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value})
-    assert (legacy.task_id, legacy.status, legacy.generation) == ("load-k", S.WAITING.value, 0)
-    raised = dispatch.stop_view({task_row.TABLE_KEY: "load-k", task_row.TASK_NAME: "load",
-                                 task_row.STATUS: S.WAITING.value, task_row.GENERATION: 2})
-    assert (raised.task_id, raised.generation) == ("load", 2)
-    assert dispatch.stop(legacy, now=NOW, cause="its run row is missing").transition == "stop"
+def test_a_row_without_readiness_fields_is_one_a_12_run_left_and_no_pass_reads_it():
+    old = {task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value}
+    assert dispatch.written_before_1_3(old)
     with pytest.raises(ValueError, match="readiness fields"):
-        dispatch.row_view({task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value})
-
-
-def test_a_row_of_13_reads_back_for_its_stop_as_any_pass_reads_it():
-    item = {task_row.TABLE_KEY: "load-k", task_row.TASK_NAME: "load", task_row.STATUS: S.WAITING.value,
-            task_row.GENERATION: 1, task_row.READINESS: task_spec.readiness_text(task_spec.parse(_SPEC_TEXT,
-                                                                                            expected_hash=_SPEC_HASH))}
-    assert dispatch.stop_view(item) == dispatch.row_view(item)
+        dispatch.row_view(old)
+    item = {**old, task_row.TASK_NAME: "load", task_row.GENERATION: 1,
+            task_row.READINESS: task_spec.readiness_text(task_spec.parse(_SPEC_TEXT, expected_hash=_SPEC_HASH))}
+    assert not dispatch.written_before_1_3(item)
 
 
 _SPEC_TEXT = task_spec.canonical_json({"task_id": "load", "task_type": "sfn", "dependencies": [],

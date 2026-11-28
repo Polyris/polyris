@@ -24,6 +24,8 @@ from coordination_testkit import (
     FakeSfn,
     execution_name,
     legacy_fact,
+    READINESS_1_3,
+    register,
     template,
 )
 
@@ -385,9 +387,10 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
                  "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
     registry.put_item(Item={"pipeline_name": "orders", "sfn_arn": "arn:aws:states:us-east-1:1:stateMachine:orders"})
     sfn.executions[f"arn:aws:states:us-east-1:1:execution:orders:{RUN}"] = "ABORTED"
-    # A row a 1.2 run left in flight: no run row.
+    # A row whose run row is missing.
     old = execution_name("old", "orders-run-2026-11-12-0ld0ld01")
-    tokens.put_item(Item={"execution_name": old, "status": "waiting", "generation": 1,
+    tokens.put_item(Item={"execution_name": old, "task_name": "old", "status": "waiting", "generation": 1,
+                          "readiness": READINESS_1_3,
                           "pipeline_execution": "orders-run-2026-11-12-0ld0ld01",
                           att.KEY: att.attention(att.WAITING, old), att.DUE: format_utc(clock - timedelta(minutes=5))})
     # A push retry, the catch-up's push, and a subscription its pipeline no longer has.
@@ -425,7 +428,8 @@ def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(reso
                   if s["Action"] == ["states:DescribeExecution"]]
     [ended] = [s for s in _statements(resources, "ReconcileRole", managed=False)
                if s["Action"] == ["states:DescribeExecution"]]
-    [stop] = [s for s in _statements(resources, "ReconcileRole") if s["Action"] == ["states:StopExecution"]]
+    [stop] = [s for s in _statements(resources, "ReconcileRole")
+             if s["Action"] == ["states:StopExecution"] and s["Effect"] == "Allow"]
     execution = "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:"
     for statement in (describe, ended, stop):
         [arn] = statement["Resource"]
@@ -437,11 +441,27 @@ def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(reso
         extract()
     pipeline = _generate_cfn_template(dag, namespace="other", stage="qa", region="us-east-1",
                                       role_arn="arn:aws:iam::1:role/r", start_run_function_arn="arn:start-run",
-                                      registry_table="r", tokens_table="t", asset_subscriptions_table="a")
+                                      registry_table="r", tokens_table="t", asset_subscriptions_table="a",
+                                      schedule_role_export="acme-dev-polyris-schedule-role-arn")
     name = pipeline["Resources"]["PipelineStateMachine"]["Properties"]["StateMachineName"]
     run_task = resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"].replace("${Namespace}-${Stage}", "acme-dev")
     for machine in (name, run_task):
         assert fnmatch(f"{machine}:orders-run-2026-11-24-1a2b3c4d", "*-polyris-*:*"), machine
+
+
+def test_the_engine_starts_only_state_machines_of_the_platforms_names(resources):
+    """AssetFanout and the sweeper start the pipeline the registry names, and run_task: every one is named
+    ``*-polyris-*``, so no other state machine of the account is theirs to start (least privilege, the
+    re-review of 1.4.0)."""
+    machine = "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:"
+    for role in ("AssetFanoutRole", "SweeperRole", "ReconcileRole"):
+        starts = [s for s in _statements(resources, role) if s["Action"] == ["states:StartExecution"]
+                  and s["Effect"] == "Allow"]
+        assert starts, role
+        for statement in starts:
+            for arn in statement["Resource"]:
+                value = arn["!Sub"] if isinstance(arn, dict) else arn
+                assert value.startswith(machine) and "-polyris-" in value[len(machine):], (role, value)
 
 
 def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_is_consistent(
@@ -459,8 +479,10 @@ def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_i
                                                   "trigger_rule": "all_success",
                                                   "wait_for": [{"asset_name": "ns/orders"}]}])
     spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+    execution_arn = f"arn:aws:states:us-east-1:123456789012:execution:orders:{RUN}"
+    register(ddb, "orders", execution_arn)
     event = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 1,
-             "pipeline_name": "orders", "execution_name": RUN, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{RUN}", "execution_start": STARTED_AT, "token": "t1",
+             "pipeline_name": "orders", "execution_name": RUN, "execution_arn": execution_arn, "execution_start": STARTED_AT, "token": "t1",
              "retry_count": 0, "redrive_count": 0, "date": "2026-11-12", "input": {}}
     with recording(ddb, client) as used, reading(ddb, client) as reads:
         assert start_run.handler(event, None)["started"]

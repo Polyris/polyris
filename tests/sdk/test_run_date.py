@@ -96,7 +96,8 @@ def test_the_schedule_hands_each_run_the_time_it_fired_it_for():
     template = _generate_cfn_template(
         _nightly(), namespace="acme", stage="prod", region="us-east-1",
         role_arn="arn:aws:iam::123456789012:role/x", start_run_function_arn=ARN,
-        registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs")
+        registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
+        schedule_role_export="acme-prod-polyris-schedule-role-arn")
     run_input = json.loads(template["Resources"]["PipelineSchedule"]["Properties"]["Target"]["Input"])
     assert run_input == {"triggered_by": "schedule", "schedule": "cron(59 23 * * ? *)",
                          SCHEDULED_TIME_FIELD: "<aws.scheduler.scheduled-time>"}

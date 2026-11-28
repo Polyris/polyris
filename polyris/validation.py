@@ -22,6 +22,8 @@ from contextlib import nullcontext, redirect_stdout
 from typing import IO, Dict, List, Set, Tuple, Optional, Any
 from dataclasses import asdict, dataclass, field
 from polyris._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
+from polyris.platform import refused_task_role, reserved_machine, task_role_refusal
+from polyris.resource_check import unresolved_message, unresolved_refs
 
 
 @dataclass
@@ -515,6 +517,20 @@ def _validate_dags(dags: list, verbose: bool) -> Tuple[bool, List[str]]:
     return all_valid, all_errors
 
 
+def same_account_role_errors(dag, *, account: str, default_task_role: Optional[str] = None) -> List[str]:
+    """The refusal for each task of ``dag`` whose ``role=`` names a role of the platform's ``account`` outside
+    ``/polyris-tasks/`` (ADR #142 §6, ``platform.refused_task_role``). ``default_task_role`` is the name of the
+    platform's default task role, when the platform is known."""
+    from polyris.generators import _resolved_role
+
+    errors = []
+    for t in dag.tasks:
+        role = _resolved_role(t) if getattr(t, 'role', None) else None
+        if role and refused_task_role(role, account=account, default_task_role=default_task_role):
+            errors.append(task_role_refusal(t.task_id, role))
+    return errors
+
+
 def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
     """Validate a single DAG object."""
     from polyris.generators import build_spec_version, generate_step_function_json, validate_asl
@@ -552,6 +568,18 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
                     f"Task '{t.task_id}': role={t.role!r} is not 'same', not a "
                     f"key in config.roles, and not an ARN. Known roles: {known}"
                 )
+        # A role of the platform's account outside /polyris-tasks/ (ADR #142 §6), wherever the account is known:
+        # here from config.py's account_id; polyris-deploy checks again with the caller's account.
+        account = config.get('account_id')
+        if account:
+            role_errors.extend(same_account_role_errors(dag, account=str(account)))
+        reserved = reserved_machine(dag.dag_id)
+        if reserved:
+            role_errors.append(
+                f"DAG '{dag.dag_id}': its state machine would be named like the platform's own "
+                f"'{reserved}' (<namespace>-<stage>-polyris-{reserved}), which no pipeline may start. "
+                f"Pick another dag_id."
+            )
 
         # trigger_rule is a Literal (type-checker-only), not enforced at run time: a name the engine does
         # not know would fail its task when the run reaches it (ADR #138 §2). Catch it here, with the
@@ -589,6 +617,9 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
                     f"{' and '.join(unfilled)} with real values before deploying:\n"
                     f"     {arn}"
                 )
+
+        # A ${...} in a task's ARN or name: nothing substitutes it since 1.3, so the task would fail at its run.
+        placeholder_errors.extend(unresolved_message(rr) for rr in unresolved_refs(dag))
 
         asl_json = generate_step_function_json(dag)
         asl = _json.loads(asl_json)

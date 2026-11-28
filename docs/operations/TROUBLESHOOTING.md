@@ -100,10 +100,11 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution=my-pipeline-run-2
    ```bash
    aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job"
    ```
-2. **IAM permissions:** the orchestration role, which starts the task's work, may start it:
+2. **IAM permissions:** the role the task's work starts as may start it. That is the platform's default task role, or the role the task names in `role=`; the orchestration role only assumes it. For the default task role:
    ```bash
-   aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::123456789012:role/${NAMESPACE}-${STAGE}-polyris-orchestration-role" --action-names "states:StartExecution" --resource-arns "arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job"
+   aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::123456789012:role/${NAMESPACE}-${STAGE}-polyris-default-task-role" --action-names "states:StartExecution" --resource-arns "arn:aws:states:us-east-1:123456789012:stateMachine:my-etl-job"
    ```
+   For a task with `role=`, pass that role's ARN as `--policy-source-arn`, with credentials for the account it is in. An error about assuming the role means its trust policy does not name the orchestration role ([give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md)).
 3. **The work's own logs** in CloudWatch, for an error inside the job.
 
 **Fix:** correct the ARN or the permissions, then restart the task.
@@ -183,14 +184,72 @@ The pipeline stack's first create failed, and CloudFormation cannot update such 
 
 ### "Platform stack '…' is missing required outputs"
 
-**Symptoms:** `polyris-deploy` stops with this message and names the missing outputs (`OrchestrationRoleArn`, `PipelineSpecsTable`, `StartRunFunctionArn`).
+**Symptoms:** `polyris-deploy` stops with this message and names the missing outputs:
+```text
+❌ Platform stack 'acme-dev' is missing required outputs.
+   Missing outputs: PipelineScheduleRoleArn
+   The platform is older than this polyris (1.4.0). Ask whoever installs the platform to run polyris-up 1.4.0.
+```
 
-**Cause:** the platform is older than your polyris. **Fix:** upgrade it with `polyris-up`.
+**Cause:** the platform is older than your polyris. `PipelineScheduleRoleArn` alone means a platform of 1.3 and a scheduled pipeline: a pipeline without a schedule still deploys to it. **Fix:** the infrastructure engineer upgrades the platform ([manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-to-140)).
 
 Also check that `--stack`, or `stack_name` in `config.py`, names the platform stack (`<namespace>-<stage>`, the one `polyris-up` installed), not a pipeline stack:
 ```bash
 aws cloudformation describe-stacks --stack-name "${NAMESPACE}-${STAGE}" --query "Stacks[0].Outputs[*].OutputKey" --output table
 ```
+
+---
+
+### "The role that runs polyris-deploy may not pass the platform's roles"
+
+**Symptoms:** `polyris-deploy` stops after CloudFormation refused an `iam:PassRole`:
+```text
+❌ CloudFormation deploy failed: …
+   The role that runs polyris-deploy may not pass the platform's roles. Attach the platform's deploy policy to it: arn:aws:iam::123456789012:policy/acme-dev-polyris-deploy-policy.
+```
+
+**Fix:** the infrastructure engineer attaches that policy to your role or CI role ([IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#the-deploy-policy)). To check a role before you deploy, simulate the role that runs `polyris-deploy`, not the platform's:
+```bash
+aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::123456789012:role/pipeline-deployer" --action-names "iam:PassRole" --resource-arns "arn:aws:iam::123456789012:role/${NAMESPACE}-${STAGE}-polyris-orchestration-role" --context-entries "ContextKeyName=iam:PassedToService,ContextKeyValues=states.amazonaws.com,ContextKeyType=string"
+```
+
+---
+
+### `not authorized to perform: iam:CreateRole` on a scheduler role
+
+**Symptoms:** the deploy of a scheduled pipeline fails, and the stack's event for `PipelineSchedulerRole` says the caller is not authorized to perform `iam:CreateRole`.
+
+**Cause:** a `polyris-deploy` older than 1.4 runs under the deploy policy of 1.4, which creates no IAM role. **Fix:** install polyris 1.4 for the deploy, and pin it in CI.
+
+---
+
+### "role … is in the platform's account"
+
+**Symptoms:** `polyris-validate` or `polyris-deploy` refuses a task:
+```text
+❌ Task 'export_daily': role arn:aws:iam::123456789012:role/finance-writer is in the platform's account, and polyris may use only roles of this account under the path /polyris-tasks/. …
+```
+
+**Fix:** ask the infrastructure engineer to create the role under `/polyris-tasks/`, and use its new ARN: [give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md). A role in another account needs no path.
+
+---
+
+### "its state machine would be named like the platform's own"
+
+**Symptoms:** `polyris-validate` refuses a DAG whose `dag_id` ends like one of the platform's state machines, such as `bulk-backfill` or `test-quick`:
+```text
+❌ DAG 'bulk-backfill': its state machine would be named like the platform's own 'bulk-backfill' (<namespace>-<stage>-polyris-bulk-backfill), which no pipeline may start. Pick another dag_id.
+```
+
+**Fix:** rename the DAG. The platform's roles and policies refuse to start a state machine of that name, so its runs could never start.
+
+---
+
+### "The template of change set … is not the one uploaded"
+
+**Symptoms:** `polyris-deploy` or `polyris-up` stops with `The template of change set … is not the one uploaded for …: the object was changed between its upload and the change set. Nothing was deployed; the change set is deleted.`
+
+**Cause:** something wrote the template's S3 object between its upload and the change set. **Fix:** check who may write the bucket named in the message (the platform's results bucket for `polyris-deploy`, the artifacts bucket for `polyris-up`), then run the command again.
 
 ---
 
@@ -233,6 +292,14 @@ Use the tag of your platform's version.
 2. The browser's console (F12 → Console) for errors.
 
 **Fix:** run `polyris-up` again; it rewrites `config.js` from the stack's outputs.
+
+---
+
+### Run answers "Pipeline '…' is not registered on this platform"
+
+**Symptoms:** **Run** on a pipeline's page fails with `Pipeline 'my-pipeline' is not registered on this platform. A pipeline registers within a minute of polyris-deploy; deploy it, then run it.`
+
+**Fix:** deploy the pipeline, or wait a minute after its deploy; [Pipeline not in the console after deploy](#pipeline-not-in-the-console-after-deploy) has the checks.
 
 ---
 

@@ -30,7 +30,7 @@ from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
 from constants import Limits
 from constants_generated import ManualResolution
-from feed import (day_keys, dependencies_of, is_stale, page_by_started_at, readiness_of, task_runs_before,
+from feed import (day_keys, dependencies_of, page_by_started_at, readiness_of, task_runs_before,
                   tasks_of_runs, wait_for_text)
 from response import cors_response, index_building_response, safe_parse_body
 from logger import log
@@ -135,9 +135,8 @@ _TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', task_row.RUN_TASK_A
                    *executions_repo.RUN_META_FIELDS)
 
 
-def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
-    """Project one pipeline-tokens row to a History tasks-feed row; ``stale`` marks a row of a run from before 1.3
-    that is not final (``feed.is_stale``)."""
+def _format_task_row(item: Dict) -> Dict:
+    """Project one pipeline-tokens row to a History tasks-feed row."""
     # Calculate duration if possible — use running_at (its work's start), not started_at (its row's)
     duration_ms = None
     actual_start = item.get('running_at') or item.get('started_at')
@@ -183,7 +182,6 @@ def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
         # list view (a static ceiling in a live feed is misleading). Included for the task
         # detail panel to surface alongside attempt.
         'max_retries': max_retries,
-        **({'stale': True} if stale else {}),
     }
 
 
@@ -227,15 +225,14 @@ def get_all_tasks(event: Dict) -> Dict:
                     date_key, min_rows=None, key_condition=key_cond,
                     filter_expr=Attr('status').eq(status_filter) if status_filter else None))
             page, next_cursor = page_by_started_at([i for i in items if _keeps(i)], before, limit)
-            backfilled = _backfill(page)
+            _backfill(page)
         else:
             runs, more = task_runs_before(before, limit, pipeline=pipeline_filter, status=status_filter)
             page, next_cursor = tasks_of_runs(runs, limit, more=more, keep=_keeps, status=status_filter)
-            backfilled = True         # pipeline-execution-index projects every attribute
 
         # The rows as they are: the engine keeps them true, and the console asks Step Functions nothing about a
         # run (ADR #137 §5).
-        tasks = [_format_task_row(i, stale=backfilled and is_stale(i)) for i in page]
+        tasks = [_format_task_row(i) for i in page]
 
         return cors_response(200, {
             'tasks': tasks,
@@ -255,11 +252,11 @@ def get_all_tasks(event: Dict) -> Dict:
         return cors_response(500, {'error': f'Failed to get tasks: {str(e)}'})
 
 
-def _backfill(page: List[Dict]) -> bool:
-    """The fields a date index lacks (_TASKS_BACKFILL), from the base table for the page only; whether it read them.
+def _backfill(page: List[Dict]) -> None:
+    """The fields a date index lacks (_TASKS_BACKFILL), from the base table for the page only.
 
-    A page holds whole runs, so a run of 2,000 tasks costs 20 BatchGetItem calls, whatever the limit. Without
-    readiness, no row can be told from one of 1.2, so a failed read marks none stale."""
+    A page holds whole runs, so a run of 2,000 tasks costs 20 BatchGetItem calls, whatever the limit. The runs'
+    tasks read without a date come from pipeline-execution-index, which projects every attribute."""
     try:
         names = [r['execution_name'] for r in page if r.get('execution_name')]
         if names:
@@ -272,8 +269,6 @@ def _backfill(page: List[Dict]) -> bool:
                             r[field] = m.get(field)
     except (ClientError, BotoCoreError) as e:
         log.warn("get_all_tasks", "batch_get_run_meta failed; run-meta fields left null", error=str(e))
-        return False
-    return True
 
 
 def get_task_config(task_name: str, event: Dict) -> Dict:

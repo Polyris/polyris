@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 from logger import log
+from registry import AWS_CONFIG
 
 _ssm = None
 
@@ -30,7 +31,7 @@ def _ssm_client():
     """Lazy SSM client (so unit tests can patch boto3 without a live client)."""
     global _ssm
     if _ssm is None:
-        _ssm = boto3.client('ssm', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+        _ssm = boto3.client('ssm', region_name=os.environ.get('AWS_REGION', 'us-east-1'), config=AWS_CONFIG)
     return _ssm
 
 
@@ -62,7 +63,8 @@ def _http_post_json(url: str, payload: dict, timeout: int = 5) -> int:
 class Notifier:
     """Base class. A notifier formats a failure into a channel-specific payload
     and delivers it. `config` is the per-channel dict from alert_config;
-    `failure` is the failure context (pipeline, task, error, links, …)."""
+    `failure` is the failure that index.platform_failure built from the platform's
+    rows: pipeline_name, task_name, execution_name, date and error."""
 
     channel = 'base'
 
@@ -112,7 +114,6 @@ class WebhookNotifier(Notifier):
             "task": failure.get('task_name'),
             "error": self._error_short(failure),
             "date": failure.get('date', ''),
-            "links": failure.get('links') or [],
         }
         try:
             status = _http_post_json(url, payload)

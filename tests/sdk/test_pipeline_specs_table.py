@@ -9,29 +9,16 @@ install fail. No ``Retain``: a table a rollback left behind would block the next
 
 from pathlib import Path
 
-import yaml
 
 from polyris import deploy
 from polyris.coordination import task_spec
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {node.tag: loader.construct_scalar(node)}
-        if isinstance(node, yaml.SequenceNode):
-            return {node.tag: loader.construct_sequence(node)}
-        return {node.tag: loader.construct_mapping(node)}
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=_Loader)
+    return load_template(tagged=True)
 
 
 TEMPLATE = _template()

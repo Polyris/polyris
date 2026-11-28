@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
+from sam_template import load_template
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "sam" / "template.yaml"
 
@@ -28,14 +28,7 @@ FORBIDDEN_ACTIONS = {"cloudwatch:PutMetricData", "cloudwatch:PutMetricAlarm", "s
 
 @pytest.fixture(scope="module")
 def resources():
-    class Loader(yaml.SafeLoader):
-        pass
-
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: (
-        loader.construct_scalar(node) if isinstance(node, yaml.ScalarNode)
-        else loader.construct_sequence(node, deep=True) if isinstance(node, yaml.SequenceNode)
-        else loader.construct_mapping(node, deep=True)))
-    return yaml.load(TEMPLATE.read_text(), Loader=Loader)["Resources"]
+    return load_template(tagged=False)["Resources"]
 
 
 def _keys(value):

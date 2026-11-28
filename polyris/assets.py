@@ -5,7 +5,7 @@ Assets represent logical data units (files, tables, models) that tasks can produ
 Enables cross-pipeline dependencies through EventBridge events.
 
 Example:
-    from sfn_dsl import DAG, task, Asset, Metadata
+    from polyris import DAG, task, Asset, Metadata
     
     # Define assets
     inventory = Asset("raw/inventory", uri="s3://bucket/raw/inventory/")
@@ -13,13 +13,13 @@ Example:
     
     # Producer pipeline
     with DAG(dag_id="acquisition", schedule="@daily") as dag:
-        @task.sfn(arn="${inv_arn}", outlets=[inventory])
+        @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:get-inventory", outlets=[inventory])
         def get_inventory():
             pass
     
     # Consumer pipeline (triggered when inventory is updated)
     with DAG(dag_id="processing", schedule=[inventory]) as dag:
-        @task.sfn(arn="${proc_arn}", inlets=[inventory], outlets=[processed])
+        @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:process-inventory", inlets=[inventory], outlets=[processed])
         def process_inventory():
             pass
     

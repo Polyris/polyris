@@ -161,15 +161,9 @@ def test_the_index_keys_refuse_a_naive_time():
 
 
 def _tokens_table() -> dict:
-    from pathlib import Path
+    from sam_template import load_template
 
-    import yaml
-
-    class Loader(yaml.SafeLoader):
-        pass
-
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
-    template = yaml.load((Path(__file__).parents[2] / "sam" / "template.yaml").read_text(), Loader=Loader)
+    template = load_template(tagged=False)
     return template["Resources"]["PipelineTokensTable"]["Properties"]
 
 

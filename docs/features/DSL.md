@@ -338,7 +338,7 @@ Every `@task.<service>` accepts these. They control retry, timeout and trigger p
 | `retry_jitter` | bool | False | Randomise each wait into `[base/2, base)` (avoids retry stampede) |
 | `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting). The wait ends at the platform's next check after it, up to 5 minutes later |
 | `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps: see [Trigger rules](#trigger-rules) below |
-| `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
+| `role` | str | `"same"` | The role the task's work starts as: `'same'` for the platform's default task role, a role ARN, or a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)). The role is in another account, or in the platform's account under the IAM path `/polyris-tasks/`; `polyris-deploy` refuses any other role of the platform's account. How to set one up: [give-a-task-a-role-of-its-own.md](../how-to/give-a-task-a-role-of-its-own.md) |
 | `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 97, each once (the decorator refuses an asset named twice) |
 | `inlets` | list[Asset] | `[]` | Assets consumed by this task (documentation only) |
 | `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the [run's date](../../GLOSSARY.md#a-runs-date) ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]`. The wait lasts 7 days from when the task's own dependencies are met; then the task fails. `polyris-deploy` warns when `orchestration_timeout` is shorter |
@@ -621,6 +621,8 @@ A string value is either text or, whole, a JSONata expression in `{% ... %}`. An
 Give each step a `step_id` unique in the pipeline. `Wait`, `Pass` and `Succeed` exist too, but since nothing follows a step, they change nothing in a run: for a delay before a task, use `wait_before`. `LambdaTask`, `GlueTask`, `AthenaTask` and `ECSTask` run as tasks, not steps; use the `@task` decorators of the same services instead.
 
 > **Note:** The pipeline's state machine runs as the platform's role `<namespace>-<stage>-polyris-orchestration-role`, which may make each of these calls on any resource of the account ([IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md)). A resource in another account, or one whose policy or KMS key refuses the role, still answers `AccessDenied`.
+
+A bucket, key, table, topic or queue that an expression takes from `$states.input` is chosen by whoever starts the run: a console user with `write` access sets the run's input when they press **Run**. Write the names a step acts on as text, unless the run's starter is meant to choose them.
 
 ---
 

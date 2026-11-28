@@ -32,9 +32,8 @@ def world(mocker):
         use_specs_table(mocker, resource)
         freeze(mocker, 'routes.pipelines_list', 'routes.pipelines_info')
         registry = open_registry(mocker, resource)
-        sfn = mocker.patch.object(pipelines_list, 'sfn')
         yield type('World', (), {'table': table, 'resource': resource, 'registry': registry})
-        assert sfn.method_calls == [], "no route asks Step Functions about a run (ADR #137 §5)"
+    assert not hasattr(pipelines_list, 'sfn'), "no route asks Step Functions about a run (ADR #137 §5)"
 
 
 def executions(**query):
@@ -164,14 +163,15 @@ def test_a_1_3_run_draws_the_spec_version_its_run_row_names(world):
     assert dag_of()['dag_source'] == 'registry' and [n['id'] for n in dag_of()['nodes']] == ['extract']
 
 
-def test_a_1_2_run_draws_its_dag_snapshot_until_1_4(world):
-    """D89: a run from before 1.3 has no run row; its snapshot is read, with each countdown from its rows."""
+def test_a_1_2_run_draws_no_dag_snapshot_but_the_pipelines_graph(world):
+    """ADR #137, *Migration and upgrade*: a run from before 1.3 has no run row, and 1.4 reads no DAG snapshot: the run shows the pipeline's
+    current graph, here inferred from its rows since the registry names no specs."""
     legacy = 'orders-run-2026-11-20-legacy01'
     world.table.put_item(Item={'execution_name': f'dag_snapshot::{legacy}', 'pipeline_execution': legacy,
                                'dag': json.dumps({'nodes': [{'id': 'a'}, {'id': 'b'}], 'edges': []})})
     put_task(world.table, legacy, 'b', '2026-11-20', 'success', wait_before='30')
     body = dag_of(pipeline_execution=legacy)
-    assert body['dag_source'] == 'snapshot' and body['nodes'] == [{'id': 'a'}, {'id': 'b', 'wait_before': 30}]
+    assert body['dag_source'] == 'inferred' and [n['id'] for n in body['nodes']] == ['b']
 
 
 def test_without_specs_the_graph_is_inferred_from_the_latest_run_of_the_date(world):
@@ -229,9 +229,8 @@ def test_the_history_names_a_failed_direct_step(world):
     assert run['failed_step'] == {'step': 'notify', 'error': 'AccessDenied'}
 
 
-def test_a_row_of_a_run_from_before_1_3_left_unfinished_is_stale(world):
-    """ADR #137, *Migration and upgrade* (the review of TR-6d, P-2): 1.3 finishes no row of a run from before it, and the upgrade
-    stopped its execution, so such a row says it is stale; a row of 1.3 never does."""
+def test_a_run_from_before_1_3_left_unfinished_shows_its_rows_as_they_are(world):
+    """ADR #137, *Migration and upgrade*: 1.4 marks nothing stale. A run of 1.2 with a row left unfinished shows running until its rows expire."""
     from polyris.coordination import task_spec
     from routes.tasks import get_all_tasks
     old = 'orders-run-2026-11-19-0ld0ld00'
@@ -241,14 +240,13 @@ def test_a_row_of_a_run_from_before_1_3_left_unfinished_is_stale(world):
     put_task(world.table, run, 'extract', '2026-11-20', 'running', started=days_ago(0),
              readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []}))
 
-    shown = {t['task_name']: t.get('stale') for t in status_of(date='2026-11-19')['tasks']}
-    assert shown == {'extract': None, 'load': True}
-    assert [t.get('stale') for t in status_of(date='2026-11-20')['tasks']] == [None]
+    shown = {t['task_name']: t['status'] for t in status_of(date='2026-11-19')['tasks']}
+    assert shown == {'extract': 'success', 'load': 'running'}
     status, body = executions(date='2026-11-19')
-    assert [r['status'] for r in body['executions']] == ['stale']
-    for date, expected in (('2026-11-19', {'extract': None, 'load': True}), ('2026-11-20', {'extract': None})):
+    assert [r['status'] for r in body['executions']] == ['running']
+    for date in ('2026-11-19', '2026-11-20'):
         listed = json.loads(get_all_tasks({'queryStringParameters': {'pipeline': 'orders', 'date': date}})['body'])
-        assert {t['task_name']: t.get('stale') for t in listed['tasks']} == expected
+        assert all('stale' not in t for t in listed['tasks'])
 
 
 def test_the_page_says_whether_a_pause_holds_the_run_or_a_stop_of_it_is_in_progress(world):

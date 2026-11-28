@@ -7,6 +7,7 @@ CloudFormation works.
 """
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -26,8 +27,6 @@ _NO_CHANGES_MARKERS = ("didn't contain changes", "No updates are to be performed
 STACK_WAIT_DELAY_S = 10
 STACK_WAIT_MAX_ATTEMPTS = 360
 _CHANGE_SET_MAX_WAIT_S = 600
-# An update that has succeeded: the stack is usable, and CloudFormation is deleting what the new template dropped.
-CLEANUP_STATUS = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"
 
 
 class ChangeSetError(Exception):
@@ -181,33 +180,52 @@ def delete_stack(
     raise ChangeSetError(f"Stack {stack_name} is still being deleted after an hour.")
 
 
+def _as_document(template: Any) -> Any:
+    """A template as GetTemplate returns it (boto3 parses a JSON body) or as it was uploaded, as one value."""
+    if isinstance(template, str):
+        try:
+            return json.loads(template)
+        except ValueError:
+            return template  # not JSON: compared as the text it is
+    return template
+
+
+def verify_change_set_template(cfn, *, stack_name: str, change_set: Dict[str, Any], uploaded: str) -> None:
+    """Refuse a change set whose template is not the one uploaded for it.
+
+    A template that goes through S3 (polyris-deploy's over the inline limit, polyris-up's always) could be
+    swapped by another writer of the bucket between the upload and the change set; CloudFormation would then run the swapped one with the caller's
+    rights. The change set's own template (``TemplateStage=Original``) is compared with the uploaded text;
+    on a mismatch the change set is deleted and ChangeSetError says why.
+    """
+    name = change_set["ChangeSetName"]
+    got = cfn.get_template(StackName=stack_name, ChangeSetName=name, TemplateStage="Original")["TemplateBody"]
+    if _as_document(got) == _as_document(uploaded):
+        return
+    cfn.delete_change_set(StackName=stack_name, ChangeSetName=name)
+    raise ChangeSetError(
+        f"The template of change set {name} is not the one uploaded for {stack_name}: the object was changed "
+        f"between its upload and the change set. Nothing was deployed; the change set is deleted. Check who "
+        f"may write the bucket it was uploaded to.")
+
+
 def execute_change_set(
     cfn,
     *,
     stack_name: str,
     change_set: Dict[str, Any],
     disable_rollback: bool = False,
-    on_cleanup: Optional[Callable[[], None]] = None,
-    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Execute a ready change set and block until the stack settles.
 
     With ``disable_rollback`` a failed operation keeps what it already changed
     (``UPDATE_FAILED``) instead of rolling back, so it can be fixed forward.
-
-    ``on_cleanup`` is called once an update has succeeded and CloudFormation
-    starts to delete what the new template dropped (``CLEANUP_STATUS``): the
-    moment to end whatever would hold that deletion up. A create never calls
-    it, nor does an update that fails, or whose cleanup is over before a poll
-    sees it.
     """
     if disable_rollback:
         cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"], DisableRollback=True)
     else:
         cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"])
     created = change_set.get("ChangeSetType") == "CREATE"
-    if on_cleanup is not None and not created and _reaches_cleanup(cfn, stack_name, sleep):
-        on_cleanup()
     waiter_name = "stack_create_complete" if created else "stack_update_complete"
     try:
         wait_for_stack(cfn, stack_name=stack_name, waiter=waiter_name)
@@ -216,16 +234,6 @@ def execute_change_set(
             f"Stack {stack_name} did not finish: {e}. The events above (or the CloudFormation console) "
             f"name the failing resource."
         )
-
-
-def _reaches_cleanup(cfn, stack_name: str, sleep: Callable[[float], None]) -> bool:
-    """Wait while an update runs; True once it has succeeded and its cleanup has begun."""
-    for _ in range(STACK_WAIT_MAX_ATTEMPTS):
-        status = stack_status(cfn, stack_name)
-        if status != "UPDATE_IN_PROGRESS":
-            return status == CLEANUP_STATUS
-        sleep(STACK_WAIT_DELAY_S)
-    return False
 
 
 def start_event_watcher(cfn, stack_name: str) -> Callable[[], None]:

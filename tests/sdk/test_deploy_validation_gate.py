@@ -178,6 +178,7 @@ def test_generate_cfn_template_rejects_unsubstituted_table_name():
             registry_table="real-registry",
             tokens_table="real-tokens",
             asset_subscriptions_table="",  # simulates a missing SSM parameter
+            schedule_role_export="acme-dev-polyris-schedule-role-arn",
         )
 
 
@@ -235,14 +236,16 @@ def test_namespace_stage_length_guardrail_skipped_on_destroy(mocker):
     assert exc.value.code == 2  # reached boto, not the IAM guard
 
 
-def test_scheduler_role_dag_id_length_guardrail(mocker):
-    """deploy_pipeline exits when the scheduler IAM role name would exceed 64 chars.
+@pytest.mark.parametrize("dag_id,code", [("d" * 37, 1), ("d" * 36, 2)])
+def test_schedule_name_dag_id_length_guardrail(mocker, dag_id, code):
+    """deploy_pipeline exits when the schedule's name would exceed EventBridge Scheduler's 64 chars.
 
-    Scheduler role: {namespace}-{stage}-polyris-{dag_id}-scheduler-role
-    = len(ns)+1+len(stage)+9+len(dag_id)+15 must be ≤ 64
-    → len(ns)+len(stage)+len(dag_id) ≤ 39.
+    Schedule: {namespace}-{stage}-polyris-{dag_id}-schedule
+    = len(ns)+1+len(stage)+9+len(dag_id)+9 must be ≤ 64
+    → len(ns)+len(stage)+len(dag_id) ≤ 45.
 
-    With ns=5, stage=4 (total 9, well under 25), dag_id must be ≤ 30 chars.
+    With ns=5, stage=4 (total 9), dag_id may have 36 chars and not 37. Since 1.4 the pipeline
+    creates no scheduler role, whose name was the limit before (ADR #142 §4).
     Guard only fires for time-triggered DAGs (dag.schedule truthy, not asset-triggered).
     """
     # A project with config.py: its own naming applies, so the guard runs
@@ -250,9 +253,8 @@ def test_scheduler_role_dag_id_length_guardrail(mocker):
     # adopted first — see test_deploy_platform_discovery.py).
     mocker.patch("polyris.config._find_project_config", return_value="config.py")
     dag = mocker.MagicMock()
-    # ns(5) + stage(4) + dag_id(31) = 40 > 39 → scheduler role = 65 chars
-    dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars
-    dag.schedule = "@daily"       # time-triggered → scheduler role IS created
+    dag.dag_id = dag_id
+    dag.schedule = "@daily"       # time-triggered → it has a schedule
     dag.is_asset_triggered = False
     mocker.patch(
         "polyris.validation.validate_asl_from_dag",
@@ -266,19 +268,19 @@ def test_scheduler_role_dag_id_length_guardrail(mocker):
         stack_name="some-stack",
     )
     boto = mocker.patch("polyris.deploy.boto3")
+    boto.Session.side_effect = SystemExit(2)  # guard passed → boto reached → arranged exit
 
     with pytest.raises(SystemExit) as exc:
         deploy.deploy_pipeline(dag)  # deploy path: guards are active
 
-    assert exc.value.code == 1
-    boto.Session.assert_not_called()  # guard fires before any AWS work
+    assert exc.value.code == code
 
 
-def test_scheduler_role_guard_skipped_for_unscheduled_dag(mocker):
-    """Guard 2 must NOT fire for unscheduled DAGs (no scheduler role is created)."""
+def test_schedule_name_guard_skipped_for_unscheduled_dag(mocker):
+    """Guard 2 must NOT fire for unscheduled DAGs (they have no schedule)."""
     dag = mocker.MagicMock()
-    dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars — would fail if guard fired
-    dag.schedule = None           # no schedule → no scheduler role
+    dag.dag_id = "d" * 37  # would fail if the guard fired
+    dag.schedule = None           # no schedule
     dag.is_asset_triggered = False
     mocker.patch(
         "polyris.validation.validate_asl_from_dag",
@@ -297,15 +299,15 @@ def test_scheduler_role_guard_skipped_for_unscheduled_dag(mocker):
     with pytest.raises(SystemExit) as exc:
         deploy.deploy_pipeline(dag)
 
-    assert exc.value.code == 2  # reached boto, not the scheduler-role guard
+    assert exc.value.code == 2  # reached boto, not the schedule-name guard
 
 
-def test_scheduler_role_guard_skipped_for_asset_triggered_dag(mocker):
-    """Guard 2 must NOT fire for asset-triggered DAGs (no EventBridge Scheduler role created)."""
+def test_schedule_name_guard_skipped_for_asset_triggered_dag(mocker):
+    """Guard 2 must NOT fire for asset-triggered DAGs (they have no EventBridge schedule)."""
     dag = mocker.MagicMock()
-    dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars — would fail if guard fired
+    dag.dag_id = "d" * 37  # would fail if the guard fired
     dag.schedule = [object()]      # asset schedule object — truthy, but is_asset_triggered=True
-    dag.is_asset_triggered = True  # asset-triggered → no scheduler role
+    dag.is_asset_triggered = True  # asset-triggered → no schedule
     mocker.patch(
         "polyris.validation.validate_asl_from_dag",
         return_value=(True, [], []),
@@ -323,4 +325,4 @@ def test_scheduler_role_guard_skipped_for_asset_triggered_dag(mocker):
     with pytest.raises(SystemExit) as exc:
         deploy.deploy_pipeline(dag)
 
-    assert exc.value.code == 2  # reached boto, not the scheduler-role guard
+    assert exc.value.code == 2  # reached boto, not the schedule-name guard

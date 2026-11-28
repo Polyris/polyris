@@ -683,6 +683,25 @@ def test_lambda_user_payload_merges_under_orchestration(template):
     assert payload["upstream"]["audit"] == {"status": "failed", "skip_origin": None}
 
 
+@pytest.mark.parametrize("state,field", [("Run_Task_Lambda", "Payload"), ("Run_Task_SFN", "Input")])
+def test_the_platforms_keys_win_over_the_run_input(state, field):
+    """A run's input reaches a task's input as its variables, and a console user may set any of them. The
+    pipeline's name and the tokens table are the platform's: a variable of either name pointed the task's
+    xcom at another pipeline's outputs or at another table (ADR #142, *Context*). The date keys
+    stay the variables' to change."""
+    from sfn_jsonata import evaluate, load_template
+
+    machine = load_template("helpers/run_task/sfn.tpl.json", {"tokens_table": "acme-dev-polyris-pipeline-tokens"})
+    execution = {"date": "2026-01-01", "partition_arg": "2026-01-01", "pipeline_name": "sales", "upstreams": {}}
+    variables = {"pipeline_name": "payroll", "_polyris_table": "elsewhere", "current_date": "2025-12-31", "region": "eu"}
+    resolved = evaluate(machine["States"][state]["Arguments"][field],
+                        input={"variables": variables, "upstream_outputs": {}},
+                        context={"Execution": {"Input": {**execution, "task_config": {}}}})
+    assert resolved["pipeline_name"] == "sales"
+    assert resolved["_polyris_table"] == "acme-dev-polyris-pipeline-tokens"
+    assert resolved["current_date"] == "2025-12-31" and resolved["region"] == "eu"
+
+
 # --- role: cross-account Credentials must apply to ALL wrapper-routed types (G6) ---
 
 _WRAPPER_ROUTED_STATES = (

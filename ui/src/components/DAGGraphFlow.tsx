@@ -57,7 +57,6 @@ const STATUS_COLORS: Record<string, { bg: string; border: string }> = {
     skipped: { bg: 'var(--skipped-light)', border: 'var(--skipped)' },
     stopped: { bg: 'var(--stopped-light)', border: 'var(--stopped)' },
     aborted: { bg: 'var(--aborted-light)', border: 'var(--aborted)' },
-    stale: { bg: 'var(--skipped-light)', border: 'var(--skipped)' },
 };
 
 // Countdown Badge - has its own local tick so only this re-renders every second
@@ -155,7 +154,7 @@ CountdownBadge.displayName = 'CountdownBadge';
 // badge, notification warning) is invisible from that test file. Tests for
 // TaskNode internals live in DAGTaskNode.test.tsx and exercise this export.
 export const TaskNode = ({ data, selected }: { data: DAGTaskNodeData; selected: boolean }) => {
-    const status = data.task?.stale ? 'stale' : (data.status || 'waiting');
+    const status = data.status || 'waiting';
     const isBlueprint = status === 'blueprint';
     const colors = STATUS_COLORS[status] || STATUS_COLORS.waiting;
     const waitingReason = getWaitingReason(data.task);

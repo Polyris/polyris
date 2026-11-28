@@ -41,7 +41,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..constants import ExecutionStatus, TaskSpecKey, TaskStatus
-from . import attention, deadlines, ownership, pauses, run_end, run_row, start_run, sweep, task_row, task_spec
+from . import attention, deadlines, pauses, run_end, run_row, start_run, sweep, task_row, task_spec
 from . import transitions, trigger_rules
 from . import decide as dc
 from .asset_conditions import Evaluation
@@ -164,21 +164,10 @@ def row_view(item: Mapping[str, Any]) -> RowView:
     )
 
 
-def stop_view(item: Mapping[str, Any]) -> RowView:
-    """A row read back for its stop alone, when its run row is missing (invariant 11).
-
-    A row that a 1.2 run left in flight has no readiness fields, and may have no
-    generation, which then reads as ``ownership.LEGACY``: a stop needs only the
-    status and the generation (*Migration and upgrade*).
-    """
-    if task_row.READINESS in item:
-        return row_view(item)
-    status = str(item[task_row.STATUS])
-    generation = item.get(task_row.GENERATION)
-    return RowView(task_id=str(item.get(task_row.TASK_NAME) or item[task_row.TABLE_KEY]),
-                   key=str(item[task_row.TABLE_KEY]), status=status,
-                   generation=ownership.LEGACY if generation is None or generation == "" else int(generation),
-                   trigger_rule="", dependencies=(), times=RowTimes(status=status), error=item.get(task_row.ERROR))
+def written_before_1_3(item: Mapping[str, Any]) -> bool:
+    """Whether a task row was written by a run of 1.2: it carries no readiness fields. 1.4 no longer stops such a
+    row, whose run row is missing; it expires with its history TTL (ADR #137, *Migration and upgrade*)."""
+    return task_row.READINESS not in item
 
 
 @dataclass(frozen=True)

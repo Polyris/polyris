@@ -8,10 +8,7 @@ behind a real boto3 client.
 """
 from __future__ import annotations
 
-import json
-import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 import pytest
@@ -20,11 +17,11 @@ from botocore.exceptions import ClientError
 from fake_states import FakeStates
 from polyris import cfn_changeset, deploy
 from polyris.executions import STATE_MACHINE
+from test_deploy_policy import STATEMENTS as DEPLOY_POLICY
 
 STACK = "acme-dev-polyris-sales-etl"
 PAUSED_SINCE = datetime(2026, 11, 20, 6, tzinfo=timezone.utc)
 SCHEDULED = datetime(2026, 11, 24, 9, tzinfo=timezone.utc)
-IAM_DOC = Path(__file__).resolve().parents[2] / "docs" / "deployment" / "IAM_PERMISSIONS.md"
 
 
 class _PipelineStack:
@@ -142,13 +139,12 @@ def test_destroy_of_a_stack_that_is_gone_already_stops_nothing_and_succeeds(caps
 
 
 def _deploy_policy_actions() -> Set[str]:
-    """Every action of the deploy policy in IAM_PERMISSIONS.md."""
-    section = IAM_DOC.read_text().split("## Deploy — per-pipeline `polyris-deploy`", 1)[1].split("\n## ", 1)[0]
-    policy = json.loads(re.search(r"```json\n(.*?)```", section, re.S).group(1))
+    """Every action the platform's deploy policy allows (``PipelineDeployPolicy`` in sam/template.yaml)."""
     actions: Set[str] = set()
-    for statement in policy["Statement"]:
-        listed = statement["Action"]
-        actions |= set(listed if isinstance(listed, list) else [listed])
+    for statement in DEPLOY_POLICY:
+        if statement["Effect"] == "Allow":
+            listed = statement["Action"]
+            actions |= set(listed if isinstance(listed, list) else [listed])
     return actions
 
 

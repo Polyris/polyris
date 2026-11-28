@@ -8,8 +8,6 @@ back (a version item or a text dropped or altered) must stop the deploy before
 """
 
 import json
-import re
-from pathlib import Path
 
 import pytest
 from botocore.exceptions import ClientError
@@ -19,10 +17,10 @@ from polyris.coordination import spec_store, task_spec
 from polyris.coordination.task_spec import PK, SK, TEXT, VERSION_HASH
 from polyris.deploy import deploy_pipeline
 from polyris.generators import build_spec_version
+from test_deploy_policy import STATEMENTS as DEPLOY_POLICY
 
 SPECS = "acme-dev-polyris-pipeline-specs"  # conftest.SPECS_TABLE
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:acme-dev-polyris-orders"
-IAM_DOC = Path(__file__).resolve().parents[2] / "docs" / "deployment" / "IAM_PERMISSIONS.md"
 
 
 def _dag():
@@ -165,13 +163,11 @@ def test_a_platform_without_the_specs_table_is_refused(mocker, platform_dynamodb
 
 
 def _documented_actions_on_specs():
-    """The actions of the deploy policy in IAM_PERMISSIONS.md whose resource is pipeline-specs."""
-    section = IAM_DOC.read_text().split("## Deploy — per-pipeline `polyris-deploy`", 1)[1].split("\n## ", 1)[0]
-    policy = json.loads(re.search(r"```json\n(.*?)```", section, re.S).group(1))
+    """The actions the platform's deploy policy allows on pipeline-specs (``PipelineDeployPolicy``)."""
     actions = set()
-    for statement in policy["Statement"]:
+    for statement in DEPLOY_POLICY:
         resources = statement["Resource"] if isinstance(statement["Resource"], list) else [statement["Resource"]]
-        if any(r.endswith("-polyris-pipeline-specs") for r in resources):
+        if statement["Effect"] == "Allow" and {"!GetAtt": "PipelineSpecsTable.Arn"} in resources:
             actions |= set(statement["Action"] if isinstance(statement["Action"], list) else [statement["Action"]])
     return actions
 

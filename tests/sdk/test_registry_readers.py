@@ -24,9 +24,6 @@ KEYS = {"tasks", "dag"}
 
 #: (file, enclosing function, key): why each read is not one of the registry's fields.
 ALLOWED = {
-    # The DAG snapshot of a 1.2 run (dag_snapshot::{run} in pipeline-tokens), kept until 1.4 (D89).
-    ("sam/lambdas/console_api/routes/pipelines_info.py", "_snapshot_graph", "dag"):
-        "the 1.2 runs' DAG snapshot reader, removed in 1.4",
     # polyris-validate's debug output builds its own list of tasks.
     ("polyris/generators.py", "generate_debug_info", "tasks"): "the debug output's own list",
     # The request body of a backfill: the task subset the user asked for.

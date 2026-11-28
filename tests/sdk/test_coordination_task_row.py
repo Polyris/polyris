@@ -31,14 +31,9 @@ def test_the_platforms_own_rows_are_no_task_rows(key):
 
 def test_the_index_of_a_runs_rows_is_keyed_by_its_execution():
     """The template names it; the dispatcher's role may query it (tests/sdk, sam/lambdas/coordination/tests)."""
-    import yaml
-    from pathlib import Path
+    from sam_template import load_template
 
-    class Loader(yaml.SafeLoader):
-        pass
-
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
-    template = yaml.load((Path(__file__).resolve().parents[2] / "sam" / "template.yaml").read_text(), Loader=Loader)
+    template = load_template(tagged=False)
     indexes = template["Resources"]["PipelineTokensTable"]["Properties"]["GlobalSecondaryIndexes"]
     [index] = [i for i in indexes if i["IndexName"] == task_row.RUN_ROWS_INDEX]
     assert index["KeySchema"] == [{"AttributeName": task_row.PIPELINE_EXECUTION, "KeyType": "HASH"}]

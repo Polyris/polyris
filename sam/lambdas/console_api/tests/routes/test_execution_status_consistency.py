@@ -68,11 +68,11 @@ CASES = [
     (['success', 'stopped'], 'aborted'),            # the reported bug: a stopped run
     (['success', 'aborted', 'stopped'], 'aborted'),
     (['failed', 'aborted'], 'failed'),              # a genuine failure outranks the stop
-    # A run from before 1.3 (these have no run row) with a row left unfinished: 1.3 finishes none, so it is stale
-    # (ADR #137, *Migration and upgrade*; the review of TR-6d).
-    (['running'], 'stale'),
-    (['running', 'success'], 'stale'),
-    (['waiting_decision', 'failed'], 'stale'),
+    # A run from before 1.3 (these have no run row) with a row left unfinished shows running until its rows
+    # expire (ADR #137, *Migration and upgrade*).
+    (['running'], 'running'),
+    (['running', 'success'], 'running'),
+    (['waiting_decision', 'failed'], 'running'),
 ]
 
 

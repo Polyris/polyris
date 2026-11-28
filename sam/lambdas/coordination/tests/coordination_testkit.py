@@ -32,7 +32,7 @@ FUNCTION_TABLES = {
                             "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "TASK_EVENTS_TABLE"),
     "SweeperFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
                         "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "TASK_EVENTS_TABLE"),
-    "StartRunFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
+    "StartRunFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "PIPELINES_TABLE"),
 }
 #: Environment a function reads beyond its tables.
 #: The run_task state machine by its name: a !Ref would close a dependency cycle (ADR #137 §1).
@@ -179,3 +179,15 @@ def legacy_fact(asset: str, key: str, *, event_time: str) -> Dict[str, Any]:
     """An asset-events row written before ADR #130: no partition fields, no granularity."""
     return {"asset_name": asset, "event_time": event_time, "execution_date": key,
             "source_dag": "producer", "source_task": "build"}
+
+
+def register(ddb, pipeline: str, execution_arn: str) -> None:
+    """The registry names the state machine of ``execution_arn`` as ``pipeline``'s, as the pipeline's registration
+    does before its Start_Run: Start_Run writes rows only for an execution of it (ADR #142 §5)."""
+    machine = execution_arn.replace(":execution:", ":stateMachine:", 1).rsplit(":", 1)[0]
+    ddb.Table(TABLES["PIPELINES_TABLE"][1]).update_item(
+        Key={"pipeline_name": pipeline}, UpdateExpression="SET sfn_arn = :arn", ExpressionAttributeValues={":arn": machine})
+
+
+#: What Start_Run writes in a task row's readiness field (task_spec.readiness_text); a row a 1.2 run left has none.
+READINESS_1_3 = '{"dependencies":[],"trigger_rule":"all_success"}'

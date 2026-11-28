@@ -60,5 +60,5 @@ class TestCanonicalSet:
         assert "succeeded" not in EXECUTION_STATUS_CANONICAL
         assert "stopped" not in EXECUTION_STATUS_CANONICAL
         assert EXECUTION_STATUS_CANONICAL == {
-            "running", "success", "failed", "aborted", "stale",
+            "running", "success", "failed", "aborted",
         }

@@ -1,10 +1,13 @@
 ---
 area: deploy
 accepted: 2026-11-12
+revised: 2026-11-26
 ---
 # ADR #131 — `polyris-up` / `polyris-down`: install the platform from prebuilt release assets
 
-> **Amended by [ADR #137](adr-137-tasks-as-rows.md), *Migration and upgrade* (1.3.0).** `polyris-up` checks a platform older than 1.3 before it upgrades it, stops what 1.2 left running and lists the pipelines to redeploy; `polyris-down` stops the platform's running executions until its stack is gone (§4).
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md), *Migration and upgrade* (1.3.0).** `polyris-up` refuses a platform older than 1.3 and lists the pipelines to redeploy; `polyris-down` stops the platform's running executions until its stack is gone (§4).
+>
+> **Amended by [ADR #142](adr-142-separation-of-duties-for-pipeline-iam.md) §8 (1.4.0).** `polyris-up` runs its checks before any upload, uploads every artifact on every run, puts the template under a key nobody can predict and deploys only a change set whose template is the one it uploaded; `polyris-down` refuses while a pipeline imports the schedule role.
 
 > **Status:** ACCEPTED (2026-11-12).
 >
@@ -49,7 +52,8 @@ Installs or upgrades the platform from the archive of the **installed** polyris 
 6. **Deploy.** It rewrites `CodeUri` / `DefinitionUri` to the uploaded objects, stamps `Polyris platform v<version>` into the Description, and deploys through a change set. A change set that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs interactive confirmation or `--accept-data-loss` — `--yes` never covers it. An empty change set reports "already up to date".
 
 **Safety rails.**
-- An older release never replaces a newer one without `--allow-downgrade` (the version comes from the stack Description).
+- An older release never replaces a newer one without `--allow-downgrade` (the version comes from the stack Description), and no release below 1.4 replaces 1.4 or newer, whatever the flags (ADR #142 §8).
+- A new platform's stack name may not contain `-polyris-`, the form of a pipeline stack that the authors' deploy policy may change.
 - Only **platform-shaped** stacks are changed or deleted: tagged, or carrying the platform's own parameters (`Namespace`, `Stage`, `EnableCognitoAuth`). `--stack my-app` on anything else is refused by both commands.
 - `--param` can't set `Namespace`, `Stage` (renaming would replace every resource) or the artifact locations.
 - The archive is extracted into a temporary directory and renamed into the cache, so an interrupted extraction is never reused.

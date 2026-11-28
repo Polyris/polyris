@@ -14,12 +14,10 @@ Everything here is pure (no AWS calls), so it sits under the coverage floor.
 from __future__ import annotations
 
 import copy
+import fnmatch
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
-
-from .coordination.times import parse_utc
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 # ── Release archive contract ─────────────────────────────────────────────────
 
@@ -70,6 +68,123 @@ OUTPUT_TOKENS_TABLE = "PipelineTokensTable"
 OUTPUT_REGISTRY_TABLE = "PipelineRegistryTable"
 OUTPUT_SPECS_TABLE = "PipelineSpecsTable"
 OUTPUT_START_RUN = "StartRunFunctionArn"
+#: The role every pipeline's state machine runs as; a role a task names in ``role=`` trusts it.
+OUTPUT_ORCHESTRATION_ROLE = "OrchestrationRoleArn"
+# The role every scheduled pipeline's schedule starts its state machine with, which 1.4 adds; a pipeline
+# stack imports its export (``schedule_role_export``), so the platform cannot drop it while one does (ADR #142 §4).
+OUTPUT_SCHEDULE_ROLE = "PipelineScheduleRoleArn"
+# The managed policy the role that runs polyris-deploy holds (ADR #142 §2).
+OUTPUT_DEPLOY_POLICY = "PipelineDeployPolicyArn"
+
+
+def schedule_role_export(namespace: str, stage: str) -> str:
+    """The name under which the platform ``{namespace}-{stage}`` exports its schedule role's ARN."""
+    return f"{platform_prefix(namespace, stage)}schedule-role-arn"
+
+# ── The platform's own state machines and functions ─────────────────────────
+
+
+@dataclass(frozen=True)
+class PlatformNames:
+    """The end of the name of each of the platform's state machines and Lambda functions, after
+    the platform's prefix (``platform_prefix``).
+
+    One source for every place that names them: the template names its resources so, and every
+    deny list of a role or policy that a pipeline or its author holds names them so
+    (``tests/sdk/test_platform_names.py`` walks the template to both).
+    """
+
+    #: ``run_task``: one attempt of a task's work (ADR #137 §1).
+    run_task: str = "dep-run-task-helper"
+    #: ``bulk_backfill``: starts a range of runs.
+    bulk_backfill: str = "bulk-backfill"
+    #: The three test state machines, a demo pipeline's tasks (``polyris-init --hello``).
+    test_machines: Tuple[str, ...] = ("test-quick", "test-success", "test-failure")
+    #: The functions a pipeline's state machine invokes: they stay invocable by the roles a pipeline holds.
+    pipeline_functions: Tuple[str, ...] = ("start-run", "notify")
+    #: The functions only the platform invokes: every role a pipeline holds is denied them.
+    internal_functions: Tuple[str, ...] = (
+        "console-api", "reconcile", "asset-fanout", "sweeper", "ui-bootstrap", "bucket-cleanup")
+
+    @property
+    def engine_machines(self) -> Tuple[str, ...]:
+        """The engine's state machines, which no pipeline may start, stop or redrive."""
+        return (self.run_task, self.bulk_backfill)
+
+    @property
+    def state_machines(self) -> Tuple[str, ...]:
+        """Every state machine of the platform."""
+        return self.engine_machines + self.test_machines
+
+    @property
+    def functions(self) -> Tuple[str, ...]:
+        """Every Lambda function of the platform."""
+        return self.pipeline_functions + self.internal_functions
+
+
+PLATFORM_NAMES = PlatformNames()
+
+
+def platform_machine(machine_name: str) -> Optional[str]:
+    """The platform state machine whose name ``machine_name`` ends like, of any namespace, or None.
+
+    Every role and policy that a pipeline or its author holds denies the platform's machines by the end
+    of their names (``*-polyris-{name}``), so a name that ends so is a platform machine's to all of them.
+    """
+    return next((machine for machine in PLATFORM_NAMES.state_machines
+                 if machine_name.endswith(f"-polyris-{machine}")), None)
+
+
+def reserved_machine(dag_id: str) -> Optional[str]:
+    """The platform state machine whose name a pipeline named ``dag_id`` would end in, or None.
+
+    A pipeline's state machine is ``{namespace}-{stage}-polyris-{dag_id}``; such a pipeline could be
+    neither deployed nor scheduled (``platform_machine``).
+    """
+    return platform_machine(f"-polyris-{dag_id}")
+
+
+# ── The roles a task may run as (ADR #142 §6) ───────────────────────────────────────
+
+#: The IAM path of the roles of the platform's account that a task's ``role=`` may name. Only whoever creates
+#: IAM roles can give a role a path, so an author reaches no role that nobody made for pipelines.
+TASK_ROLE_PATH = "/polyris-tasks/"
+#: The end of the name of the platform's default task role, which runs a task whose ``role=`` is ``"same"``.
+DEFAULT_TASK_ROLE = "default-task-role"
+
+
+def default_task_role_name(namespace: str, stage: str) -> str:
+    """The name of the default task role of the platform ``{namespace}-{stage}``."""
+    return f"{platform_prefix(namespace, stage)}{DEFAULT_TASK_ROLE}"
+
+
+def refused_task_role(role: Optional[str], *, account: str, default_task_role: Optional[str] = None) -> bool:
+    """Whether a task's ``role=`` names a role of the platform's ``account`` that polyris may not use (ADR #142 §6).
+
+    A role of another account, a role under ``TASK_ROLE_PATH`` and the platform's default task role
+    (``default_task_role``, its name) pass; so does anything that is no IAM ARN (``"same"``). With
+    ``default_task_role`` None, the platform is unknown (``polyris-validate``), and the default task
+    role of any platform passes; ``polyris-deploy`` knows it and checks again.
+    """
+    parts = (role or "").split(":", 5)
+    if len(parts) != 6 or parts[0] != "arn" or parts[2] != "iam" or parts[4] != account:
+        return False
+    resource = parts[5]
+    if resource.startswith("role" + TASK_ROLE_PATH):
+        return False
+    if default_task_role is None:
+        return re.fullmatch(rf"role/[^/]+-polyris-{DEFAULT_TASK_ROLE}", resource) is None
+    return resource != f"role/{default_task_role}"
+
+
+def task_role_refusal(task_id: str, role: str) -> str:
+    """Why ``refused_task_role`` refused a task's role, and what to do about it."""
+    parts = role.split(":", 5)
+    partition, account, name = parts[1], parts[4], parts[5].rsplit("/", 1)[-1]
+    return (f"Task '{task_id}': role {role} is in the platform's account, and polyris may use only roles of this "
+            f"account under the path {TASK_ROLE_PATH}. Ask your platform admin to create the role under that path "
+            f"(docs: Give a task a role of its own) and use its ARN, e.g. "
+            f"arn:{partition}:iam::{account}:role{TASK_ROLE_PATH}{name}. Roles in other accounts work as before.")
 
 # AWS caps IAM role names at 64 characters. The longest role in the template
 # is "{Namespace}-{Stage}-polyris-sweeper-schedule-role" (31 fixed
@@ -441,26 +556,27 @@ def is_downgrade(deployed: Optional[str], installing: str) -> bool:
     return old is not None and new is not None and new < old
 
 
-# ── The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*) ─────────────
-#
-# 1.3 runs tasks as rows and deletes 1.2's engine. Nothing adopts a 1.2 run, so
-# polyris-up checks a 1.2 platform before it upgrades it and stops what 1.2
-# left running. These are the rules; polyris/upgrade.py is their AWS side.
+#: The oldest release this polyris-up updates: a platform on 1.2 upgrades to 1.3 first (ADR #137, *Migration and upgrade*), and a release
+#: below it is not installed. A stack deployed with ``sam deploy`` names no version; the output 1.3 adds tells.
+UPGRADES_FROM = (1, 3)
+#: The release no platform goes back below once it runs it (ADR #142 §4): its pipelines schedule with the platform's
+#: schedule role, which an older release does not have. CloudFormation's lock on the role's export, which every
+#: scheduled pipeline imports, holds the same line for an older polyris-up.
+NO_ROLLBACK_BELOW = (1, 4)
 
-#: The first release whose engine runs tasks as rows.
-ROWS_ENGINE = (1, 3)
-#: The oldest release that 1.3 upgrades. 1.1.4 goes through 1.2 first: 1.3 removes the code that kept it working.
-OLDEST_UPGRADABLE = (1, 2)
-#: How long after 1.2 finished adopting older rows and facts 1.3 may be installed: until then they still need the
-#: compatibility code that 1.3 removes.
-ADOPTION_SETTLE = timedelta(hours=48)
 
-#: 1.2's Standard state machines that 1.3 deletes, by the end of their names. The other four it deletes are
-#: Express: ListExecutions lists no execution of theirs, and each ends within five minutes on its own.
-REMOVED_STANDARD_MACHINES = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter")
-#: The engine's Standard state machines that 1.3 keeps. bulk_backfill starts runs; run_task runs a task's work.
-BULK_BACKFILL_MACHINE = "bulk-backfill"
-RUN_TASK_MACHINE = "dep-run-task-helper"
+def upgrades(version: Optional[str], outputs: Iterable[str]) -> bool:
+    """Whether a platform (its stack's version and outputs) or a release (its manifest's version and its
+    template's outputs) is one this polyris-up updates or installs: 1.3 or newer (``UPGRADES_FROM``)."""
+    series = release_series(version)
+    return series >= UPGRADES_FROM if series is not None else OUTPUT_START_RUN in set(outputs)
+
+
+def rolls_back_below_floor(deployed: Optional[str], installing: str) -> bool:
+    """Whether installing ``installing`` would take a platform that runs 1.4 or newer below 1.4. No flag allows
+    it (``NO_ROLLBACK_BELOW``). Unknown versions never block."""
+    old, new = release_series(deployed), release_series(installing)
+    return old is not None and new is not None and old >= NO_ROLLBACK_BELOW > new
 
 
 def platform_prefix(namespace: str, stage: str) -> str:
@@ -468,58 +584,112 @@ def platform_prefix(namespace: str, stage: str) -> str:
     return f"{namespace}-{stage}-polyris-"
 
 
-def state_machine_arn(*, partition: str, region: str, account: str, name: str) -> str:
-    """The ARN of the state machine ``name`` in this account and region."""
-    return f"arn:{partition}:states:{region}:{account}:stateMachine:{name}"
-
-
 def outputs_of(stack: Mapping[str, Any]) -> Dict[str, str]:
     """A describe_stacks entry's outputs as {key: value}."""
     return {o["OutputKey"]: o.get("OutputValue", "") for o in stack.get("Outputs") or []}
 
 
-def runs_tasks_as_rows(version: Optional[str], outputs: Iterable[str]) -> bool:
-    """Whether a platform has 1.3's engine: a deployed one (its stack's version and outputs) or the
-    one a release installs (its manifest's version and its template's outputs).
+#: What no new platform stack's name may contain: every grant of the deploy policy on pipeline stacks is on
+#: ``*-polyris-*``, which would then cover the platform's own stack (ADR #142 §8). The deploy policy also
+#: denies its own platform's stack by its id, which covers a platform named so before 1.4.
+PIPELINE_INFIX = "-polyris-"
 
-    The version decides, and a pre-release of 1.3.0 has the engine. A stack
-    deployed with ``sam deploy`` carries no version; then the output that 1.3
-    adds tells.
+
+def new_platform_name_errors(stack_name: str) -> List[str]:
+    """Every problem with the name of a new platform stack (empty list = valid)."""
+    if PIPELINE_INFIX in stack_name:
+        return [f"A platform stack may not be named {stack_name!r}: a name containing {PIPELINE_INFIX!r} is the "
+                f"form of a pipeline's stack, which the authors' deploy policy may change."]
+    return []
+
+
+# ── The scheduler roles that the pipelines of 1.3 made (ADR #142 §7, §8) ──
+#
+# Until 1.4 each scheduled pipeline's stack made its own scheduler role. The deploy policy of 1.4 may pass and
+# delete such roles for one release, so that a pipeline's first redeploy removes its old role, and polyris-up
+# refuses while any role of that name is not exactly what polyris-deploy made: one planted there would be passed.
+
+#: The roles the migration grant covers, as the deploy policy names them (``*`` matches a path too).
+SCHEDULER_ROLE_PATTERN = "role/*-polyris-*-scheduler-role"
+#: The logical ids of the scheduler role and of the state machine it starts in a pipeline stack of 1.3.
+SCHEDULER_ROLE_LOGICAL_ID = "PipelineSchedulerRole"
+PIPELINE_MACHINE_LOGICAL_ID = "PipelineStateMachine"
+#: The service a scheduler role is passed to and trusts.
+SCHEDULER_SERVICE = "scheduler.amazonaws.com"
+
+
+def is_scheduler_role(arn: str) -> bool:
+    """Whether an IAM role's ARN is one the migration grant covers."""
+    return fnmatch.fnmatchcase(arn.split(":", 5)[-1], SCHEDULER_ROLE_PATTERN)
+
+
+@dataclass(frozen=True)
+class SchedulerRole:
+    """What polyris-up read of a role named like a pipeline's scheduler role."""
+
+    arn: str
+    path: str
+    #: Its trust policy, and its inline policies by name, as documents.
+    trust: Any
+    inline: Mapping[str, Any]
+    #: The ARNs of the managed policies attached to it.
+    attached: Sequence[str]
+    #: The stack that holds it, and its logical id there; None when no stack holds it.
+    stack: Optional[str] = None
+    logical_id: Optional[str] = None
+    #: The ARN of that stack's pipeline state machine; None when it has none.
+    machine: Optional[str] = None
+
+
+def _one(value: Any) -> Any:
+    """A policy's value that may be one string or a list of one."""
+    return value[0] if isinstance(value, list) and len(value) == 1 else value
+
+
+def _only_statement(document: Any, keys: Iterable[str]) -> Optional[Mapping[str, Any]]:
+    """The one statement of a policy document, if it has exactly one and it holds only ``keys`` (and a Sid)."""
+    statements = document.get("Statement") if isinstance(document, Mapping) else None
+    statements = [statements] if isinstance(statements, Mapping) else statements
+    if not isinstance(statements, list) or len(statements) != 1 or not isinstance(statements[0], Mapping):
+        return None
+    statement = statements[0]
+    if not set(statement) <= {"Sid", *keys} or statement.get("Effect") != "Allow":
+        return None
+    return statement
+
+
+def scheduler_role_region(inline: Mapping[str, Any]) -> Optional[str]:
+    """The region of the state machine that a scheduler role's one inline policy starts, or None."""
+    if len(inline) != 1:
+        return None
+    statement = _only_statement(next(iter(inline.values())), ("Effect", "Action", "Resource"))
+    resource = _one(statement.get("Resource")) if statement else None
+    parts = resource.split(":") if isinstance(resource, str) else []
+    return parts[3] if len(parts) > 3 and parts[0] == "arn" and parts[2] == "states" and parts[3] else None
+
+
+def scheduler_role_problems(role: SchedulerRole) -> List[str]:
+    """How a role named like a pipeline's scheduler role differs from what polyris-deploy made (empty = no way).
+
+    polyris-deploy made it in a ``*-polyris-*`` pipeline stack, at the path ``/``, trusted by the scheduler
+    alone, with one inline policy that starts that stack's state machine and nothing else, and with no managed
+    policy.
     """
-    series = release_series(version)
-    return series >= ROWS_ENGINE if series is not None else OUTPUT_START_RUN in set(outputs)
-
-
-def leaves_tasks_as_rows(deployed: Optional[str], deployed_outputs: Iterable[str], installing: str,
-                         template_outputs: Iterable[str]) -> bool:
-    """Whether installing ``installing`` over a platform that runs tasks as rows would put 1.2's engine back.
-
-    No flag allows it: a pipeline deployed for 1.3 has no engine on 1.2, and
-    every run of it would fail. The way back from a failed update is its
-    automatic rollback (ADR #137, *Migration and upgrade*).
-    """
-    return runs_tasks_as_rows(deployed, deployed_outputs) and not runs_tasks_as_rows(installing, template_outputs)
-
-
-def adoption_finished_at(health: Optional[Mapping[str, Any]], *, now: datetime) -> Optional[datetime]:
-    """When 1.2 finished adopting the rows and facts an older version wrote, as its ``_engine_health``
-    row records it; None while it has not, or when the row does not say.
-
-    1.2's sweeper keeps two scans there, ``tasks`` and ``facts``
-    (``sam/lambdas/coordination/sweeper.py`` of v1.2.x, ``adopt``): a cursor
-    while a scan is under way, and from its first full pass the time its hour
-    of repeats ends. A scan has finished once that time has passed and no
-    cursor is left; the adoption, once both have.
-    """
-    ends: List[datetime] = []
-    for scan in ("tasks", "facts"):
-        until = (health or {}).get(f"adopt_{scan}_until")
-        if not until or (health or {}).get(f"adopt_{scan}_cursor"):
-            return None
-        try:
-            ends.append(parse_utc(str(until)))
-        except ValueError:
-            return None
-    finished = max(ends)
-    return finished if finished <= now else None
-
+    problems: List[str] = []
+    if (not role.stack or not fnmatch.fnmatchcase(role.stack, f"*{PIPELINE_INFIX}*")
+            or role.logical_id != SCHEDULER_ROLE_LOGICAL_ID):
+        problems.append("no pipeline stack made it")
+    if role.path != "/":
+        problems.append(f"its path is {role.path}")
+    trust = _only_statement(role.trust, ("Effect", "Principal", "Action"))
+    principal = trust.get("Principal") if trust else None
+    if not (trust and isinstance(principal, Mapping) and set(principal) == {"Service"}
+            and _one(principal["Service"]) == SCHEDULER_SERVICE and _one(trust.get("Action")) == "sts:AssumeRole"):
+        problems.append("it trusts more than the scheduler")
+    if role.attached:
+        problems.append(f"managed policies are attached to it ({', '.join(sorted(role.attached))})")
+    starts = [_only_statement(document, ("Effect", "Action", "Resource")) for document in role.inline.values()]
+    if not (len(starts) == 1 and starts[0] is not None and _one(starts[0].get("Action")) == "states:StartExecution"
+            and role.machine and _one(starts[0].get("Resource")) == role.machine):
+        problems.append("its inline policies do more than start its pipeline's state machine")
+    return problems

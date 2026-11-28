@@ -3,14 +3,12 @@
 CloudFormation deletes a state machine only once its running executions have ended, and a run of 1.3
 keeps its execution open until every task of it is final; a paused run never ends by itself (ADR #137
 §1, §5). So a command that deletes a stack with state machines stops their executions until the stack
-is gone: ``polyris-destroy`` a pipeline's runs, ``polyris-down`` the platform's own executions, and
-``polyris-up`` what 1.2 left running (``upgrade.stop_leftovers``). The engine stops the tasks of a run
-whose execution was stopped at its next check of the run (ADR #137 §4).
+is gone: ``polyris-destroy`` a pipeline's runs, ``polyris-down`` the platform's own executions. The
+engine stops the tasks of a run whose execution was stopped at its next check of the run (ADR #137 §4).
 """
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Sequence, Set, Tuple
 
 from botocore.exceptions import ClientError
 
@@ -25,8 +23,8 @@ def error_code(error: ClientError) -> str:
     return str(error.response.get("Error", {}).get("Code", ""))
 
 
-def running(sfn: Any, machine: str, *, started_before: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """The running executions of ``machine`` that started before ``started_before`` (all of them, with None).
+def running(sfn: Any, machine: str) -> List[Dict[str, Any]]:
+    """The running executions of ``machine``.
 
     None of a state machine that does not exist: one that CloudFormation has deleted, or a pipeline
     destroyed since its registration.
@@ -36,8 +34,7 @@ def running(sfn: Any, machine: str, *, started_before: Optional[datetime] = None
         pages = sfn.get_paginator("list_executions").paginate(
             stateMachineArn=machine, statusFilter="RUNNING", PaginationConfig={"PageSize": PAGE})
         for page in pages:
-            executions.extend(e for e in page.get("executions", [])
-                              if started_before is None or e["startDate"] < started_before)
+            executions.extend(page.get("executions", []))
     except ClientError as e:
         if error_code(e) != "StateMachineDoesNotExist":
             raise
@@ -57,20 +54,20 @@ def stop(sfn: Any, execution: str, *, error: str, cause: str) -> bool:
 
 def stop_running(
     sfn: Any,
-    machines: Sequence[Tuple[str, Optional[datetime]]],
+    machines: Sequence[str],
     *,
     error: str,
     cause: str,
     seen: Set[str],
 ) -> List[Tuple[str, Dict[str, Any]]]:
-    """Stop the running executions of each state machine, in order, that started before its time (all, with None).
+    """Stop the running executions of each state machine, in order.
 
     ``seen`` holds the executions stopped before, which it skips: a listing can lag behind a stop. It
     adds each execution it meets. Returns each execution it stopped, with its state machine.
     """
     stopped: List[Tuple[str, Dict[str, Any]]] = []
-    for machine, started_before in machines:
-        for execution in running(sfn, machine, started_before=started_before):
+    for machine in machines:
+        for execution in running(sfn, machine):
             if execution["executionArn"] in seen:
                 continue
             seen.add(execution["executionArn"])

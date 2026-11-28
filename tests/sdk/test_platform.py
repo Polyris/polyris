@@ -6,13 +6,12 @@ sam/template.yaml (Principle #28).
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-import yaml
 
 from polyris import platform as P
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "sam" / "template.yaml"
@@ -20,20 +19,7 @@ TEMPLATE_PATH = REPO_ROOT / "sam" / "template.yaml"
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    class _Loader(yaml.SafeLoader):
-        pass
-
-    def _tag(loader, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {"__tag__": node.tag, "value": node.value}
-        if isinstance(node, yaml.SequenceNode):
-            return {"__tag__": node.tag, "value": loader.construct_sequence(node)}
-        return {"__tag__": node.tag, "value": loader.construct_mapping(node)}
-
-    for tag in ("!Ref", "!Sub", "!GetAtt", "!Join", "!If", "!Not", "!Equals", "!And", "!Or",
-                "!Condition", "!Select", "!Split", "!ImportValue", "!FindInMap"):
-        _Loader.add_constructor(tag, _tag)
-    return yaml.load(TEMPLATE_PATH.read_text(), Loader=_Loader)
+    return load_template(tagged=True)
 
 
 # ── Parity with sam/template.yaml ────────────────────────────────────────────
@@ -48,7 +34,8 @@ def test_parameter_names_exist_in_template(template, name):
 
 
 @pytest.mark.parametrize("name", [P.OUTPUT_CONSOLE_URL, P.OUTPUT_TEST_SFN_ARN, P.OUTPUT_TOKENS_TABLE,
-                                  P.OUTPUT_REGISTRY_TABLE, P.OUTPUT_SPECS_TABLE, P.OUTPUT_START_RUN])
+                                  P.OUTPUT_REGISTRY_TABLE, P.OUTPUT_SPECS_TABLE, P.OUTPUT_START_RUN,
+                                  P.OUTPUT_ORCHESTRATION_ROLE, P.OUTPUT_SCHEDULE_ROLE, P.OUTPUT_DEPLOY_POLICY])
 def test_outputs_exist_in_template(template, name):
     assert name in template["Outputs"]
 
@@ -56,7 +43,7 @@ def test_outputs_exist_in_template(template, name):
 def test_bucket_names_match_template(template):
     """polyris-up pre-checks exactly the names the template will try to create."""
     sub = {
-        lid: res["Properties"]["BucketName"]["value"]
+        lid: res["Properties"]["BucketName"]["!Sub"]
         for lid, res in template["Resources"].items()
         if res["Type"] == "AWS::S3::Bucket"
     }
@@ -71,8 +58,8 @@ def test_namespace_stage_limit_matches_longest_role_name(template):
     fixed = []
     for res in template["Resources"].values():
         role = (res.get("Properties") or {}).get("RoleName")
-        if isinstance(role, dict) and role.get("__tag__") == "!Sub":
-            text = role["value"]
+        if isinstance(role, dict) and "!Sub" in role:
+            text = role["!Sub"]
             assert set(re.findall(r"\$\{(\w+)\}", text)) <= {"Namespace", "Stage"}
             fixed.append(len(text.replace("${Namespace}", "").replace("${Stage}", "")))
     assert P.NAMESPACE_STAGE_MAX_LEN == 64 - max(fixed)
@@ -395,7 +382,7 @@ def test_cognito_has_no_self_sign_up(template):
     assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
 
 
-# ── The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*) ─────────────
+# ── The platform's state machines, and the upgrade's rules (ADR #142 §8) ─────────────
 
 
 def _state_machines(template) -> dict:
@@ -405,28 +392,20 @@ def _state_machines(template) -> dict:
     for res in template["Resources"].values():
         if res["Type"].endswith("::StateMachine"):
             props = res["Properties"]
-            name = (props.get("StateMachineName") or props["Name"])["value"]
+            name = (props.get("StateMachineName") or props["Name"])["!Sub"]
             assert name.startswith(prefix), name
             found[name[len(prefix):]] = props.get("StateMachineType") or props.get("Type") or "STANDARD"
     return found
 
 
 def test_the_engines_state_machines_are_named_as_the_template_names_them(template):
-    """polyris-up lists and stops executions by these names (Principle #28). A Standard state machine
-    that joins the template is the engine's, and joins the upgrade's checks, or it is a task's work."""
+    """The deny lists and the reserved dag_ids name them so (Principle #28)."""
     standard = {name for name, kind in _state_machines(template).items() if kind == "STANDARD"}
-    assert standard == {P.RUN_TASK_MACHINE, P.BULK_BACKFILL_MACHINE, "test-quick", "test-success", "test-failure"}
+    assert standard == set(P.PLATFORM_NAMES.state_machines)
 
 
-def test_no_state_machine_has_a_name_that_1_3_removed(template):
-    """Every execution under a removed name counts as 1.2's, so no state machine may get such a name back."""
-    assert not set(P.REMOVED_STANDARD_MACHINES) & set(_state_machines(template))
-
-
-def test_state_machine_names_and_arns():
+def test_platform_names_and_outputs():
     assert P.platform_prefix("acme", "dev") == "acme-dev-polyris-"
-    assert P.state_machine_arn(partition="aws", region="eu-central-1", account="123", name="acme-dev-polyris-x") == (
-        "arn:aws:states:eu-central-1:123:stateMachine:acme-dev-polyris-x")
     assert P.outputs_of({"Outputs": [{"OutputKey": "A", "OutputValue": "1"}, {"OutputKey": "B"}]}) == {"A": "1", "B": ""}
     assert P.outputs_of({}) == {}
 
@@ -438,51 +417,108 @@ def test_release_series():
 
 
 @pytest.mark.parametrize("version,outputs,expected", [
-    ("1.2.3", [], False),
-    ("1.3.0rc1", [], True),                           # a pre-release of 1.3.0 has the engine
-    ("1.3.0", [], True),
-    ("2.0.0", [], True),
+    ("1.2.3", [], False),                             # a platform on 1.2 goes through 1.3 first (ADR #137, *Migration and upgrade*)
+    ("1.3.0rc1", [], True),
+    ("1.3.2", [], True),
+    ("1.4.0", [], True),
     ("1.2.3", [P.OUTPUT_START_RUN], False),           # the version decides when the stack carries one
     (None, [], False),                                # sam deploy carries none: 1.2 has no such output
     (None, [P.OUTPUT_START_RUN], True),
     ("0.0.0-dev", [P.OUTPUT_START_RUN], True),        # a local build's version names no release
 ])
-def test_runs_tasks_as_rows(version, outputs, expected):
-    assert P.runs_tasks_as_rows(version, outputs) is expected
+def test_polyris_up_updates_from_1_3_only(version, outputs, expected):
+    assert P.upgrades(version, outputs) is expected
 
 
-NOW = datetime(2026, 11, 23, 12, tzinfo=timezone.utc)
-
-
-def _health(**over) -> dict:
-    """The adoption fields of ``_engine_health`` as 1.2's sweeper left them once both scans were done."""
-    return {"adoption_generation": "1", "adopt_tasks_cursor": "", "adopt_tasks_until": "2026-11-20T10:00:00.000Z",
-            "adopt_facts_cursor": "", "adopt_facts_until": "2026-11-20T11:00:00.000Z", **over}
-
-
-def test_the_adoption_finished_when_the_later_scan_was_past_its_hour():
-    assert P.adoption_finished_at(_health(), now=NOW) == datetime(2026, 11, 20, 11, tzinfo=timezone.utc)
-
-
-@pytest.mark.parametrize("health", [
-    None,                                                          # no row: the sweeper never ran
-    {"checked_at": "2026-11-23T11:55:00.000Z"},                    # the self-check wrote, the adoption not yet
-    _health(adopt_tasks_cursor='{"execution_name": "t-2026"}'),    # the task scan is under way
-    _health(adopt_facts_until=""),                                 # the fact scan has not finished a first pass
-    _health(adopt_facts_until="2026-11-23T12:30:00.000Z"),         # its hour of repeats still runs
-    _health(adopt_tasks_until="yesterday"),                        # a time nobody can read
+@pytest.mark.parametrize("deployed,installing,refused", [
+    ("1.4.0", "1.3.2", True),            # below 1.4: no flag allows it (ADR #142 §4)
+    ("1.5.1", "1.3.0rc1", True),
+    ("1.4.1", "1.4.0", False),           # a rollback within 1.4 is a rollback (--allow-downgrade)
+    ("1.3.2", "1.3.1", False),           # a platform that never ran 1.4
+    ("1.3.2", "1.4.0", False),           # the upgrade
+    (None, "1.3.2", False),              # unknown versions never block
+    ("1.4.0", "0.0.0-dev", False),
 ])
-def test_the_adoption_has_not_finished(health):
-    assert P.adoption_finished_at(health, now=NOW) is None
+def test_no_platform_goes_back_below_1_4(deployed, installing, refused):
+    assert P.rolls_back_below_floor(deployed, installing) is refused
 
 
-@pytest.mark.parametrize("deployed,installing,leaves", [
-    ("1.3.0", "1.2.3", True),            # the way back to 1.2: no flag allows it
-    ("1.3.0rc1", "1.2.3", True),
-    ("1.3.1", "1.3.0", False),           # a rollback within 1.3 keeps the engine
-    ("1.2.3", "1.3.0", False),           # the upgrade
-    ("1.2.3", "1.2.2", False),           # a rollback within 1.2
+@pytest.mark.parametrize("name,valid", [("acme-dev", True), ("polyris-dev", True), ("acme-polyris-dev", False),
+                                        ("x-polyris-", False)])
+def test_a_new_platforms_name_never_has_the_form_of_a_pipelines_stack(name, valid):
+    assert (P.new_platform_name_errors(name) == []) is valid
+
+
+# ── The scheduler roles of 1.3's pipelines (ADR #142 §7) ───────────────────────────
+
+MACHINE = "arn:aws:states:eu-central-1:123456789012:stateMachine:acme-dev-polyris-orders"
+TRUST = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "scheduler.amazonaws.com"},
+                                                 "Action": "sts:AssumeRole"}]}
+START = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "states:StartExecution",
+                                                 "Resource": MACHINE}]}
+
+
+def _role(**over) -> P.SchedulerRole:
+    """The role as polyris-deploy of 1.3 made it, with ``over`` changed."""
+    fields = dict(arn="arn:aws:iam::123456789012:role/acme-dev-polyris-orders-scheduler-role", path="/", trust=TRUST,
+                  inline={"InvokePipelineStateMachine": START}, attached=[], stack="acme-dev-polyris-orders",
+                  logical_id="PipelineSchedulerRole", machine=MACHINE)
+    fields.update(over)
+    return P.SchedulerRole(**fields)
+
+
+@pytest.mark.parametrize("arn,covered", [
+    ("arn:aws:iam::1:role/acme-dev-polyris-orders-scheduler-role", True),
+    ("arn:aws:iam::1:role/some/path/acme-dev-polyris-orders-scheduler-role", True),
+    ("arn:aws:iam::1:role/acme-dev-polyris-schedule-role", False),
+    ("arn:aws:iam::1:role/acme-scheduler-role", False),
 ])
-def test_leaving_the_engine_that_runs_tasks_as_rows(deployed, installing, leaves):
-    assert P.leaves_tasks_as_rows(deployed, [], installing, []) is leaves
+def test_the_roles_the_migration_grant_covers(arn, covered):
+    assert P.is_scheduler_role(arn) is covered
 
+
+def test_the_role_polyris_deploy_made_has_no_problem():
+    assert P.scheduler_role_problems(_role()) == []
+    single = {"Statement": {"Effect": "Allow", "Principal": {"Service": ["scheduler.amazonaws.com"]},
+                            "Action": ["sts:AssumeRole"]}}
+    assert P.scheduler_role_problems(_role(trust=single)) == [], "one statement, or lists of one, are the same"
+
+
+@pytest.mark.parametrize("over,problem", [
+    ({"stack": None, "logical_id": None}, "no pipeline stack made it"),
+    ({"stack": "my-app"}, "no pipeline stack made it"),
+    ({"logical_id": "SomethingElse"}, "no pipeline stack made it"),
+    ({"path": "/admin/"}, "its path is /admin/"),
+    ({"trust": {"Statement": [TRUST["Statement"][0], {"Effect": "Allow", "Principal": {"AWS": "*"},
+                                                      "Action": "sts:AssumeRole"}]}}, "it trusts more than the scheduler"),
+    ({"trust": {"Statement": [{**TRUST["Statement"][0], "Principal": {"AWS": "arn:aws:iam::9:root"}}]}},
+     "it trusts more than the scheduler"),
+    ({"trust": {"Statement": [{**TRUST["Statement"][0], "Condition": {"Bool": {"x": "y"}}}]}},
+     "it trusts more than the scheduler"),
+    ({"trust": "not a document"}, "it trusts more than the scheduler"),
+    ({"attached": ["arn:aws:iam::aws:policy/AdministratorAccess"]},
+     "managed policies are attached to it (arn:aws:iam::aws:policy/AdministratorAccess)"),
+    ({"inline": {}}, "its inline policies do more than start its pipeline's state machine"),
+    ({"inline": {"a": START, "b": START}}, "its inline policies do more than start its pipeline's state machine"),
+    ({"inline": {"a": {"Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}}},
+     "its inline policies do more than start its pipeline's state machine"),
+    ({"inline": {"a": {"Statement": [{**START["Statement"][0], "Resource": "*"}]}}},
+     "its inline policies do more than start its pipeline's state machine"),
+    ({"machine": None}, "its inline policies do more than start its pipeline's state machine"),
+])
+def test_a_role_that_differs_from_what_polyris_deploy_made_says_how(over, problem):
+    assert problem in P.scheduler_role_problems(_role(**over))
+
+
+@pytest.mark.parametrize("inline, region", [
+    ({"Invoke": {"Statement": [{"Effect": "Allow", "Action": "states:StartExecution",
+                                "Resource": "arn:aws:states:us-west-2:123456789012:stateMachine:acme-dev-polyris-o"}]}},
+     "us-west-2"),
+    ({"Invoke": {"Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}}, None),
+    ({"Invoke": {"Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/k"}]}}, None),
+    ({}, None),
+    ({"A": {"Statement": []}, "B": {"Statement": []}}, None),
+])
+def test_a_scheduler_roles_region_is_its_state_machines(inline, region):
+    """Where polyris-up looks for the stack that holds a scheduler role; IAM roles carry no region."""
+    assert P.scheduler_role_region(inline) == region

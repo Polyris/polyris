@@ -17,7 +17,7 @@ Or via environment variables:
 Usage:
     from polyris.roles import roles
     
-    @task.sfn(arn="${var.task}", role=roles["data_warehouse"])
+    @task.sfn(arn="arn:aws:states:us-east-1:111111111111:stateMachine:load-warehouse", role=roles["data_warehouse"])
     def my_task(): pass
     
     # With default fallback

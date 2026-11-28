@@ -11,7 +11,9 @@ Update it when something moves. Paths here are checked by
 
 ## In flight
 
-- Nothing recorded since the v1.3.0 release.
+- **1.4.0: separation of duties and the end of 1.2** (branch `feat/iam-separation-of-duties`, ADR #142). Code,
+  docs, the ADR and the CHANGELOG are in; the reviews and the live smoke before the tag (with a cross-account
+  `role=` and the negative IAM probes) remain.
 
 ## Decided, not done
 
@@ -22,8 +24,7 @@ Update it when something moves. Paths here are checked by
   tasks is unreachable. Pinned by a test that documents current behaviour;
   fixing it changes that function's contract.
 - **Coordination follow-ups after v1.3.0.** Listed with their reasons in ADR #137,
-  *Out of scope*. 1.4 removes the move from 1.2: a test fails from 1.4.0 until it goes
-  (`tests/sdk/test_d129_upgrade_from_1_2_guard.py`).
+  *Out of scope*.
 
 ## Known debt, measured
 

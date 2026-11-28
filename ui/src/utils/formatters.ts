@@ -302,9 +302,9 @@ export const formatTriggerSource = (value: string | null | undefined): string | 
     return TRIGGER_SOURCE_LABELS[value] ?? value;
 };
 
-/** A task's status as the console shows it: `stale` for a row of a run from before 1.3 left unfinished. */
-export const shownTaskStatus = (task: { status?: string | null; stale?: boolean }): string =>
-    task.stale ? 'stale' : (task.status || 'waiting');
+/** A task's status as the console shows it: `waiting` for a row that names none. */
+export const shownTaskStatus = (task: { status?: string | null }): string =>
+    task.status || 'waiting';
 
 /** A run's status as the run lists show it: a run that is still running says how many of its
  *  tasks failed (`failed_tasks`, ADR #137 §4), since it ends only once every task has. */

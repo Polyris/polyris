@@ -187,6 +187,16 @@ def close(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
                        values={":rv": run.version})
 
 
+def leave_attention_1_2(key: str, *, table: str) -> Dict[str, Any]:
+    """A row a 1.2 run left in flight taken out of the attention index, while it still has no readiness fields: no
+    sweep takes it again, and the self-check's oldest overdue row is not one of them (ADR #137, *Migration and
+    upgrade*). It expires with its history TTL."""
+    return {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": key}}, "UpdateExpression": "REMOVE #att, #due",
+            "ConditionExpression": "attribute_not_exists(#readiness)",
+            "ExpressionAttributeNames": {"#att": attention.KEY, "#due": attention.DUE,
+                                         "#readiness": task_row.READINESS}}
+
+
 def stop_done(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
     """The stop recorded as done, once every row is final and the answer is marked (§4)."""
     return _run_update(run, table=table, now=now, expression=f"SET #done = :now, {run_row.VERSION_NEXT}",

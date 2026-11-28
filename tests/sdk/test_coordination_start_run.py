@@ -300,3 +300,43 @@ def test_a_backfill_runs_rows_name_their_backfill():
     rows = start_run.task_items(call(input={"backfill_id": "bf-2026-11-18"}), {"extract": SPECS["extract"]}, now=NOW)
     assert rows[0]["backfill_id"] == "bf-2026-11-18"
     assert "backfill_id" not in start_run.task_items(call(input={}), {"extract": SPECS["extract"]}, now=NOW)[0]
+
+
+# ── Only an execution of the pipeline's registered state machine (ADR #142 §5) ──────
+
+MACHINE = "arn:aws:states:us-east-1:123456789012:stateMachine:orders"
+
+
+def test_an_execution_of_the_registered_machine_passes():
+    start_run.check_execution(call(), MACHINE)
+
+
+@pytest.mark.parametrize("registered, problem", [
+    (None, "the registry names no state machine of this pipeline"),
+    ("", "the registry names no state machine of this pipeline"),
+    ("arn:aws:lambda:us-east-1:123456789012:function:orders", "the registry names no state machine of this pipeline"),
+    ("arn:aws:states:us-east-1:123456789012:stateMachine:orders-v2",
+     "is not an execution of the pipeline's state machine"),
+    ("arn:aws:states:us-east-1:123456789012:stateMachine:acme-dev-polyris-bulk-backfill", "named like the platform's"),
+])
+def test_an_execution_the_registry_does_not_vouch_for_is_refused(registered, problem):
+    with pytest.raises(start_run.ForeignExecution, match=problem):
+        start_run.check_execution(call(), registered)
+
+
+def test_another_execution_of_the_same_machine_is_refused():
+    """The run row names the execution the engine stops and answers: its name must be this run's too."""
+    forged = call(execution_arn=f"{MACHINE.replace(':stateMachine:', ':execution:')}:another-run")
+    with pytest.raises(start_run.ForeignExecution):
+        start_run.check_execution(forged, MACHINE)
+
+
+@pytest.mark.parametrize("machine", ["acme-dev-polyris-bulk-backfill", "other-prod-polyris-dep-run-task-helper",
+                                     "acme-dev-polyris-test-quick"])
+def test_a_registry_entry_that_names_a_platform_machine_is_refused(machine):
+    """A direct step of a pipeline can write the registry (ADR #142 §10): an entry that names a platform's
+    machine, with a payload that names an execution of it, must not hand that execution to the engine."""
+    registered = f"arn:aws:states:us-east-1:123456789012:stateMachine:{machine}"
+    forged = call(execution_arn=f"{registered.replace(':stateMachine:', ':execution:')}:{call().execution}")
+    with pytest.raises(start_run.ForeignExecution, match="named like the platform's"):
+        start_run.check_execution(forged, registered)

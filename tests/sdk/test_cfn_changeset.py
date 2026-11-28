@@ -183,69 +183,39 @@ def test_execute_failure_raises():
         C.execute_change_set(cfn, stack_name="s", change_set={"ChangeSetName": "cs", "ChangeSetType": "UPDATE"})
 
 
-class _Updating(FakeCfn):
-    """A stack whose status moves on with each describe_stacks, as a running update's does."""
-
-    def __init__(self, *statuses: str):
-        super().__init__(statuses[0])
-        self._statuses = list(statuses)
-
-    def describe_stacks(self, StackName):
-        self.status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
-        return super().describe_stacks(StackName)
+# ── verify_change_set_template ───────────────────────────────────────────────
 
 
-UPDATE = {"ChangeSetName": "cs", "ChangeSetType": "UPDATE"}
+class _Templated(FakeCfn):
+    """A stack whose change set holds ``body``, as GetTemplate returns it (a dict for JSON, else the text)."""
+
+    def __init__(self, body):
+        super().__init__("UPDATE_COMPLETE")
+        self.body = body
+
+    def get_template(self, **kw):
+        self.calls.append(("get_template", kw))
+        return {"TemplateBody": self.body}
 
 
-def test_execute_calls_the_hook_once_the_update_has_succeeded_and_its_cleanup_begins():
-    """polyris-up stops there what would hold the cleanup's deletions up (ADR #137, *Migration and upgrade*)."""
-    cfn = _Updating("UPDATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", C.CLEANUP_STATUS)
-    slept: list = []
-
-    C.execute_change_set(cfn, stack_name="s", change_set=UPDATE, on_cleanup=lambda: cfn.calls.append(("hook",)),
-                         sleep=slept.append)
-
-    assert [call[0] for call in cfn.calls] == ["execute_change_set", "hook", "wait"], "before the stack settles"
-    assert slept == [C.STACK_WAIT_DELAY_S] * 2
+UPLOADED = '{"Resources": {"Machine": {"Type": "AWS::StepFunctions::StateMachine"}}}'
 
 
-@pytest.mark.parametrize("status", ["UPDATE_ROLLBACK_IN_PROGRESS", "UPDATE_FAILED", "UPDATE_COMPLETE"])
-def test_execute_never_calls_the_hook_for_an_update_that_failed_or_whose_cleanup_is_over(status):
-    cfn = _Updating("UPDATE_IN_PROGRESS", status)
-
-    C.execute_change_set(cfn, stack_name="s", change_set=UPDATE, on_cleanup=lambda: cfn.calls.append(("hook",)),
-                         sleep=lambda _s: None)
-
-    assert [call[0] for call in cfn.calls] == ["execute_change_set", "wait"]
-
-
-def test_execute_never_calls_the_hook_for_a_create():
-    cfn = FakeCfn(C.CLEANUP_STATUS)
-
-    C.execute_change_set(cfn, stack_name="s", change_set={"ChangeSetName": "cs", "ChangeSetType": "CREATE"},
-                         on_cleanup=lambda: cfn.calls.append(("hook",)))
-
-    assert [call[0] for call in cfn.calls] == ["execute_change_set", "wait"]
+@pytest.mark.parametrize("body", [{"Resources": {"Machine": {"Type": "AWS::StepFunctions::StateMachine"}}},
+                                  UPLOADED])
+def test_a_change_set_with_the_uploaded_template_passes(body):
+    cfn = _Templated(body)
+    C.verify_change_set_template(cfn, stack_name="s", change_set={"ChangeSetName": "cs"}, uploaded=UPLOADED)
+    assert cfn.call("get_template") == {"StackName": "s", "ChangeSetName": "cs", "TemplateStage": "Original"}
+    assert not [c for c in cfn.calls if c[0] == "delete_change_set"]
 
 
-def test_execute_gives_the_hook_up_when_the_update_stays_in_progress(monkeypatch):
-    monkeypatch.setattr(C, "STACK_WAIT_MAX_ATTEMPTS", 3)
-    cfn = _Updating("UPDATE_IN_PROGRESS")
-    slept: list = []
-
-    C.execute_change_set(cfn, stack_name="s", change_set=UPDATE, on_cleanup=lambda: cfn.calls.append(("hook",)),
-                         sleep=slept.append)
-
-    assert len(slept) == 3 and [call[0] for call in cfn.calls] == ["execute_change_set", "wait"]
-
-
-def test_an_error_of_the_hook_reaches_the_caller():
-    def hook():
-        raise RuntimeError("could not stop them")
-
-    with pytest.raises(RuntimeError, match="could not stop them"):
-        C.execute_change_set(_Updating(C.CLEANUP_STATUS), stack_name="s", change_set=UPDATE, on_cleanup=hook)
+@pytest.mark.parametrize("body", [{"Resources": {"Role": {"Type": "AWS::IAM::Role"}}}, "Resources: {}"])
+def test_a_change_set_with_another_template_is_deleted_and_refused(body):
+    cfn = _Templated(body)
+    with pytest.raises(C.ChangeSetError, match="not the one uploaded"):
+        C.verify_change_set_template(cfn, stack_name="s", change_set={"ChangeSetName": "cs"}, uploaded=UPLOADED)
+    assert cfn.call("delete_change_set") == {"StackName": "s", "ChangeSetName": "cs"}
 
 
 # ── start_event_watcher ──────────────────────────────────────────────────────

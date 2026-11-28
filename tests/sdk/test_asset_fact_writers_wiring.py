@@ -10,7 +10,7 @@ long, or a manual fact expires while an equal natural one still serves.
 from pathlib import Path
 
 import pytest
-import yaml
+from sam_template import load_template
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 TEMPLATE_PATH = REPO_ROOT / "sam" / "template.yaml"
@@ -18,18 +18,7 @@ TEMPLATE_PATH = REPO_ROOT / "sam" / "template.yaml"
 
 @pytest.fixture(scope="module")
 def resources() -> dict:
-    class Loader(yaml.SafeLoader):
-        pass
-
-    def intrinsic(loader, suffix, node):
-        if isinstance(node, yaml.ScalarNode):
-            return {f"!{suffix}": loader.construct_scalar(node)}
-        if isinstance(node, yaml.SequenceNode):
-            return {f"!{suffix}": loader.construct_sequence(node, deep=True)}
-        return {f"!{suffix}": loader.construct_mapping(node, deep=True)}
-
-    Loader.add_multi_constructor("!", intrinsic)
-    return yaml.load(TEMPLATE_PATH.read_text(), Loader=Loader)["Resources"]
+    return load_template(tagged=True)["Resources"]
 
 
 def test_both_writers_keep_facts_equally_long(resources):

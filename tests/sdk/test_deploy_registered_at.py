@@ -27,6 +27,7 @@ _SAM_OUTPUTS = [
     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
     {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
     {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
+    {"OutputKey": "PipelineScheduleRoleArn", "OutputValue": "arn:aws:iam::000000000000:role/acme-dev-polyris-schedule-role"},
 ]
 _PIPELINE_OUTPUTS = [{"OutputKey": "StateMachineArn", "OutputValue": _ARN}]
 

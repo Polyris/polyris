@@ -131,7 +131,6 @@ def test_list_pipelines_basic(mocker):
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
     mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
     from routes.pipelines_list import list_pipelines
     resp = _parse_response(list_pipelines(_make_event()))
 
@@ -152,7 +151,6 @@ def test_list_pipelines_schedule_from_registry(mocker):
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
     mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
     from routes.pipelines_list import list_pipelines
     resp = _parse_response(list_pipelines(_make_event()))
 
@@ -282,8 +280,8 @@ def test_pipeline_dag_no_dag_in_registry(mocker):
     assert len(resp['edges']) == 1
 
 
-def test_pipeline_dag_snapshot_preferred_over_registry(mocker, deploy_specs):
-    """When a 1.2 run has a snapshot, use it instead of the pipeline's current specs."""
+def test_a_1_2_runs_dag_snapshot_is_not_read_the_pipelines_specs_are(mocker, deploy_specs):
+    """ADR #137, *Migration and upgrade*: 1.4 reads no DAG snapshot of a 1.2 run; such a run shows the pipeline's current graph."""
     snapshot_dag = {'nodes': [{'id': 'a'}, {'id': 'b'}, {'id': 'c'}], 'edges': []}
     mock_pipelines = MockRepo([deploy_specs('daily', [{'task_id': 'a'}, {'task_id': 'b'}, {'task_id': 'd'}])])
     mock_execs = MockRepo([
@@ -302,9 +300,9 @@ def test_pipeline_dag_snapshot_preferred_over_registry(mocker, deploy_specs):
     })))
 
     node_ids = [n['id'] for n in resp['nodes']]
-    assert 'c' in node_ids
-    assert 'd' not in node_ids
-    assert resp['dag_source'] == 'snapshot'
+    assert 'c' not in node_ids
+    assert 'd' in node_ids
+    assert resp['dag_source'] == 'registry'
 
 
 def test_pipeline_dag_falls_back_to_registry_without_snapshot(mocker, deploy_specs):

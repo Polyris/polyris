@@ -103,6 +103,7 @@ An ADR (architecture decision record) records one decision that is hard to rever
 | [#132](adr-132-billing-tags-on-every-resource.md) | Billing tags: one `polyris:` set on every resource AWS can tag | by 2026-11-14 |
 | [#134](adr-134-named-config-used-or-command-stops.md) | A config the user names is used, or the command stops | by 2026-11-14 |
 | [#140](adr-140-orchestration-role-makes-direct-calls.md) | The orchestration role makes the direct steps' calls | by 2026-11-25 |
+| [#142](adr-142-separation-of-duties-for-pipeline-iam.md) | Separation of duties: authors deploy pipelines under a platform policy and create no IAM | 2026-11-26 |
 
 ## Console API
 

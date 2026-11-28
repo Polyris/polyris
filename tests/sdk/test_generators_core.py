@@ -24,7 +24,6 @@ from polyris.generators import (
     generate_dag_hash,
     generate_mermaid,
     generate_debug_info,
-    generate_eventbridge_schedule,
     generate_assets_json,
     generate_all_assets,
     _build_dag_visualization_nodes_edges,
@@ -329,11 +328,6 @@ class TestPublicGeneration:
         info = generate_debug_info(_chain_dag())
         assert isinstance(info, dict)
         assert info  # non-empty
-
-    def test_generate_eventbridge_schedule_for_scheduled_dag(self):
-        sched = generate_eventbridge_schedule(_scheduled_dag())
-        assert isinstance(sched, dict)
-        assert "rate(1 hour)" in json.dumps(sched)
 
     def test_generate_assets_json_contains_asset(self):
         out = generate_assets_json(_asset_dag())

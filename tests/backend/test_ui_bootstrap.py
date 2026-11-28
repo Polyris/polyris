@@ -77,8 +77,12 @@ def responses(mocker):
     return sent
 
 
+STACK_ID = "arn:aws:cloudformation:us-east-1:111111111111:stack/acme-dev/x"
+
+
 @pytest.fixture
-def distribution_id(aws):
+def distribution_id(aws, monkeypatch):
+    """The distribution, and the function's environment as the template sets it (``index.SETTINGS``)."""
     cf = boto3.client("cloudfront", region_name="us-east-1")
     dist = cf.create_distribution(DistributionConfig={
         "CallerReference": "test",
@@ -95,6 +99,12 @@ def distribution_id(aws):
             "MinTTL": 0,
         },
     })
+    for var, value in {"DEST_BUCKET": DEST, "SOURCE_BUCKET": SRC, "SOURCE_PREFIX": PREFIX,
+                       "API_URL": "https://abc.execute-api.us-east-1.amazonaws.com/dev/api",
+                       "COGNITO_USER_POOL_ID": "us-east-1_pool", "COGNITO_CLIENT_ID": "client123",
+                       "DISTRIBUTION_ID": dist["Distribution"]["Id"], "STACK_ID": STACK_ID,
+                       "AWS_REGION": "us-east-1"}.items():
+        monkeypatch.setenv(var, value)
     return dist["Distribution"]["Id"]
 
 
@@ -110,6 +120,7 @@ def _buckets(source_files: dict[str, str], dest_files: dict[str, str] | None = N
 
 
 def _event(request_type: str, distribution_id: str, **props_override):
+    """The event CloudFormation sends; the function takes none of its values but the request's own."""
     props = {
         "DestBucket": DEST,
         "SourceBucket": SRC,
@@ -123,7 +134,7 @@ def _event(request_type: str, distribution_id: str, **props_override):
     props.update(props_override)
     return {
         "RequestType": request_type,
-        "StackId": "arn:aws:cloudformation:us-east-1:111111111111:stack/acme-dev/x",
+        "StackId": STACK_ID,
         "RequestId": f"req-{request_type}",
         "LogicalResourceId": "UiBootstrap",
         "ResponseURL": "https://cfn-response.example/put",
@@ -206,10 +217,12 @@ def test_physical_resource_id_is_stable_across_create_and_update(lam, responses,
     assert ids == {f"ui-bootstrap:{DEST}"}
 
 
-def test_config_without_cognito_disables_auth(lam, responses, distribution_id):
+def test_config_without_cognito_disables_auth(lam, responses, distribution_id, monkeypatch):
     s3 = _buckets({"index.html": "<html>"})
+    monkeypatch.setenv("COGNITO_USER_POOL_ID", "")
+    monkeypatch.setenv("COGNITO_CLIENT_ID", "")
 
-    lam.handler(_event("Create", distribution_id, CognitoUserPoolId="", CognitoClientId=""), _Ctx())
+    lam.handler(_event("Create", distribution_id), _Ctx())
 
     config = s3.get_object(Bucket=DEST, Key="config.js")["Body"].read().decode()
     assert "enabled: false" in config
@@ -293,10 +306,37 @@ def test_template_api_url_matches_deploy_sh():
     assert 'API_URL="${API_URL_RAW}/api"' in (REPO_ROOT / "ui" / "deploy.sh").read_text()
 
 
-def test_template_passes_every_property_the_lambda_reads():
-    props = set(_template()["Resources"]["UiBootstrap"]["Properties"])
-    read = set(re.findall(r'props(?:\.get)?\(?\[?"(\w+)"', (LAMBDA_DIR / "index.py").read_text()))
-    assert read <= props, f"index.py reads properties the template never passes: {read - props}"
+def test_the_template_sets_every_value_the_lambda_reads_and_the_properties_repeat_them(lam):
+    """The function reads its environment (ADR #142 §5); each property of the custom resource
+    holds the same value, so CloudFormation sends an Update exactly when one of them changes."""
+    resources = _template()["Resources"]
+    variables = resources["UiBootstrapFunction"]["Properties"]["Environment"]["Variables"]
+    props = resources["UiBootstrap"]["Properties"]
+    assert set(variables) == set(lam.SETTINGS.values())
+    for prop, var in lam.SETTINGS.items():
+        if prop in props:
+            assert props[prop] == variables[var], prop
+    assert set(props) - set(lam.SETTINGS) == {"ServiceToken", "Region"}
+    assert props["Region"] == {"__tag__": "!Ref", "value": "AWS::Region"}, "the function's own AWS_REGION"
+
+
+def test_an_event_that_names_other_buckets_a_distribution_or_a_stack_changes_only_its_own_ui(
+        lam, responses, distribution_id, mocker):
+    """A Custom:: resource of another stack may name this function as its ServiceToken."""
+    s3 = _buckets({"index.html": "<html>"})
+    s3.create_bucket(Bucket="victim")
+    s3.put_object(Bucket="victim", Key="data.csv", Body=b"x")
+    forged = {"DestBucket": "victim", "SourceBucket": "attacker", "SourcePrefix": "evil",
+              "ApiUrl": "https://evil.example/api", "DistributionId": "EVIL"}
+    describe = mocker.patch.object(lam.cfn, "describe_stacks",
+                                   return_value={"Stacks": [{"StackStatus": "DELETE_IN_PROGRESS"}]})
+
+    lam.handler({**_event("Create", distribution_id, **forged), "StackId": "arn:aws:cloudformation:x"}, _Ctx())
+    assert "evil.example" not in s3.get_object(Bucket=DEST, Key="config.js")["Body"].read().decode()
+    lam.handler({**_event("Delete", distribution_id, **forged), "StackId": "arn:aws:cloudformation:x"}, _Ctx())
+
+    assert {o["Key"] for o in s3.list_objects_v2(Bucket="victim")["Contents"]} == {"data.csv"}
+    describe.assert_called_with(StackName=STACK_ID)
 
 
 def _config_keys(js: str) -> list[str]:
